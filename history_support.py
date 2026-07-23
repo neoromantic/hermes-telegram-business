@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import stat
+import tempfile
 import threading
 import unicodedata
 from collections import deque
@@ -71,6 +72,10 @@ CATALOG_DIRTY_FILENAME = ".contacts.json.dirty"
 KNOWN_CHAT_TYPES = frozenset({"private", "group", "supergroup", "channel"})
 DEFAULT_HISTORY_CHAT_TYPES = frozenset({"private"})
 CATALOG_REBUILD_RETRIES = 5
+# Fixed chunk size for verify's external-sort duplicate audit. Each buffered item
+# stores one event_id, its deterministic scan ordinal, and the chat label.
+VERIFY_EVENT_ID_CHUNK_RECORDS = 5000
+VERIFY_EVENT_ID_TEMP_DIR_PREFIX = ".verify-event-ids-"
 
 _OWNER_CACHE: dict[str, str] = {}
 _CACHE_LOCK = threading.RLock()
@@ -168,6 +173,51 @@ class ChatState:
 
 
 @dataclass
+class _LivePendingDeletionTracker:
+    live_deleted_event_ids: set[str] = field(default_factory=set)
+    max_live_pending: int = 0
+
+    def _note_size(self) -> None:
+        self.max_live_pending = max(self.max_live_pending, len(self.live_deleted_event_ids))
+
+    def observe_deleted(self, event_id: str) -> None:
+        if not event_id:
+            return
+        self.live_deleted_event_ids.add(event_id)
+        self._note_size()
+
+    def observe_classified(self, deleted_event_id: str) -> bool:
+        if not deleted_event_id:
+            return False
+        matched = deleted_event_id in self.live_deleted_event_ids
+        self.live_deleted_event_ids.discard(deleted_event_id)
+        self._note_size()
+        return matched
+
+    @property
+    def pending_count(self) -> int:
+        return len(self.live_deleted_event_ids)
+
+
+@dataclass
+class _ChatStreamScanSummary:
+    file_snapshot: tuple[tuple[Path, int], ...]
+    record_count: int
+    pending_count: int
+    unexplained_count: int
+    repaired_files: int
+    max_live_pending: int
+
+    @property
+    def file_count(self) -> int:
+        return len(self.file_snapshot)
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(size for _, size in self.file_snapshot)
+
+
+@dataclass
 class HistoryStats:
     chat_count: int
     file_count: int
@@ -206,6 +256,101 @@ class VerificationResult:
     repaired_files: int = 0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+_EventIdChunkEntry = tuple[str, int, str]
+
+
+@dataclass
+class _EventIdDuplicateTracker:
+    chunk_limit: int = VERIFY_EVENT_ID_CHUNK_RECORDS
+    _buffer: list[_EventIdChunkEntry] = field(default_factory=list)
+    _chunk_paths: list[Path] = field(default_factory=list)
+    _temp_dir: tempfile.TemporaryDirectory[str] | None = None
+
+    def add(self, *, event_id: str, chat_label: str, ordinal: int) -> None:
+        self._buffer.append((event_id, ordinal, chat_label))
+        if len(self._buffer) >= max(1, int(self.chunk_limit)):
+            self._flush_chunk()
+
+    def _ensure_temp_dir(self) -> Path:
+        if self._temp_dir is None:
+            root = history_root()
+            _ensure_private_dir(root)
+            self._temp_dir = tempfile.TemporaryDirectory(
+                prefix=VERIFY_EVENT_ID_TEMP_DIR_PREFIX,
+                dir=root,
+            )
+            try:
+                os.chmod(self._temp_dir.name, 0o700)
+            except OSError:
+                pass
+        return Path(self._temp_dir.name)
+
+    def _flush_chunk(self) -> None:
+        if not self._buffer:
+            return
+        self._buffer.sort()
+        chunk_dir = self._ensure_temp_dir()
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=chunk_dir,
+            prefix="chunk-",
+            suffix=".jsonl",
+            delete=False,
+        ) as handle:
+            last_entry: _EventIdChunkEntry | None = None
+            for entry in self._buffer:
+                # The scan ordinal keeps duplicate occurrences exact. This
+                # defensive dedupe only skips impossible identical triples.
+                if entry == last_entry:
+                    continue
+                json.dump(entry, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.write("\n")
+                last_entry = entry
+            chunk_path = Path(handle.name)
+        try:
+            os.chmod(chunk_path, 0o600)
+        except OSError:
+            pass
+        self._chunk_paths.append(chunk_path)
+        self._buffer.clear()
+
+    def _iter_chunk_entries(self, path: Path) -> Iterator[_EventIdChunkEntry]:
+        with path.open("r", encoding="utf-8") as handle:
+            for line_no, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid duplicate chunk {path.name}:{line_no}: {exc}") from exc
+                if not isinstance(payload, list) or len(payload) != 3:
+                    raise ValueError(f"invalid duplicate chunk {path.name}:{line_no}")
+                event_id, ordinal, chat_label = payload
+                yield str(event_id), int(ordinal), str(chat_label)
+
+    def iter_duplicate_warnings(self) -> Iterator[tuple[int, str]]:
+        self._flush_chunk()
+        if not self._chunk_paths:
+            return
+        current_event_id: str | None = None
+        for event_id, ordinal, chat_label in heapq.merge(
+            *(self._iter_chunk_entries(path) for path in self._chunk_paths)
+        ):
+            if event_id != current_event_id:
+                current_event_id = event_id
+                continue
+            yield ordinal, f"{chat_label}: duplicate event_id {event_id}"
+
+    def close(self) -> None:
+        self._buffer.clear()
+        self._chunk_paths.clear()
+        if self._temp_dir is None:
+            return
+        self._temp_dir.cleanup()
+        self._temp_dir = None
 
 
 @dataclass(frozen=True)
@@ -1114,6 +1259,10 @@ def _iter_history_files(chat_dir: Path) -> list[Path]:
     )
 
 
+def _history_file_snapshot(paths: Iterable[Path]) -> tuple[tuple[Path, int], ...]:
+    return tuple((path, path.stat().st_size) for path in paths)
+
+
 def _cache_key(chat_dir: Path) -> str:
     return str(chat_dir.resolve())
 
@@ -1205,28 +1354,41 @@ def _repair_torn_tail(path: Path) -> bool:
     return True
 
 
+def _scan_history_file(path: Path, *, on_record: Callable[[dict[str, Any]], None]) -> None:
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid JSON in {path.name}:{line_no}: {exc}") from exc
+            if not isinstance(record, dict):
+                raise ValueError(f"non-object record in {path.name}:{line_no}")
+            on_record(record)
+
+
+def _scan_history_files(
+    paths: Iterable[Path],
+    *,
+    repair_tails: bool,
+    on_record: Callable[[dict[str, Any]], None],
+) -> int:
+    repaired = 0
+    for path in paths:
+        if repair_tails and _repair_torn_tail(path):
+            repaired += 1
+        _scan_history_file(path, on_record=on_record)
+    return repaired
+
+
 def _scan_records(
     chat_dir: Path,
     *,
     repair_tails: bool,
     on_record: Callable[[dict[str, Any]], None],
 ) -> int:
-    repaired = 0
-    for path in _iter_history_files(chat_dir):
-        if repair_tails and _repair_torn_tail(path):
-            repaired += 1
-        with path.open("r", encoding="utf-8") as handle:
-            for line_no, line in enumerate(handle, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"invalid JSON in {path.name}:{line_no}: {exc}") from exc
-                if not isinstance(record, dict):
-                    raise ValueError(f"non-object record in {path.name}:{line_no}")
-                on_record(record)
-    return repaired
+    return _scan_history_files(_iter_history_files(chat_dir), repair_tails=repair_tails, on_record=on_record)
 
 
 def _load_records(chat_dir: Path, *, repair_tails: bool = True) -> tuple[list[dict[str, Any]], int]:
@@ -1922,20 +2084,50 @@ def _has_unclassified_pending_deletion(state: ChatState) -> bool:
     return any(pending.classification is None for pending in state.pending_deletions.values())
 
 
+def _scan_chat_live_pending_summary(chat_dir: Path, *, repair_tails: bool) -> _ChatStreamScanSummary:
+    tracker = _LivePendingDeletionTracker()
+    record_count = 0
+    unexplained_count = 0
+    with _chat_lock(chat_dir):
+        paths = _iter_history_files(chat_dir)
+
+        def _consume(record: dict[str, Any]) -> None:
+            nonlocal record_count, unexplained_count
+            record_count += 1
+            event_type = str(record.get("event_type") or "")
+            if event_type == "message.deleted":
+                tracker.observe_deleted(str(record.get("event_id") or ""))
+                return
+            if event_type != "deletion.classified":
+                return
+            if str(record.get("classification") or "") == "unexplained":
+                unexplained_count += 1
+            tracker.observe_classified(str(record.get("deleted_event_id") or ""))
+
+        repaired_files = _scan_history_files(paths, repair_tails=repair_tails, on_record=_consume)
+        if repaired_files:
+            _invalidate_chat_cache(chat_dir)
+        file_snapshot = _history_file_snapshot(paths)
+    return _ChatStreamScanSummary(
+        file_snapshot=file_snapshot,
+        record_count=record_count,
+        pending_count=tracker.pending_count,
+        unexplained_count=unexplained_count,
+        repaired_files=repaired_files,
+        max_live_pending=tracker.max_live_pending,
+    )
+
+
 def _collect_prune_inventory(now: datetime) -> PruneInventory:
     total_bytes = 0
     active_files: list[Path] = []
     protected_closed_files: list[Path] = []
     unprotected_closed_files: list[Path] = []
     for chat_dir in _iter_chat_dirs():
-        with _chat_lock(chat_dir):
-            state, _ = _load_chat_state(chat_dir)
-            chat_files = _iter_history_files(chat_dir)
-        protect_closed = _has_unclassified_pending_deletion(state)
-        for path in chat_files:
-            if not path.exists():
-                continue
-            total_bytes += path.stat().st_size
+        summary = _scan_chat_live_pending_summary(chat_dir, repair_tails=True)
+        protect_closed = summary.pending_count > 0
+        for path, size in summary.file_snapshot:
+            total_bytes += size
             if _is_active_month_file(path, now):
                 active_files.append(path)
             elif protect_closed:
@@ -1973,23 +2165,22 @@ def collect_history_stats(*, now: datetime | None = None) -> HistoryStats:
     record_count = 0
     pending_count = 0
     unexplained_count = 0
-    files = _history_file_bytes()
-    total_bytes = sum(path.stat().st_size for path in files if path.exists())
-    for chat_dir in _iter_chat_dirs():
-        chat_count += 1
-        with _chat_lock(chat_dir):
-            state, _ = _load_chat_state(chat_dir)
-        record_count += state.record_count
-        for pending in state.pending_deletions.values():
-            if pending.classification is None:
-                pending_count += 1
-            elif pending.classification.get("classification") == "unexplained":
-                unexplained_count += 1
+    file_count = 0
+    total_bytes = 0
+    with _root_lock():
+        for chat_dir in _iter_chat_dirs():
+            chat_count += 1
+            summary = _scan_chat_live_pending_summary(chat_dir, repair_tails=False)
+            file_count += summary.file_count
+            total_bytes += summary.total_bytes
+            record_count += summary.record_count
+            pending_count += summary.pending_count
+            unexplained_count += summary.unexplained_count
     max_bytes = history_config_from_env().max_bytes
     cap_exceeded = total_bytes > max_bytes
     return HistoryStats(
         chat_count=chat_count,
-        file_count=len(files),
+        file_count=file_count,
         record_count=record_count,
         total_bytes=total_bytes,
         pending_count=pending_count,
@@ -2099,61 +2290,103 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
     return result
 
 
+def _iter_duplicate_event_id_warnings(duplicate_tracker: _EventIdDuplicateTracker) -> Iterator[tuple[int, str]]:
+    yield from duplicate_tracker.iter_duplicate_warnings()
+
+
 def verify_history(*, repair_tails: bool = False, now: datetime | None = None) -> VerificationResult:
     current = now or _utcnow()
     errors: list[str] = []
-    warnings: list[str] = []
+    warning_entries: list[tuple[int, int, int, str]] = []
+    warning_serial = 0
     chat_count = 0
     file_count = 0
     record_count = 0
     repaired_files = 0
-    seen_global: set[str] = set()
-    for chat_dir in _iter_chat_dirs():
-        chat_count += 1
-        with _chat_lock(chat_dir):
-            try:
-                records, repaired = _load_records(chat_dir, repair_tails=repair_tails)
-            except Exception as exc:  # noqa: BLE001 - collect and continue
-                errors.append(f"{chat_dir}: {exc}")
-                continue
-        repaired_files += repaired
-        file_count += len(_iter_history_files(chat_dir))
-        state = _build_chat_state(records)
-        record_count += state.record_count
-        for record in records:
-            event_id = str(record.get("event_id") or "")
-            if not event_id:
-                errors.append(f"{chat_dir}: missing event_id")
-                continue
-            if event_id in seen_global:
-                warnings.append(f"{chat_dir}: duplicate event_id {event_id}")
-            seen_global.add(event_id)
-            if record.get("schema_version") != SCHEMA_VERSION:
-                warnings.append(f"{chat_dir}: unsupported schema_version {record.get('schema_version')}")
-            if record.get("event_type") == "deletion.classified":
-                deleted_event_id = str(record.get("deleted_event_id") or "")
-                pending = state.pending_deletions.get(deleted_event_id)
-                if pending is None or pending.deleted_event is None:
-                    deleted_observed_at = _parse_datetime(record.get("deleted_observed_at"))
-                    if deleted_observed_at is None:
-                        warnings.append(
-                            f"{chat_dir}: classification {event_id} refers to a missing tombstone"
-                        )
-                    else:
-                        warnings.append(
-                            f"{chat_dir}: classification {event_id} refers to tombstone {deleted_event_id} "
-                            f"outside the retained archive"
-                        )
-        for path in _iter_history_files(chat_dir):
-            if not _is_active_month_file(path, current):
-                continue
-            if not _file_has_complete_final_line(path):
-                errors.append(f"{chat_dir}: torn tail remains in {path.name}")
-    stats = collect_history_stats(now=current)
-    if stats.cap_exceeded:
-        warnings.append(
-            f"history size cap exceeded by {stats.cap_shortfall_bytes} bytes"
-        )
+    total_bytes = 0
+    duplicate_tracker = _EventIdDuplicateTracker(chunk_limit=VERIFY_EVENT_ID_CHUNK_RECORDS)
+
+    def _record_warning(ordinal: int, phase: int, message: str) -> None:
+        nonlocal warning_serial
+        warning_entries.append((ordinal, phase, warning_serial, message))
+        warning_serial += 1
+
+    try:
+        with _root_lock():
+            for chat_dir in _iter_chat_dirs():
+                chat_count += 1
+                tracker = _LivePendingDeletionTracker()
+                with _chat_lock(chat_dir):
+                    paths = _iter_history_files(chat_dir)
+                    file_count += len(paths)
+                    try:
+                        def _consume(record: dict[str, Any]) -> None:
+                            nonlocal record_count
+                            ordinal = record_count
+                            record_count += 1
+                            event_id = str(record.get("event_id") or "")
+                            if not event_id:
+                                errors.append(f"{chat_dir}: missing event_id")
+                                return
+                            duplicate_tracker.add(event_id=event_id, chat_label=str(chat_dir), ordinal=ordinal)
+                            if record.get("schema_version") != SCHEMA_VERSION:
+                                _record_warning(
+                                    ordinal,
+                                    1,
+                                    f"{chat_dir}: unsupported schema_version {record.get('schema_version')}",
+                                )
+                            event_type = str(record.get("event_type") or "")
+                            if event_type == "message.deleted":
+                                tracker.observe_deleted(event_id)
+                                return
+                            if event_type != "deletion.classified":
+                                return
+                            deleted_event_id = str(record.get("deleted_event_id") or "")
+                            if tracker.observe_classified(deleted_event_id):
+                                return
+                            deleted_observed_at = _parse_datetime(record.get("deleted_observed_at"))
+                            if deleted_observed_at is None:
+                                _record_warning(
+                                    ordinal,
+                                    2,
+                                    f"{chat_dir}: classification {event_id} refers to a missing tombstone",
+                                )
+                                return
+                            _record_warning(
+                                ordinal,
+                                2,
+                                f"{chat_dir}: classification {event_id} refers to tombstone {deleted_event_id} "
+                                f"outside the retained archive",
+                            )
+
+                        repaired = _scan_history_files(paths, repair_tails=repair_tails, on_record=_consume)
+                    except Exception as exc:  # noqa: BLE001 - collect and continue
+                        total_bytes += sum(size for _, size in _history_file_snapshot(paths))
+                        errors.append(f"{chat_dir}: {exc}")
+                        continue
+                    if repaired:
+                        _invalidate_chat_cache(chat_dir)
+                    repaired_files += repaired
+                    file_snapshot = _history_file_snapshot(paths)
+                    total_bytes += sum(size for _, size in file_snapshot)
+                    for path, _size in file_snapshot:
+                        if not _is_active_month_file(path, current):
+                            continue
+                        if not _file_has_complete_final_line(path):
+                            errors.append(f"{chat_dir}: torn tail remains in {path.name}")
+
+        try:
+            for ordinal, message in _iter_duplicate_event_id_warnings(duplicate_tracker):
+                _record_warning(ordinal, 0, message)
+        except Exception as exc:  # noqa: BLE001 - collect and continue
+            errors.append(f"duplicate event_id audit failed: {exc}")
+    finally:
+        duplicate_tracker.close()
+
+    warnings = [message for _ordinal, _phase, _serial, message in sorted(warning_entries)]
+    max_bytes = history_config_from_env().max_bytes
+    if total_bytes > max_bytes:
+        warnings.append(f"history size cap exceeded by {total_bytes - max_bytes} bytes")
     return VerificationResult(
         ok=not errors,
         chat_count=chat_count,

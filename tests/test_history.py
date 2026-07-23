@@ -2621,6 +2621,660 @@ async def test_verify_warns_not_errors_when_retention_prunes_old_delete_tombston
     assert any("outside the retained archive" in warning for warning in verification.warnings)
 
 
+def test_collect_history_stats_streams_bounded_snapshot_without_full_load(plugin, monkeypatch: pytest.MonkeyPatch):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    records: list[dict[str, Any]] = []
+    update_id = 1
+
+    for business_id, chat_id, count in (("business-123", 991, 3000), ("business-456", 992, 1000)):
+        for index in range(count):
+            observed_at = base + timedelta(seconds=index)
+            records.append(
+                make_legacy_history_record(
+                    plugin,
+                    event_type="message.created",
+                    source="business_message",
+                    observed_at=observed_at,
+                    telegram_update_id=update_id,
+                    business_connection_id=business_id,
+                    chat_id=chat_id,
+                    message_id=10000 + index,
+                    message_at=observed_at,
+                    sender_id=2000,
+                    direction="inbound",
+                    text=f"{business_id} ordinary {index}",
+                )
+            )
+            update_id += 1
+
+    deleted_one = make_legacy_history_record(
+        plugin,
+        event_type="message.deleted",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=501,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+    )
+    update_id += 1
+    deleted_two = make_legacy_history_record(
+        plugin,
+        event_type="message.deleted",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1, seconds=1),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=502,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+    )
+    update_id += 1
+    classified_two = make_legacy_history_record(
+        plugin,
+        event_type="deletion.classified",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1, seconds=31),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=502,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+        deleted_event_id=str(deleted_two["event_id"]),
+        classification="unexplained",
+        classification_reason="no_strong_match",
+        evaluated_at=base + timedelta(hours=1, seconds=31),
+        deleted_observed_at=base + timedelta(hours=1, seconds=1),
+    )
+    update_id += 1
+    deleted_three = make_legacy_history_record(
+        plugin,
+        event_type="message.deleted",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1, seconds=2),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=503,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+    )
+    update_id += 1
+    classified_three = make_legacy_history_record(
+        plugin,
+        event_type="deletion.classified",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1, seconds=32),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=503,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+        deleted_event_id=str(deleted_three["event_id"]),
+        classification="likely_duplicate",
+        classification_reason="normalized_exact_duplicate",
+        evaluated_at=base + timedelta(hours=1, seconds=32),
+        deleted_observed_at=base + timedelta(hours=1, seconds=2),
+    )
+
+    append_raw_history_records(plugin, *records, deleted_one, deleted_two, classified_two, deleted_three, classified_three)
+
+    total_bytes = (
+        load_history_file(plugin, business_id="business-123", chat_id=991).stat().st_size
+        + load_history_file(plugin, business_id="business-456", chat_id=992).stat().st_size
+    )
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES", str(total_bytes - 7))
+
+    monkeypatch.setattr(
+        history,
+        "_load_records",
+        lambda *_args, **_kwargs: pytest.fail("_load_records must not be used by history stats"),
+    )
+    monkeypatch.setattr(
+        history,
+        "_load_chat_state",
+        lambda *_args, **_kwargs: pytest.fail("_load_chat_state must not be used by history stats"),
+    )
+    monkeypatch.setattr(
+        history,
+        "_build_chat_state",
+        lambda *_args, **_kwargs: pytest.fail("_build_chat_state must not be used by history stats"),
+    )
+
+    summary = history._scan_chat_live_pending_summary(history._history_chat_dir_path("business-123", 991), repair_tails=False)
+    stats = history.collect_history_stats()
+
+    assert summary.record_count == 3005
+    assert summary.pending_count == 1
+    assert summary.unexplained_count == 1
+    assert summary.max_live_pending == 2
+    assert stats.chat_count == 2
+    assert stats.file_count == 2
+    assert stats.record_count == 4005
+    assert stats.pending_count == 1
+    assert stats.unexplained_count == 1
+    assert stats.total_bytes == total_bytes
+    assert stats.cap_exceeded is True
+    assert stats.cap_shortfall_bytes == 7
+
+
+@pytest.mark.asyncio
+async def test_collect_history_stats_holds_root_snapshot_against_concurrent_capture_and_prune(
+    enabled_history,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    plugin = enabled_history
+    history = plugin._history_support
+    june_time = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
+    july_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    await history.observe_ptb_update(
+        make_business_text_update(text="old month", message_id=77, update_id=1, date=june_time),
+        bot=FakeBot(),
+        now=june_time,
+    )
+    await history.observe_ptb_update(
+        make_business_text_update(text="current month", message_id=78, update_id=2, date=july_time),
+        bot=FakeBot(),
+        now=july_time,
+    )
+
+    june_file = load_history_file(plugin, month="2026-06.jsonl")
+    july_file = load_history_file(plugin, month="2026-07.jsonl")
+    expected_bytes = june_file.stat().st_size + july_file.stat().st_size
+    original_open = Path.open
+    stats_selected = threading.Event()
+    allow_stats_open = threading.Event()
+    stats_done = threading.Event()
+    capture_done = threading.Event()
+    prune_done = threading.Event()
+    results: dict[str, Any] = {}
+
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "10")
+
+    def _blocking_open(path_obj: Path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if path_obj == july_file and "r" in mode:
+            stats_selected.set()
+            assert allow_stats_open.wait(timeout=5)
+        return original_open(path_obj, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _blocking_open)
+
+    def _stats() -> None:
+        try:
+            results["stats"] = history.collect_history_stats()
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["stats_exc"] = exc
+        finally:
+            stats_done.set()
+
+    def _capture() -> None:
+        try:
+            results["capture"] = asyncio.run(
+                history.observe_ptb_update(
+                    make_business_text_update(
+                        text="new chat while stats snapshots",
+                        business_id="business-456",
+                        chat_id=992,
+                        message_id=88,
+                        update_id=3,
+                        date=july_time + timedelta(seconds=1),
+                    ),
+                    bot=FakeBot(),
+                    now=july_time + timedelta(seconds=1),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["capture_exc"] = exc
+        finally:
+            capture_done.set()
+
+    def _prune() -> None:
+        try:
+            results["maintenance"] = history.maintain_history(now=july_time)
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["prune_exc"] = exc
+        finally:
+            prune_done.set()
+
+    stats_thread = threading.Thread(target=_stats)
+    capture_thread = threading.Thread(target=_capture)
+    prune_thread = threading.Thread(target=_prune)
+    stats_thread.start()
+    assert stats_selected.wait(timeout=5)
+
+    capture_thread.start()
+    prune_thread.start()
+    assert capture_done.wait(timeout=0.1) is False
+    assert prune_done.wait(timeout=0.1) is False
+
+    allow_stats_open.set()
+    stats_thread.join(timeout=5)
+    capture_thread.join(timeout=5)
+    prune_thread.join(timeout=5)
+
+    assert not stats_thread.is_alive()
+    assert not capture_thread.is_alive()
+    assert not prune_thread.is_alive()
+    assert stats_done.is_set()
+    assert capture_done.is_set()
+    assert prune_done.is_set()
+    assert "stats_exc" not in results
+    assert "capture_exc" not in results
+    assert "prune_exc" not in results
+    assert results["capture"] is True
+    assert results["maintenance"].pruned_files == 1
+
+    stats = results["stats"]
+    assert stats.chat_count == 1
+    assert stats.file_count == 2
+    assert stats.record_count == 2
+    assert stats.pending_count == 0
+    assert stats.unexplained_count == 0
+    assert stats.total_bytes == expected_bytes
+
+
+def test_verify_history_streams_bounded_archive_and_detects_duplicates(plugin, monkeypatch: pytest.MonkeyPatch):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    records: list[dict[str, Any]] = []
+    update_id = 1
+
+    for index in range(2496):
+        observed_at = base + timedelta(seconds=index)
+        records.append(
+            make_legacy_history_record(
+                plugin,
+                event_type="message.created",
+                source="business_message",
+                observed_at=observed_at,
+                telegram_update_id=update_id,
+                business_connection_id="business-123",
+                chat_id=991,
+                message_id=20000 + index,
+                message_at=observed_at,
+                sender_id=2000,
+                direction="inbound",
+                text=f"verify ordinary {index}",
+            )
+        )
+        update_id += 1
+
+    deleted_good = make_legacy_history_record(
+        plugin,
+        event_type="message.deleted",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=500,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+    )
+    update_id += 1
+    classified_good = make_legacy_history_record(
+        plugin,
+        event_type="deletion.classified",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1, seconds=20),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=500,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+        deleted_event_id=str(deleted_good["event_id"]),
+        classification="likely_duplicate",
+        classification_reason="normalized_exact_duplicate",
+        evaluated_at=base + timedelta(hours=1, seconds=20),
+        deleted_observed_at=base + timedelta(hours=1),
+    )
+    update_id += 1
+    filler = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(hours=1, seconds=21),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=6000,
+        message_at=base + timedelta(hours=1, seconds=21),
+        sender_id=2000,
+        direction="inbound",
+        text="alignment filler",
+    )
+    update_id += 1
+
+    dup_within_one = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(hours=2),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=7001,
+        message_at=base + timedelta(hours=2),
+        sender_id=2000,
+        direction="inbound",
+        text="duplicate within one",
+    )
+    update_id += 1
+    dup_within_two = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(hours=2, seconds=1),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=7002,
+        message_at=base + timedelta(hours=2, seconds=1),
+        sender_id=2000,
+        direction="inbound",
+        text="duplicate within two",
+    )
+    dup_within_two["event_id"] = dup_within_one["event_id"]
+    update_id += 1
+    schema_warning = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(hours=2, seconds=2),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=7003,
+        message_at=base + timedelta(hours=2, seconds=2),
+        sender_id=2000,
+        direction="inbound",
+        text="unsupported schema",
+    )
+    schema_warning["schema_version"] = 999
+    update_id += 1
+    dup_across_one = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(hours=2, seconds=3),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=7004,
+        message_at=base + timedelta(hours=2, seconds=3),
+        sender_id=2000,
+        direction="inbound",
+        text="duplicate across one",
+    )
+    update_id += 1
+    outside_retained = make_legacy_history_record(
+        plugin,
+        event_type="deletion.classified",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=2, seconds=4),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=7005,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+        deleted_event_id="outside-retained",
+        classification="unexplained",
+        classification_reason="no_strong_match",
+        evaluated_at=base + timedelta(hours=2, seconds=4),
+        deleted_observed_at=base + timedelta(hours=1, seconds=59),
+    )
+    update_id += 1
+    unique_filler = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(hours=2, seconds=5),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=7006,
+        message_at=base + timedelta(hours=2, seconds=5),
+        sender_id=2000,
+        direction="inbound",
+        text="chunk filler",
+    )
+    update_id += 1
+    dup_across_two = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(hours=2, seconds=6),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=7007,
+        message_at=base + timedelta(hours=2, seconds=6),
+        sender_id=2000,
+        direction="inbound",
+        text="duplicate across two",
+    )
+    dup_across_two["event_id"] = dup_across_one["event_id"]
+    update_id += 1
+    missing_event_id = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(hours=2, seconds=7),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=7008,
+        message_at=base + timedelta(hours=2, seconds=7),
+        sender_id=2000,
+        direction="inbound",
+        text="missing event id",
+    )
+    missing_event_id.pop("event_id")
+    update_id += 1
+    missing_tombstone = make_legacy_history_record(
+        plugin,
+        event_type="deletion.classified",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=2, seconds=8),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=7009,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+        deleted_event_id="missing-tombstone",
+        classification="unexplained",
+        classification_reason="no_strong_match",
+        evaluated_at=base + timedelta(hours=2, seconds=8),
+    )
+
+    records.extend(
+        [
+            deleted_good,
+            classified_good,
+            filler,
+            dup_within_one,
+            dup_within_two,
+            schema_warning,
+            dup_across_one,
+            outside_retained,
+            unique_filler,
+            dup_across_two,
+            missing_event_id,
+            missing_tombstone,
+        ]
+    )
+    append_raw_history_records(plugin, *records)
+
+    total_bytes = load_history_file(plugin).stat().st_size
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES", str(total_bytes - 5))
+    monkeypatch.setattr(history, "VERIFY_EVENT_ID_CHUNK_RECORDS", 3)
+    monkeypatch.setattr(
+        history,
+        "_load_records",
+        lambda *_args, **_kwargs: pytest.fail("_load_records must not be used by history verify"),
+    )
+    monkeypatch.setattr(
+        history,
+        "_load_chat_state",
+        lambda *_args, **_kwargs: pytest.fail("_load_chat_state must not be used by history verify"),
+    )
+    monkeypatch.setattr(
+        history,
+        "_build_chat_state",
+        lambda *_args, **_kwargs: pytest.fail("_build_chat_state must not be used by history verify"),
+    )
+
+    verification = history.verify_history()
+
+    assert verification.ok is False
+    assert verification.chat_count == 1
+    assert verification.file_count == 1
+    assert verification.record_count == len(records)
+    assert verification.repaired_files == 0
+    assert any("missing event_id" in error for error in verification.errors)
+    assert sum("duplicate event_id" in warning for warning in verification.warnings) == 2
+    assert any("unsupported schema_version 999" in warning for warning in verification.warnings)
+    assert any("outside the retained archive" in warning for warning in verification.warnings)
+    assert any("missing tombstone" in warning for warning in verification.warnings)
+    assert any("history size cap exceeded by 5 bytes" in warning for warning in verification.warnings)
+    assert not list(history.history_root().glob(f"{history.VERIFY_EVENT_ID_TEMP_DIR_PREFIX}*"))
+
+
+def test_verify_history_reports_active_month_torn_tail_without_repair(plugin):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    record = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base,
+        telegram_update_id=1,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="inbound",
+        text="tail without newline",
+    )
+    append_raw_history_records(plugin, record)
+
+    history_file = load_history_file(plugin)
+    with history_file.open("rb+") as handle:
+        handle.seek(-1, os.SEEK_END)
+        handle.truncate()
+
+    verification = history.verify_history()
+
+    assert verification.ok is False
+    assert verification.record_count == 1
+    assert verification.repaired_files == 0
+    assert any(f"torn tail remains in {history_file.name}" in error for error in verification.errors)
+
+
+def test_verify_history_repairs_partial_torn_tail_without_full_load(plugin, monkeypatch: pytest.MonkeyPatch):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    record = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base,
+        telegram_update_id=1,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="inbound",
+        text="repair torn tail",
+    )
+    append_raw_history_records(plugin, record)
+
+    history_file = load_history_file(plugin)
+    with history_file.open("ab") as handle:
+        handle.write(b"{\"event_id\":\"broken\"")
+
+    monkeypatch.setattr(
+        history,
+        "_load_records",
+        lambda *_args, **_kwargs: pytest.fail("_load_records must not be used by history verify repair"),
+    )
+    monkeypatch.setattr(
+        history,
+        "_load_chat_state",
+        lambda *_args, **_kwargs: pytest.fail("_load_chat_state must not be used by history verify repair"),
+    )
+    monkeypatch.setattr(
+        history,
+        "_build_chat_state",
+        lambda *_args, **_kwargs: pytest.fail("_build_chat_state must not be used by history verify repair"),
+    )
+
+    verification = history.verify_history(repair_tails=True)
+
+    assert verification.ok is True
+    assert verification.record_count == 1
+    assert verification.repaired_files == 1
+    assert history_file.read_bytes().endswith(b"\n")
+    assert len(history_file.read_text(encoding="utf-8").splitlines()) == 1
+    assert not list(history.history_root().glob(f"{history.VERIFY_EVENT_ID_TEMP_DIR_PREFIX}*"))
+
+
+def test_verify_history_cleans_duplicate_temp_files_when_duplicate_audit_errors(plugin, monkeypatch: pytest.MonkeyPatch):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    record = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base,
+        telegram_update_id=1,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="inbound",
+        text="duplicate audit cleanup",
+    )
+    append_raw_history_records(plugin, record)
+
+    monkeypatch.setattr(history, "VERIFY_EVENT_ID_CHUNK_RECORDS", 1)
+
+    def _boom(duplicate_tracker):
+        duplicate_tracker._flush_chunk()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(history, "_iter_duplicate_event_id_warnings", _boom)
+
+    verification = history.verify_history()
+
+    assert verification.ok is False
+    assert any("duplicate event_id audit failed: boom" in error for error in verification.errors)
+    assert not list(history.history_root().glob(f"{history.VERIFY_EVENT_ID_TEMP_DIR_PREFIX}*"))
+
+
 def _build_history_parser(plugin):
     parser = argparse.ArgumentParser(prog="hermes telegram-business")
     plugin._history_support.setup_cli(parser)
