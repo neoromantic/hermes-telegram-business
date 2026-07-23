@@ -16,6 +16,7 @@
 - Add additive `chat_profile`/`sender_profile` snapshots plus a rebuildable `contacts.json` directory with aliases, counts, and current contact resolution data.
 - Keep history storage and CLI bounded with streamed JSONL scans, catalog-first contact lookup, `--until`, bounded global search, closed-partition pruning, and terminal-safe text rendering.
 - Fix the raw Business observer path so Hermes startup handling with `Update.ALL_TYPES` also records deleted Business updates.
+- Rebuild the derived contact catalog from retained canonical JSONL after prune/recovery, remove identities when no retained evidence remains, and verify freshness from canonical file metadata even if the dirty marker could not be written.
 
 ## 0.6.1 - 2026-07-18
 

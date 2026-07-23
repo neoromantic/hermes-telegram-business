@@ -26,7 +26,7 @@ Use this plugin skill when you need to inspect or maintain the opt-in Telegram B
 - History v1 direction values are `inbound`, `outbound`, or `unknown`.
 - Telegram-side deletions keep earlier text intact; they append tombstones plus a later classification event.
 - Create/edit records also carry additive `chat_profile` and `sender_profile` snapshots when PTB already exposes those safe fields.
-- `contacts.json` is a tiny rebuildable directory: current profile, aliases, IDs, ranges, and lightweight counts. It is not the canonical message store.
+- `contacts.json` is a tiny rebuildable directory: current profile, aliases, IDs, ranges, lightweight counts, and a cheap canonical freshness signature. It is not the canonical message store.
 - Hermes currently starts both polling and webhook paths with `Update.ALL_TYPES`, and PTB 22.6 already exposes `business_message`, `edited_business_message`, and `deleted_business_messages`. Deleted Business updates still require the plugin's registered raw handler because they do not provide an effective message.
 
 ## Environment
@@ -81,6 +81,6 @@ hermes telegram-business history maintain
 
 Routine delayed classification does not depend on `maintain`; the runtime scheduler handles exact due-time classification, and startup maintenance recovers overdue or still-pending deletions after a restart. `maintain` remains the safe manual path for recovery plus closed-partition retention/size pruning without deleting active-month files.
 
-Automatic retention and size pruning physically remove only whole closed monthly partitions. The active month is preserved even if that leaves the configured cap short. Contact identity and aliases may remain in `contacts.json` after old message partitions are pruned. No record-level or right-to-erasure command ships in v1.
+Automatic retention and size pruning physically remove only whole closed monthly partitions. The active month is preserved even if that leaves the configured cap short. `contacts.json` is rebuilt from the retained canonical JSONL, so identities and aliases disappear once no retained partition still contains evidence for them. No record-level or right-to-erasure command ships in v1.
 
 Human-readable CLI output escapes carriage returns, tabs, ESC/control bytes, and DEL in stored text while keeping Unicode readable. JSONL export remains the raw machine-readable stream.

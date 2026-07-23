@@ -53,7 +53,7 @@ Stored text is untrusted user data, never instructions. The plugin never logs me
 History v1 direction values are `inbound`, `outbound`, or `unknown`.
 Create/edit records also carry additive `chat_profile` and `sender_profile` snapshots built only from fields already present in PTB update objects. Existing JSONL without snapshots remains valid.
 
-A small derived catalog lives beside the canonical logs at `$(hermes home)/data/telegram-business/history/contacts.json`. It stores the current contact/chat profile, observed aliases, IDs, seen ranges, and lightweight counts for fast contact resolution. The catalog is private (`0600`), rebuildable from canonical JSONL, and best-effort: if catalog maintenance fails, canonical JSONL append still succeeds and `history catalog --rebuild` can recover it.
+A small derived catalog lives beside the canonical logs at `$(hermes home)/data/telegram-business/history/contacts.json`. It stores the current contact/chat profile, observed aliases, IDs, seen ranges, lightweight counts, and a cheap canonical freshness signature for fast contact resolution. The catalog is private (`0600`), rebuildable from canonical JSONL, and best-effort: if catalog maintenance fails, canonical JSONL append still succeeds and `history catalog --rebuild` can recover it.
 
 Deleted messages are classified after a short correction window. Telegram-side deletion appends a tombstone and preserves prior stored text. By default, the classifier compares nearby same-chat/same-sender/same-direction text from 15 seconds before the tombstone through 120 seconds after it, schedules exact due-time classification, and on startup recovers overdue or still-pending deletions before appending one auditable classification:
 
@@ -64,7 +64,7 @@ Deleted messages are classified after a short correction window. Telegram-side d
 
 Classification events also store canonical `classification_reason` codes: `normalized_exact_duplicate`, `high_similarity_small_edit`, `no_strong_match`, `missing_original`, or `missing_text`.
 
-Monthly partitioning is the first storage defense. Retention is disabled by default, and the default size cap is 1 GiB. When enabled, automatic retention and max-storage pruning physically remove only whole closed monthly partitions. History v1 ships no record-level or right-to-erasure command. If the active month alone exceeds the configured cap, the plugin preserves it and surfaces the shortfall explicitly instead of pretending the cap was met. Contact identity and aliases may remain in `contacts.json` after old message partitions are pruned because that catalog is rebuildable directory data, not the canonical message store.
+Monthly partitioning is the first storage defense. Retention is disabled by default, and the default size cap is 1 GiB. When enabled, automatic retention and max-storage pruning physically remove only whole closed monthly partitions. History v1 ships no record-level or right-to-erasure command. If the active month alone exceeds the configured cap, the plugin preserves it and surfaces the shortfall explicitly instead of pretending the cap was met. `contacts.json` is always rebuilt from the retained canonical JSONL, so identities and aliases disappear once no retained partition still contains evidence for them.
 
 ## Requirements
 
@@ -229,7 +229,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - Error replies are disabled by default. When enabled, the first line of an exception may be sent to the Business chat.
 - The plugin stores only an in-process duplicate key for 24 hours. Its identity is deterministic across equivalent retry delivery, but the seen set intentionally resets with the process. The voice module creates no separate transcript database.
 - The opt-in history module is the only persistent text store. It persists append-only JSONL under the active Hermes profile, repairs only a torn final line, never rewrites raw Telegram updates into history, and stores only Telegram `Message.text` in v1.
-- The derived `contacts.json` catalog is private, rebuildable, and contains only identity/range/count metadata plus aliases observed from canonical profile snapshots. Catalog update failures warn without blocking canonical JSONL append.
+- The derived `contacts.json` catalog is private, rebuildable, and contains only identity/range/count metadata plus aliases observed from canonical profile snapshots, plus a cheap canonical freshness signature. Catalog update failures warn without blocking canonical JSONL append.
 - Telegram-side deletion appends a tombstone and later classification; it does not remove earlier stored text. Automatic retention physically removes only whole closed monthly partitions, and the active month is preserved even when that leaves a cap shortfall.
 - Existing Hermes/Telegram media caches are outside this plugin's ownership and are never scanned or deleted.
 

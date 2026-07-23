@@ -7,6 +7,7 @@ dependency surface beyond Hermes/PTB at the integration boundary.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import heapq
 import inspect
@@ -69,6 +70,7 @@ CATALOG_FILENAME = "contacts.json"
 CATALOG_DIRTY_FILENAME = ".contacts.json.dirty"
 KNOWN_CHAT_TYPES = frozenset({"private", "group", "supergroup", "channel"})
 DEFAULT_HISTORY_CHAT_TYPES = frozenset({"private"})
+CATALOG_REBUILD_RETRIES = 5
 
 _OWNER_CACHE: dict[str, str] = {}
 _CACHE_LOCK = threading.RLock()
@@ -385,6 +387,26 @@ def _ensure_private_file(path: Path) -> None:
         pass
 
 
+def _fsync_parent_directory(path: Path) -> bool:
+    if os.name == "nt":
+        return False
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(str(path.parent), flags)
+    except OSError:
+        raise
+    try:
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            if exc.errno in {errno.EBADF, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+                return False
+            raise
+    finally:
+        os.close(descriptor)
+    return True
+
+
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp_path = path.with_name(path.name + ".tmp")
     with tmp_path.open("w", encoding="utf-8") as handle:
@@ -401,6 +423,7 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         os.chmod(path, 0o600)
     except OSError:
         pass
+    _fsync_parent_directory(path)
 
 
 def _history_chat_dir_path(business_connection_id: Any, chat_id: Any) -> Path:
@@ -704,11 +727,83 @@ def _apply_record_to_catalog_entry(entry: dict[str, Any], record: dict[str, Any]
         entry["unexplained_count"] = int(entry.get("unexplained_count", 0)) + 1
 
 
-def _catalog_from_entries(entries: dict[tuple[str, str], dict[str, Any]], *, generated_at: datetime | None = None) -> dict[str, Any]:
+def _empty_history_source_signature() -> dict[str, Any]:
+    return {
+        "sha256": hashlib.sha256(b"").hexdigest(),
+        "file_count": 0,
+        "total_bytes": 0,
+    }
+
+
+def _history_source_signature() -> dict[str, Any]:
+    root = history_root()
+    if not root.exists():
+        return _empty_history_source_signature()
+    digest = hashlib.sha256()
+    file_count = 0
+    total_bytes = 0
+    for chat_dir in _iter_chat_dirs():
+        for path in _iter_history_files(chat_dir):
+            try:
+                stat_result = path.stat()
+            except OSError:
+                continue
+            digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(stat_result.st_size).encode("ascii"))
+            digest.update(b"\0")
+            digest.update(str(stat_result.st_mtime_ns).encode("ascii"))
+            digest.update(b"\n")
+            file_count += 1
+            total_bytes += stat_result.st_size
+    return {
+        "sha256": digest.hexdigest(),
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+    }
+
+
+def _normalize_history_source_signature(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    sha256 = value.get("sha256")
+    file_count = value.get("file_count")
+    total_bytes = value.get("total_bytes")
+    if not isinstance(sha256, str) or not sha256:
+        return None
+    if not isinstance(file_count, int) or file_count < 0:
+        return None
+    if not isinstance(total_bytes, int) or total_bytes < 0:
+        return None
+    return {
+        "sha256": sha256,
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+    }
+
+
+def _catalog_source_signature(catalog: dict[str, Any]) -> dict[str, Any] | None:
+    return _normalize_history_source_signature(catalog.get("source_signature"))
+
+
+def _catalog_is_fresh_locked(catalog: dict[str, Any]) -> bool:
+    stored_signature = _catalog_source_signature(catalog)
+    if stored_signature is None:
+        return False
+    return stored_signature == _history_source_signature()
+
+
+def _catalog_from_entries(
+    entries: dict[tuple[str, str], dict[str, Any]],
+    *,
+    generated_at: datetime | None = None,
+    source_signature: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     contacts = sorted(entries.values(), key=lambda entry: (str(entry.get("business_connection_id")), str(entry.get("chat_id"))))
     return {
         "schema_version": CATALOG_SCHEMA_VERSION,
         "generated_at": _isoformat_utc(generated_at or _utcnow()),
+        "source_signature": _normalize_history_source_signature(source_signature) or _history_source_signature(),
         "contact_count": len(contacts),
         "contacts": contacts,
     }
@@ -755,6 +850,7 @@ def _clear_catalog_dirty_locked() -> None:
     if not path.exists():
         return
     path.unlink()
+    _fsync_parent_directory(path)
 
 
 def _write_catalog_locked(catalog: dict[str, Any]) -> None:
@@ -763,26 +859,31 @@ def _write_catalog_locked(catalog: dict[str, Any]) -> None:
 
 
 def _rebuild_catalog_locked() -> dict[str, Any]:
-    entries: dict[tuple[str, str], dict[str, Any]] = {}
-    for chat_dir in _iter_chat_dirs():
-        with _chat_lock(chat_dir):
-            _scan_records(
-                chat_dir,
-                repair_tails=True,
-                on_record=lambda record: _apply_record_to_catalog_entry(
-                    entries.setdefault(
-                        _catalog_contact_key(record.get("business_connection_id"), record.get("chat_id")),
-                        _empty_catalog_entry(
-                            business_connection_id=record.get("business_connection_id"),
-                            chat_id=record.get("chat_id"),
+    for _attempt in range(CATALOG_REBUILD_RETRIES):
+        source_signature = _history_source_signature()
+        entries: dict[tuple[str, str], dict[str, Any]] = {}
+        for chat_dir in _iter_chat_dirs():
+            with _chat_lock(chat_dir):
+                _scan_records(
+                    chat_dir,
+                    repair_tails=True,
+                    on_record=lambda record: _apply_record_to_catalog_entry(
+                        entries.setdefault(
+                            _catalog_contact_key(record.get("business_connection_id"), record.get("chat_id")),
+                            _empty_catalog_entry(
+                                business_connection_id=record.get("business_connection_id"),
+                                chat_id=record.get("chat_id"),
+                            ),
                         ),
+                        record,
                     ),
-                    record,
-                ),
-            )
-    catalog = _catalog_from_entries(entries)
-    _write_catalog_locked(catalog)
-    return catalog
+                )
+        if _history_source_signature() != source_signature:
+            continue
+        catalog = _catalog_from_entries(entries, source_signature=source_signature)
+        _write_catalog_locked(catalog)
+        return catalog
+    raise RuntimeError("canonical history changed during catalog rebuild")
 
 
 def rebuild_contact_catalog() -> dict[str, Any]:
@@ -810,10 +911,16 @@ def _load_contact_catalog(
             return _rebuild_catalog_locked(), True
         if dirty and rebuild_on_dirty:
             return _rebuild_catalog_locked(), True
+        if not _catalog_is_fresh_locked(catalog):
+            return _rebuild_catalog_locked(), True
         return catalog, False
 
 
-def _refresh_contact_catalog(records: Iterable[dict[str, Any]]) -> None:
+def _refresh_contact_catalog(
+    records: Iterable[dict[str, Any]],
+    *,
+    base_source_signature: dict[str, Any] | None = None,
+) -> None:
     materialized = [record for record in records if isinstance(record, dict)]
     if not materialized:
         return
@@ -826,6 +933,10 @@ def _refresh_contact_catalog(records: Iterable[dict[str, Any]]) -> None:
         if catalog is None:
             _rebuild_catalog_locked()
             return
+        normalized_base_signature = _normalize_history_source_signature(base_source_signature)
+        if normalized_base_signature is not None and _catalog_source_signature(catalog) != normalized_base_signature:
+            _rebuild_catalog_locked()
+            return
         entries = _catalog_contacts_map(catalog)
         for record in materialized:
             entry = entries.setdefault(
@@ -836,7 +947,7 @@ def _refresh_contact_catalog(records: Iterable[dict[str, Any]]) -> None:
                 ),
             )
             _apply_record_to_catalog_entry(entry, record)
-        _write_catalog_locked(_catalog_from_entries(entries))
+        _write_catalog_locked(_catalog_from_entries(entries, source_signature=_history_source_signature()))
 
 
 def _mark_catalog_dirty(reason: str) -> None:
@@ -848,9 +959,10 @@ def _refresh_contact_catalog_best_effort(
     records: Iterable[dict[str, Any]],
     *,
     dirty_reason: str,
+    base_source_signature: dict[str, Any] | None = None,
 ) -> tuple[Exception | None, Exception | None]:
     try:
-        _refresh_contact_catalog(records)
+        _refresh_contact_catalog(records, base_source_signature=base_source_signature)
     except Exception as exc:  # noqa: BLE001 - caller decides how to surface catalog drift
         try:
             _mark_catalog_dirty(dirty_reason)
@@ -872,6 +984,8 @@ def _known_chat_type_from_catalog(
         except ValueError:
             return None
         if catalog is None:
+            return None
+        if not _catalog_is_fresh_locked(catalog):
             return None
         for entry in catalog.get("contacts", []):
             if not isinstance(entry, dict):
@@ -1475,7 +1589,7 @@ def _run_scheduled_deletion_timer(chat_dir_text: str, deleted_event_id: str, due
         _DELETION_TIMERS.pop(key, None)
     try:
         appended_records: list[dict[str, Any]] = []
-        _classify_due_for_chat(
+        _, base_source_signature = _classify_due_for_chat(
             chat_dir,
             history_config_from_env(),
             now=max(_utcnow(), due_at),
@@ -1485,6 +1599,7 @@ def _run_scheduled_deletion_timer(chat_dir_text: str, deleted_event_id: str, due
             refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort(
                 appended_records,
                 dirty_reason="scheduled_classification_refresh_failed",
+                base_source_signature=base_source_signature,
             )
             if refresh_exc is not None:
                 detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
@@ -1561,11 +1676,13 @@ def _classify_due_for_chat(
     *,
     now: datetime | None = None,
     appended_records: list[dict[str, Any]] | None = None,
-) -> int:
+) -> tuple[int, dict[str, Any] | None]:
     current = now or _utcnow()
     with _chat_lock(chat_dir):
+        base_source_signature = _history_source_signature()
         state, _ = _load_chat_state(chat_dir)
-        return _sync_pending_deletions_for_chat(chat_dir, state, config, now=current, appended_records=appended_records)
+        classified = _sync_pending_deletions_for_chat(chat_dir, state, config, now=current, appended_records=appended_records)
+    return classified, base_source_signature if classified else None
 
 
 def _iter_chat_dirs() -> Iterator[Path]:
@@ -1589,6 +1706,15 @@ def _is_active_month_file(path: Path, now: datetime) -> bool:
     if month is None:
         return True
     return month == (now.year, now.month)
+
+
+def _unlink_pruned_partition(path: Path) -> int:
+    with _chat_lock(path.parent):
+        size = path.stat().st_size
+        path.unlink()
+        _fsync_parent_directory(path)
+        _invalidate_chat_cache(path.parent)
+        return size
 
 
 def _prunable_history_files(now: datetime) -> list[Path]:
@@ -1659,11 +1785,18 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
     for chat_dir in _iter_chat_dirs():
         try:
             appended_records: list[dict[str, Any]] = []
-            result.classified += _classify_due_for_chat(chat_dir, config, now=current, appended_records=appended_records)
+            classified, base_source_signature = _classify_due_for_chat(
+                chat_dir,
+                config,
+                now=current,
+                appended_records=appended_records,
+            )
+            result.classified += classified
             if appended_records:
                 refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort(
                     appended_records,
                     dirty_reason="maintenance_classification_refresh_failed",
+                    base_source_signature=base_source_signature,
                 )
                 if refresh_exc is not None:
                     detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
@@ -1683,9 +1816,7 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
                 if month_start >= retention_cutoff:
                     continue
                 try:
-                    size = path.stat().st_size
-                    path.unlink()
-                    _invalidate_chat_cache(path.parent)
+                    size = _unlink_pruned_partition(path)
                     result.pruned_files += 1
                     result.pruned_bytes += size
                     pruned_any = True
@@ -1700,9 +1831,7 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
         while total_bytes > config.max_bytes and files:
             path = files.pop(0)
             try:
-                size = path.stat().st_size
-                path.unlink()
-                _invalidate_chat_cache(path.parent)
+                size = _unlink_pruned_partition(path)
                 total_bytes -= size
                 result.pruned_files += 1
                 result.pruned_bytes += size
@@ -1880,9 +2009,11 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
     chat_dir: Path | None = None
     wrote = False
     catalog_records: list[dict[str, Any]] = []
+    base_source_signature: dict[str, Any] | None = None
     if event_type == "message.deleted":
         chat_dir = _history_chat_dir(business_connection_id, chat_id)
         with _chat_lock(chat_dir):
+            base_source_signature = _history_source_signature()
             state, _ = _load_chat_state(chat_dir)
             message_ids = tuple(_get(payload, "message_ids") or ())
             for message_id in message_ids:
@@ -1926,6 +2057,7 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
         chat_profile = _extract_chat_profile(payload)
         sender_profile = _extract_sender_profile(payload)
         with _chat_lock(chat_dir):
+            base_source_signature = _history_source_signature()
             state, _ = _load_chat_state(chat_dir)
             record = _build_event(
                 event_type=event_type,
@@ -1963,6 +2095,7 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
         refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort(
             catalog_records,
             dirty_reason="incremental_capture_refresh_failed",
+            base_source_signature=base_source_signature,
         )
         if refresh_exc is not None:  # noqa: BLE001 - derived catalog failure must never block canonical history
             detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
@@ -2254,6 +2387,19 @@ def _filter_catalog_entries(
     return entries
 
 
+def _catalog_entry_from_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    if not records:
+        raise ValueError("no matching history chat found")
+    first = records[0]
+    entry = _empty_catalog_entry(
+        business_connection_id=first.get("business_connection_id"),
+        chat_id=first.get("chat_id"),
+    )
+    for record in records:
+        _apply_record_to_catalog_entry(entry, record)
+    return entry
+
+
 def _resolve_chat_entry(*, business_connection_id: str | None, chat_id: str) -> dict[str, Any]:
     matches: list[dict[str, Any]] = []
     catalog_error: Exception | None = None
@@ -2275,6 +2421,9 @@ def _resolve_chat_entry(*, business_connection_id: str | None, chat_id: str) -> 
                 and (business_connection_id is None or str(entry.get("business_connection_id")) == str(business_connection_id))
                 and str(entry.get("chat_id")) == str(chat_id)
             ]
+    if business_connection_id is None:
+        _chat_dir, records = _require_single_chat(business_connection_id=None, chat_id=chat_id)
+        return _catalog_entry_from_records(records)
     if not matches:
         try:
             _chat_dir, records = _require_single_chat(business_connection_id=business_connection_id, chat_id=chat_id)
@@ -2282,16 +2431,7 @@ def _resolve_chat_entry(*, business_connection_id: str | None, chat_id: str) -> 
             if catalog_error is not None:
                 raise ValueError(str(catalog_error)) from catalog_error
             raise
-        if not records:
-            raise ValueError("no matching history chat found")
-        first = records[0]
-        entry = _empty_catalog_entry(
-            business_connection_id=first.get("business_connection_id"),
-            chat_id=first.get("chat_id"),
-        )
-        for record in records:
-            _apply_record_to_catalog_entry(entry, record)
-        return entry
+        return _catalog_entry_from_records(records)
     if len(matches) > 1:
         raise ValueError("multiple history chats match; pass --connection explicitly")
     return matches[0]
