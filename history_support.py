@@ -2356,44 +2356,6 @@ def run_startup_maintenance(*, now: datetime | None = None) -> MaintenanceResult
     return maintain_history(now=now)
 
 
-def _trim_records(records: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
-    if limit is None or limit <= 0:
-        return records
-    return records[-limit:]
-
-
-def _load_chat_records_for_cli(chat_dir: Path) -> list[dict[str, Any]]:
-    with _chat_lock(chat_dir):
-        records, _ = _load_records(chat_dir, repair_tails=True)
-    return records
-
-
-def _iter_chat_matches(*, business_connection_id: str | None = None, chat_id: str | None = None) -> list[tuple[Path, list[dict[str, Any]]]]:
-    matches: list[tuple[Path, list[dict[str, Any]]]] = []
-    for chat_dir in _iter_chat_dirs():
-        records = _load_chat_records_for_cli(chat_dir)
-        if not records:
-            continue
-        first = records[0]
-        record_connection_id = str(first.get("business_connection_id"))
-        record_chat_id = str(first.get("chat_id"))
-        if business_connection_id is not None and record_connection_id != str(business_connection_id):
-            continue
-        if chat_id is not None and record_chat_id != str(chat_id):
-            continue
-        matches.append((chat_dir, records))
-    return matches
-
-
-def _require_single_chat(*, business_connection_id: str | None, chat_id: str) -> tuple[Path, list[dict[str, Any]]]:
-    matches = _iter_chat_matches(business_connection_id=business_connection_id, chat_id=chat_id)
-    if not matches:
-        raise ValueError("no matching history chat found")
-    if len(matches) > 1:
-        raise ValueError("multiple history chats match; pass --connection explicitly")
-    return matches[0]
-
-
 def _parse_time_bound(value: str | None, *, option_name: str) -> datetime | None:
     if value is None or not value.strip():
         return None
@@ -2619,53 +2581,21 @@ def _filter_catalog_entries(
     return entries
 
 
-def _catalog_entry_from_records(records: list[dict[str, Any]]) -> dict[str, Any]:
-    if not records:
-        raise ValueError("no matching history chat found")
-    first = records[0]
-    entry = _empty_catalog_entry(
-        business_connection_id=first.get("business_connection_id"),
-        chat_id=first.get("chat_id"),
-    )
-    for record in records:
-        _apply_record_to_catalog_entry(entry, record)
-    return entry
+def _chat_lookup_label(*, business_connection_id: str | None, chat_id: str) -> str:
+    if business_connection_id is None:
+        return f"chat={chat_id}"
+    return f"connection={business_connection_id} chat={chat_id}"
 
 
 def _resolve_chat_entry(*, business_connection_id: str | None, chat_id: str) -> dict[str, Any]:
-    matches: list[dict[str, Any]] = []
-    catalog_error: Exception | None = None
-    try:
-        matches = _filter_catalog_entries(business_connection_id=business_connection_id, chat_id=chat_id)
-    except Exception as exc:  # noqa: BLE001 - numeric chat lookup falls back to canonical history
-        catalog_error = exc
+    matches = _filter_catalog_entries(business_connection_id=business_connection_id, chat_id=chat_id)
     if not matches:
-        try:
-            rebuilt_catalog = rebuild_contact_catalog()
-        except Exception as exc:  # noqa: BLE001 - fall back to canonical history if rebuild itself fails
-            if catalog_error is None:
-                catalog_error = exc
-        else:
-            matches = [
-                entry
-                for entry in rebuilt_catalog.get("contacts", [])
-                if isinstance(entry, dict)
-                and (business_connection_id is None or str(entry.get("business_connection_id")) == str(business_connection_id))
-                and str(entry.get("chat_id")) == str(chat_id)
-            ]
-    if business_connection_id is None:
-        _chat_dir, records = _require_single_chat(business_connection_id=None, chat_id=chat_id)
-        return _catalog_entry_from_records(records)
-    if not matches:
-        try:
-            _chat_dir, records = _require_single_chat(business_connection_id=business_connection_id, chat_id=chat_id)
-        except ValueError:
-            if catalog_error is not None:
-                raise ValueError(str(catalog_error)) from catalog_error
-            raise
-        return _catalog_entry_from_records(records)
+        raise ValueError(f"no matching history chat found for {_chat_lookup_label(business_connection_id=business_connection_id, chat_id=chat_id)}")
     if len(matches) > 1:
-        raise ValueError("multiple history chats match; pass --connection explicitly")
+        label = _chat_lookup_label(business_connection_id=business_connection_id, chat_id=chat_id)
+        if business_connection_id is None:
+            raise ValueError(f"multiple history chats match {label}; pass --connection explicitly")
+        raise ValueError(f"multiple history chats match {label}; verify contacts.json and canonical history")
     return matches[0]
 
 
@@ -2704,6 +2634,119 @@ def _resolve_history_entry(
 
 def _entry_chat_dir(entry: dict[str, Any]) -> Path:
     return _history_chat_dir_path(entry.get("business_connection_id"), entry.get("chat_id"))
+
+
+DeletionRowKey = tuple[float, str, str, str, str, str]
+
+
+def _deletion_row_key(record: dict[str, Any], *, pending: bool) -> DeletionRowKey | None:
+    if pending:
+        sort_at = _record_observed_at(record)
+    else:
+        sort_at = _parse_datetime(record.get("evaluated_at")) or _record_observed_at(record)
+    if sort_at is None:
+        return None
+    primary_id = str(record.get("deleted_event_id") or record.get("event_id") or "")
+    return (
+        sort_at.timestamp(),
+        str(record.get("business_connection_id")),
+        str(record.get("chat_id")),
+        str(record.get("message_id")),
+        primary_id,
+        str(record.get("event_id") or ""),
+    )
+
+
+@dataclass
+class _DeletionRowCollector:
+    limit: int
+    status: str
+    heap: list[tuple[DeletionRowKey, dict[str, Any]]] = field(default_factory=list)
+    pending_by_deleted_event_id: dict[str, dict[str, Any]] = field(default_factory=dict)
+    max_heap_size: int = 0
+    max_live_pending: int = 0
+
+    def _note_sizes(self) -> None:
+        self.max_heap_size = max(self.max_heap_size, len(self.heap))
+        self.max_live_pending = max(self.max_live_pending, len(self.pending_by_deleted_event_id))
+
+    def _push(self, record: dict[str, Any], *, pending: bool) -> None:
+        row_key = _deletion_row_key(record, pending=pending)
+        if row_key is None:
+            return
+        item = (row_key, record)
+        if len(self.heap) < self.limit:
+            heapq.heappush(self.heap, item)
+            self._note_sizes()
+            return
+        if item[0] <= self.heap[0][0]:
+            return
+        heapq.heapreplace(self.heap, item)
+        self._note_sizes()
+
+    def consume(self, record: dict[str, Any]) -> None:
+        event_type = str(record.get("event_type") or "")
+        if self.status == "pending":
+            if event_type == "message.deleted":
+                event_id = str(record.get("event_id") or "")
+                if event_id:
+                    self.pending_by_deleted_event_id[event_id] = record
+                    self._note_sizes()
+                return
+            if event_type == "deletion.classified":
+                deleted_event_id = str(record.get("deleted_event_id") or "")
+                if deleted_event_id:
+                    self.pending_by_deleted_event_id.pop(deleted_event_id, None)
+                    self._note_sizes()
+                return
+            return
+        if event_type != "deletion.classified" or str(record.get("classification") or "") != self.status:
+            return
+        self._push(record, pending=False)
+
+    def finish_chat(self) -> None:
+        if self.status != "pending":
+            return
+        # Runtime timers and startup maintenance should keep this live tombstone
+        # set bounded to the current correction/recovery window. The CLI therefore
+        # retains only tombstones plus the output heap, never full chat history.
+        for record in self.pending_by_deleted_event_id.values():
+            self._push(record, pending=True)
+        self.pending_by_deleted_event_id.clear()
+        self._note_sizes()
+
+    def rows(self) -> list[dict[str, Any]]:
+        return [item[1] for item in sorted(self.heap, key=lambda item: item[0])]
+
+
+def _history_entries_for_cli(*, business_connection_id: str | None, chat_id: str | None = None) -> list[dict[str, Any]]:
+    if chat_id is not None:
+        return [_resolve_chat_entry(business_connection_id=business_connection_id, chat_id=chat_id)]
+    return _filter_catalog_entries(business_connection_id=business_connection_id)
+
+
+def _latest_deletion_rows(
+    entries: Iterable[dict[str, Any]],
+    *,
+    status: str,
+    limit: int,
+) -> tuple[list[dict[str, Any]], _DeletionRowCollector]:
+    collector = _DeletionRowCollector(limit=limit, status=status)
+    for entry in entries:
+        with _streamed_records_locked(_entry_chat_dir(entry), since=None, until=None, text_query=None) as records:
+            for record in records:
+                collector.consume(record)
+        collector.finish_chat()
+    return collector.rows(), collector
+
+
+def _pending_deletion_text_line(record: dict[str, Any]) -> str:
+    return (
+        f"{record.get('observed_at')} message.deleted "
+        f"connection={record.get('business_connection_id')} "
+        f"chat={record.get('chat_id')} "
+        f"message={record.get('message_id')} status=pending"
+    )
 
 
 def _contact_summary_line(entry: dict[str, Any]) -> str:
@@ -3018,31 +3061,22 @@ def handle_cli(args: argparse.Namespace) -> int:
             return 0
 
         if action == "deletions":
-            rows: list[str] = []
             status = str(args.status)
-            for _chat_dir, records in _iter_chat_matches(
-                business_connection_id=getattr(args, "connection", None),
-                chat_id=None if getattr(args, "chat", None) is None else str(args.chat),
-            ):
-                state = _build_chat_state(records)
-                for deleted_event_id, pending in state.pending_deletions.items():
-                    if pending.classification is None:
-                        if status == "pending" and pending.deleted_event is not None:
-                            rows.append(
-                                f"{pending.deleted_event.get('observed_at')} message.deleted "
-                                f"connection={pending.deleted_event.get('business_connection_id')} "
-                                f"chat={pending.deleted_event.get('chat_id')} "
-                                f"message={pending.deleted_event.get('message_id')} status=pending"
-                            )
-                        continue
-                    if pending.classification.get("classification") != status:
-                        continue
-                    rows.append(_history_text_line(pending.classification))
             limit = _bounded_limit(getattr(args, "limit", None), DEFAULT_READ_LIMIT)
-            for row in rows[:limit]:
-                print(row)
+            rows, _ = _latest_deletion_rows(
+                _history_entries_for_cli(
+                    business_connection_id=getattr(args, "connection", None),
+                    chat_id=None if getattr(args, "chat", None) is None else str(args.chat),
+                ),
+                status=status,
+                limit=limit,
+            )
             if not rows:
                 print("No matching deletions found.")
+                return 0
+            render = _pending_deletion_text_line if status == "pending" else _history_text_line
+            for record in rows:
+                print(render(record))
             return 0
 
         if action == "verify":

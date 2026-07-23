@@ -200,23 +200,21 @@ def make_deleted_update(
 
 
 def load_records(plugin, *, business_id: str = "business-123", chat_id: int = 991):
-    matches = plugin._history_support._iter_chat_matches(
-        business_connection_id=business_id,
-        chat_id=str(chat_id),
-    )
-    assert matches
-    return matches[0][1]
+    history = plugin._history_support
+    chat_dir = history._history_chat_dir_path(business_id, chat_id)
+    if not chat_dir.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for path in history._iter_history_files(chat_dir):
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    records.append(json.loads(line))
+    return records
 
 
 def load_history_file(plugin, *, business_id: str = "business-123", chat_id: int = 991, month: str = "2026-07.jsonl") -> Path:
-    root = plugin._history_support.history_root()
-    chat_dirs = [path for path in root.glob("*/*") if path.is_dir()]
-    assert chat_dirs
-    for chat_dir in chat_dirs:
-        records = plugin._history_support._load_chat_records_for_cli(chat_dir)
-        if records and str(records[0].get("business_connection_id")) == business_id and str(records[0].get("chat_id")) == str(chat_id):
-            return chat_dir / month
-    raise AssertionError("history file not found")
+    return plugin._history_support._history_chat_dir_path(business_id, chat_id) / month
 
 
 def load_catalog(plugin) -> dict[str, Any]:
@@ -531,11 +529,11 @@ async def test_history_is_fail_closed_when_disabled_or_missing_chat_type(plugin,
     update = make_business_text_update(chat_type=None)
 
     await plugin._history_support.observe_ptb_update(update, bot=FakeBot())
-    assert not plugin._history_support._iter_chat_matches(chat_id="991")
+    assert not load_records(plugin, chat_id=991)
 
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
     await plugin._history_support.observe_ptb_update(update, bot=FakeBot())
-    assert not plugin._history_support._iter_chat_matches(chat_id="991")
+    assert not load_records(plugin, chat_id=991)
 
 
 @pytest.mark.asyncio
@@ -570,7 +568,7 @@ async def test_connection_filter_still_narrows_capture(plugin, monkeypatch: pyte
     )
 
     assert [record["text"] for record in load_records(plugin, business_id="business-123", chat_id=991)] == ["kept"]
-    assert not plugin._history_support._iter_chat_matches(business_connection_id="business-456", chat_id="992")
+    assert not load_records(plugin, business_id="business-456", chat_id=992)
 
 
 @pytest.mark.asyncio
@@ -584,7 +582,7 @@ async def test_history_skips_non_private_chat_types_by_default(plugin, monkeypat
     )
 
     assert wrote is False
-    assert not plugin._history_support._iter_chat_matches(chat_id="991")
+    assert not load_records(plugin, chat_id=991)
 
 
 @pytest.mark.asyncio
@@ -672,7 +670,7 @@ async def test_caption_only_media_update_creates_no_history_file(enabled_history
 
     assert wrote is False
     assert not plugin._history_support.history_root().exists()
-    assert not plugin._history_support._iter_chat_matches(chat_id="991")
+    assert not load_records(plugin, chat_id=991)
 
 
 @pytest.mark.asyncio
@@ -741,11 +739,7 @@ async def test_raw_history_records_create_edit_delete_without_needing_gateway_di
         bot=bot,
         now=base + timedelta(seconds=2),
     )
-    matches = reloaded._history_support._iter_chat_matches(
-        business_connection_id="business-123",
-        chat_id="991",
-    )
-    assert len(matches[0][1]) == 3
+    assert len(load_records(reloaded, business_id="business-123", chat_id=991)) == 3
 
 
 @pytest.mark.asyncio
@@ -1980,11 +1974,7 @@ async def _delete_and_classify(
             now=base + timedelta(seconds=5),
         )
     result = plugin._history_support.maintain_history(now=base + timedelta(seconds=20))
-    matches = plugin._history_support._iter_chat_matches(
-        business_connection_id="business-123",
-        chat_id="991",
-    )
-    records = matches[0][1]
+    records = load_records(plugin, business_id="business-123", chat_id=991)
     classifications = [record for record in records if record["event_type"] == "deletion.classified"]
     assert classifications
     assert classifications[-1]["classification"] == expected_status
@@ -2775,6 +2765,107 @@ async def test_history_cli_contacts_catalog_and_contact_resolution(plugin, monke
 
 
 @pytest.mark.asyncio
+async def test_history_cli_numeric_chat_resolution_uses_fresh_catalog_for_duplicate_chat_ids(
+    enabled_history,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+):
+    plugin = enabled_history
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            business_id="business-123",
+            chat_id=991,
+            chat_username="dup-one",
+            from_user_username="dup-one",
+            text="first duplicate chat",
+            update_id=1,
+            date=base,
+        ),
+        bot=FakeBot(),
+        now=base,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            business_id="business-456",
+            chat_id=991,
+            chat_username="dup-two",
+            from_user_username="dup-two",
+            text="second duplicate chat",
+            update_id=2,
+            date=base + timedelta(seconds=1),
+        ),
+        bot=FakeBot(),
+        now=base + timedelta(seconds=1),
+    )
+
+    history = plugin._history_support
+    monkeypatch.setattr(
+        history,
+        "_load_records",
+        lambda *_args, **_kwargs: pytest.fail("_load_records must not be used for numeric --chat resolution"),
+    )
+
+    parser = _build_history_parser(plugin)
+
+    exit_code = history.handle_cli(parser.parse_args(["history", "show", "--chat", "991", "--limit", "1"]))
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 1
+    assert "pass --connection explicitly" in output
+
+    exit_code = history.handle_cli(
+        parser.parse_args(["history", "show", "--connection", "business-456", "--chat", "991", "--limit", "1"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert "connection=business-456" in output
+    assert "second duplicate chat" in output
+
+    exit_code = history.handle_cli(
+        parser.parse_args(["history", "show", "--connection", "business-789", "--chat", "991", "--limit", "1"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 1
+    assert "no matching history chat found for connection=business-789 chat=991" in output
+
+
+@pytest.mark.asyncio
+async def test_history_cli_numeric_chat_resolution_surfaces_catalog_freshness_error_without_full_load(
+    enabled_history,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+):
+    plugin = enabled_history
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="catalog error", update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+
+    history = plugin._history_support
+
+    def _raise_catalog_error(*, rebuild_on_missing: bool, rebuild_on_corrupt: bool, rebuild_on_dirty: bool):
+        raise history.CatalogRebuildChangedError("canonical history changed during catalog rebuild")
+
+    monkeypatch.setattr(history, "_load_contact_catalog", _raise_catalog_error)
+    monkeypatch.setattr(
+        history,
+        "_load_records",
+        lambda *_args, **_kwargs: pytest.fail("_load_records must not be used when catalog freshness fails"),
+    )
+
+    parser = _build_history_parser(plugin)
+    exit_code = history.handle_cli(parser.parse_args(["history", "show", "--chat", "991", "--limit", "1"]))
+    output = capsys.readouterr().out.strip()
+
+    assert exit_code == 1
+    assert "canonical history changed during catalog rebuild" in output
+
+
+@pytest.mark.asyncio
 async def test_history_cli_contact_lookup_normalizes_unicode_nfkc_and_casefold(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
@@ -3142,53 +3233,242 @@ async def test_history_cli_escapes_control_text_but_keeps_unicode_readable(enabl
     assert "\x85" not in output
 
 
-@pytest.mark.asyncio
-async def test_history_cli_deletions_builds_each_chat_independently_for_same_message_ids(
-    plugin,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys,
-):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "*")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+def test_history_cli_deletions_streams_latest_classified_rows_without_full_load(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
+    history = plugin._history_support
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    records: list[dict[str, Any]] = []
+    update_id = 1
 
-    await plugin._history_support.observe_ptb_update(
-        make_business_text_update(text="chat one", chat_id=991, message_id=77, update_id=1, date=base),
-        bot=FakeBot(),
-        now=base,
+    for business_id in ("business-123", "business-456"):
+        for index in range(1800):
+            observed_at = base + timedelta(seconds=index)
+            records.append(
+                make_legacy_history_record(
+                    plugin,
+                    event_type="message.created",
+                    source="business_message",
+                    observed_at=observed_at,
+                    telegram_update_id=update_id,
+                    business_connection_id=business_id,
+                    chat_id=991,
+                    message_id=10000 + index,
+                    message_at=observed_at,
+                    sender_id=2000,
+                    direction="inbound",
+                    text=f"ordinary {business_id} {index}",
+                )
+            )
+            update_id += 1
+
+    for index in range(6):
+        observed_at = base + timedelta(hours=1, seconds=index)
+        records.append(
+            make_legacy_history_record(
+                plugin,
+                event_type="deletion.classified",
+                source="deleted_business_messages",
+                observed_at=observed_at,
+                telegram_update_id=update_id,
+                business_connection_id="business-123",
+                chat_id=991,
+                message_id=8000 + index,
+                message_at=observed_at,
+                sender_id=2000,
+                direction="inbound",
+                deleted_event_id=f"deleted-business-123-{index}",
+                classification="unexplained",
+                classification_reason="no_strong_match",
+                evaluated_at=observed_at,
+                deleted_observed_at=observed_at - timedelta(seconds=10),
+            )
+        )
+        update_id += 1
+
+    for index in range(6):
+        observed_at = base + timedelta(hours=2, seconds=index)
+        records.append(
+            make_legacy_history_record(
+                plugin,
+                event_type="deletion.classified",
+                source="deleted_business_messages",
+                observed_at=observed_at,
+                telegram_update_id=update_id,
+                business_connection_id="business-456",
+                chat_id=991,
+                message_id=9000 + index,
+                message_at=observed_at,
+                sender_id=2000,
+                direction="inbound",
+                deleted_event_id=f"deleted-business-456-{index}",
+                classification="unexplained",
+                classification_reason="no_strong_match",
+                evaluated_at=observed_at,
+                deleted_observed_at=observed_at - timedelta(seconds=10),
+            )
+        )
+        update_id += 1
+
+    append_raw_history_records(plugin, *records)
+    history.rebuild_contact_catalog()
+
+    monkeypatch.setattr(
+        history,
+        "_load_records",
+        lambda *_args, **_kwargs: pytest.fail("_load_records must not be used by history deletions"),
     )
-    await plugin._history_support.observe_ptb_update(
-        make_deleted_update(chat_id=991, message_ids=(77,), update_id=2),
-        bot=FakeBot(),
-        now=base + timedelta(seconds=1),
-    )
-    await plugin._history_support.observe_ptb_update(
-        make_deleted_update(chat_id=992, message_ids=(77,), update_id=3),
-        bot=FakeBot(),
-        now=base + timedelta(seconds=1),
+    monkeypatch.setattr(
+        history,
+        "_build_chat_state",
+        lambda *_args, **_kwargs: pytest.fail("_build_chat_state must not be used by history deletions"),
     )
 
-    original_build_state = plugin._history_support._build_chat_state
-    built_chat_ids: list[set[int]] = []
-
-    def _spy_build_chat_state(records):
-        materialized = list(records)
-        built_chat_ids.append({int(record["chat_id"]) for record in materialized})
-        return original_build_state(materialized)
-
-    monkeypatch.setattr(plugin._history_support, "_build_chat_state", _spy_build_chat_state)
     parser = _build_history_parser(plugin)
-    exit_code = plugin._history_support.handle_cli(
-        parser.parse_args(["history", "deletions", "--status", "pending", "--limit", "10"])
+
+    exit_code = history.handle_cli(parser.parse_args(["history", "deletions", "--status", "unexplained", "--chat", "991"]))
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 1
+    assert "pass --connection explicitly" in output
+
+    exit_code = history.handle_cli(
+        parser.parse_args(
+            ["history", "deletions", "--status", "unexplained", "--connection", "business-456", "--chat", "991", "--limit", "4"]
+        )
     )
     output = capsys.readouterr().out.strip().splitlines()
 
     assert exit_code == 0
-    assert built_chat_ids == [{991}, {992}]
-    assert any("chat=991" in line for line in output)
-    assert any("chat=992" in line for line in output)
+    assert len(output) == 4
+    assert all("connection=business-456" in line for line in output)
+    assert all("status=unexplained" in line for line in output)
+    assert [int(line.split("message=")[1].split()[0]) for line in output] == [9002, 9003, 9004, 9005]
+
+
+def test_history_cli_deletions_pending_streams_live_tombstones_with_bounded_state(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    records: list[dict[str, Any]] = []
+    update_id = 1
+
+    for index in range(2500):
+        observed_at = base + timedelta(seconds=index)
+        records.append(
+            make_legacy_history_record(
+                plugin,
+                event_type="message.created",
+                source="business_message",
+                observed_at=observed_at,
+                telegram_update_id=update_id,
+                business_connection_id="business-123",
+                chat_id=991,
+                message_id=20000 + index,
+                message_at=observed_at,
+                sender_id=2000,
+                direction="inbound",
+                text=f"ordinary pending {index}",
+            )
+        )
+        update_id += 1
+
+    deleted_one = make_legacy_history_record(
+        plugin,
+        event_type="message.deleted",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=501,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+    )
+    update_id += 1
+    deleted_two = make_legacy_history_record(
+        plugin,
+        event_type="message.deleted",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1, seconds=1),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=502,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+    )
+    update_id += 1
+    classified_two = make_legacy_history_record(
+        plugin,
+        event_type="deletion.classified",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1, seconds=31),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=502,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+        deleted_event_id=str(deleted_two["event_id"]),
+        classification="unexplained",
+        classification_reason="no_strong_match",
+        evaluated_at=base + timedelta(hours=1, seconds=31),
+        deleted_observed_at=base + timedelta(hours=1, seconds=1),
+    )
+    update_id += 1
+    deleted_three = make_legacy_history_record(
+        plugin,
+        event_type="message.deleted",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(hours=1, seconds=2),
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=503,
+        message_at=None,
+        sender_id=None,
+        direction="unknown",
+    )
+
+    append_raw_history_records(plugin, *records, deleted_one, deleted_two, classified_two, deleted_three)
+    history.rebuild_contact_catalog()
+
+    monkeypatch.setattr(
+        history,
+        "_load_records",
+        lambda *_args, **_kwargs: pytest.fail("_load_records must not be used by pending deletions"),
+    )
+    monkeypatch.setattr(
+        history,
+        "_build_chat_state",
+        lambda *_args, **_kwargs: pytest.fail("_build_chat_state must not be used by pending deletions"),
+    )
+
+    rows, collector = history._latest_deletion_rows(
+        history._history_entries_for_cli(business_connection_id="business-123", chat_id="991"),
+        status="pending",
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["message_id"] == 503
+    assert collector.max_heap_size == 1
+    assert collector.max_live_pending == 2
+
+    parser = _build_history_parser(plugin)
+    exit_code = history.handle_cli(
+        parser.parse_args(["history", "deletions", "--status", "pending", "--connection", "business-123", "--chat", "991", "--limit", "1"])
+    )
+    output = capsys.readouterr().out.strip().splitlines()
+
+    assert exit_code == 0
+    assert output == [
+        f"{deleted_three['observed_at']} message.deleted connection=business-123 chat=991 message=503 status=pending"
+    ]
 
 
 class FakeApplication:
