@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import heapq
 import inspect
 import json
 import logging
@@ -16,6 +17,7 @@ import re
 import shutil
 import stat
 import threading
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -45,6 +47,7 @@ PLUGIN_NAME = "telegram-business-voice-transcriber"
 HISTORY_ENABLE_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE"
 HISTORY_CONNECTIONS_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS"
 HISTORY_CHATS_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS"
+HISTORY_CHAT_TYPES_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES"
 HISTORY_CORRECTION_WINDOW_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW"
 HISTORY_NEARBY_BEFORE_SECONDS_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS"
 HISTORY_RETENTION_DAYS_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS"
@@ -60,6 +63,10 @@ MAX_READ_LIMIT = 5000
 MAINTENANCE_THROTTLE_SECONDS = 3600
 TAIL_SCAN_CHUNK_BYTES = 64 * 1024
 SCHEMA_VERSION = 1
+CATALOG_SCHEMA_VERSION = 1
+CATALOG_FILENAME = "contacts.json"
+KNOWN_CHAT_TYPES = frozenset({"private", "group", "supergroup", "channel"})
+DEFAULT_HISTORY_CHAT_TYPES = frozenset({"private"})
 
 _OWNER_CACHE: dict[str, str] = {}
 _CACHE_LOCK = threading.RLock()
@@ -83,12 +90,16 @@ class Scope:
             return "*"
         return ",".join(sorted(self.values))
 
+    def contains_exact(self, value: Any) -> bool:
+        return str(value) in self.values
+
 
 @dataclass(frozen=True)
 class HistoryConfig:
     enabled: bool
     connections: Scope | None
     chats: Scope | None
+    chat_types: frozenset[str]
     correction_window_seconds: int = DEFAULT_CORRECTION_WINDOW_SECONDS
     nearby_before_seconds: int = DEFAULT_NEARBY_BEFORE_SECONDS
     retention_days: int = DEFAULT_RETENTION_DAYS
@@ -96,16 +107,28 @@ class HistoryConfig:
 
     @property
     def active(self) -> bool:
-        return self.enabled and self.connections is not None and self.chats is not None
+        return self.enabled
 
-    def allows(self, business_connection_id: Any, chat_id: Any) -> bool:
-        return bool(
-            self.active
-            and self.connections is not None
-            and self.chats is not None
-            and self.connections.matches(business_connection_id)
-            and self.chats.matches(chat_id)
-        )
+    def connection_allowed(self, business_connection_id: Any) -> bool:
+        return self.connections is None or self.connections.matches(business_connection_id)
+
+    def chat_in_scope(self, chat_id: Any) -> bool:
+        return self.chats is None or self.chats.matches(chat_id)
+
+    def exact_chat_allowed(self, chat_id: Any) -> bool:
+        return self.chats is not None and self.chats.contains_exact(chat_id)
+
+    def chat_type_allowed(self, chat_type: Any) -> bool:
+        normalized = _normalize_chat_type(chat_type)
+        return normalized in self.chat_types
+
+    def allows(self, business_connection_id: Any, chat_id: Any, *, chat_type: Any, known_chat_type: Any = None) -> bool:
+        if not self.active or not self.connection_allowed(business_connection_id) or not self.chat_in_scope(chat_id):
+            return False
+        if self.exact_chat_allowed(chat_id):
+            return True
+        normalized_type = _normalize_chat_type(chat_type) or _normalize_chat_type(known_chat_type)
+        return normalized_type in self.chat_types
 
 
 @dataclass
@@ -135,6 +158,8 @@ class ChatState:
     messages: dict[str, MessageState] = field(default_factory=dict)
     pending_deletions: dict[str, PendingDeletion] = field(default_factory=dict)
     record_count: int = 0
+    latest_chat_profile: dict[str, Any] | None = None
+    latest_sender_profile: dict[str, Any] | None = None
 
 
 @dataclass
@@ -287,6 +312,23 @@ def _parse_scope(raw: str | None) -> Scope | None:
     return Scope(wildcard=False, values=frozenset(values))
 
 
+def _normalize_chat_type(value: Any) -> str | None:
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in KNOWN_CHAT_TYPES else None
+
+
+def _parse_chat_types(raw: str | None) -> frozenset[str]:
+    if raw is None or not raw.strip():
+        return DEFAULT_HISTORY_CHAT_TYPES
+    values = [part.strip().casefold() for part in re.split(r"[\s,]+", raw) if part.strip()]
+    if not values:
+        return DEFAULT_HISTORY_CHAT_TYPES
+    if "*" in values:
+        return KNOWN_CHAT_TYPES
+    allowed = frozenset(value for value in values if value in KNOWN_CHAT_TYPES)
+    return allowed
+
+
 def history_config_from_env() -> HistoryConfig:
     correction_window = max(1, _env_int(HISTORY_CORRECTION_WINDOW_ENV, DEFAULT_CORRECTION_WINDOW_SECONDS))
     nearby_before_seconds = max(0, _env_int(HISTORY_NEARBY_BEFORE_SECONDS_ENV, DEFAULT_NEARBY_BEFORE_SECONDS))
@@ -296,6 +338,7 @@ def history_config_from_env() -> HistoryConfig:
         enabled=_truthy_env(HISTORY_ENABLE_ENV),
         connections=_parse_scope(os.environ.get(HISTORY_CONNECTIONS_ENV)),
         chats=_parse_scope(os.environ.get(HISTORY_CHATS_ENV)),
+        chat_types=_parse_chat_types(os.environ.get(HISTORY_CHAT_TYPES_ENV)),
         correction_window_seconds=correction_window,
         nearby_before_seconds=nearby_before_seconds,
         retention_days=retention_days,
@@ -309,6 +352,12 @@ def history_root() -> Path:
 
 def skill_path() -> Path:
     return Path(__file__).resolve().parent / "skills" / "history" / "SKILL.md"
+
+
+def _catalog_path() -> Path:
+    root = history_root()
+    _ensure_private_dir(root)
+    return root / CATALOG_FILENAME
 
 
 def _ensure_private_dir(path: Path) -> None:
@@ -328,10 +377,16 @@ def _ensure_private_file(path: Path) -> None:
         pass
 
 
+def _history_chat_dir_path(business_connection_id: Any, chat_id: Any) -> Path:
+    root = history_root()
+    connection_dir = root / _path_key(business_connection_id)
+    return connection_dir / _safe_part(chat_id)
+
+
 def _history_chat_dir(business_connection_id: Any, chat_id: Any) -> Path:
     root = history_root()
     connection_dir = root / _path_key(business_connection_id)
-    chat_dir = connection_dir / _safe_part(chat_id)
+    chat_dir = _history_chat_dir_path(business_connection_id, chat_id)
     _ensure_private_dir(root)
     _ensure_private_dir(connection_dir)
     _ensure_private_dir(chat_dir)
@@ -372,6 +427,411 @@ def _chat_lock(chat_dir: Path) -> Iterator[None]:
 def _root_lock() -> Iterator[None]:
     with _locked_path(_root_lock_path()):
         yield
+
+
+def _clean_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return str(value)
+    text = value.strip()
+    return text or None
+
+
+def _extract_profile_snapshot(source: Any, fields: tuple[str, ...]) -> dict[str, Any] | None:
+    snapshot: dict[str, Any] = {}
+    for field_name in fields:
+        value = _get(source, field_name)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        snapshot[field_name] = value
+    return snapshot or None
+
+
+def _normalize_profile_snapshot(snapshot: Any) -> dict[str, Any] | None:
+    if not isinstance(snapshot, dict):
+        return None
+    normalized: dict[str, Any] = {}
+    for field_name, value in snapshot.items():
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        normalized[str(field_name)] = value
+    if "type" in normalized:
+        normalized_type = _normalize_chat_type(normalized["type"])
+        if normalized_type is not None:
+            normalized["type"] = normalized_type
+    return normalized or None
+
+
+def _extract_chat_profile(message: Any) -> dict[str, Any] | None:
+    snapshot = _extract_profile_snapshot(
+        _get(message, "chat"),
+        ("id", "type", "title", "username", "first_name", "last_name"),
+    )
+    return _normalize_profile_snapshot(snapshot)
+
+
+def _extract_sender_profile(message: Any) -> dict[str, Any] | None:
+    snapshot = _extract_profile_snapshot(
+        _get(message, "from_user"),
+        ("id", "is_bot", "username", "first_name", "last_name", "language_code"),
+    )
+    return _normalize_profile_snapshot(snapshot)
+
+
+def _profile_lookup_values(profile: dict[str, Any] | None) -> list[str]:
+    if not profile:
+        return []
+    values: list[str] = []
+    username = _clean_optional_text(profile.get("username"))
+    if username is not None:
+        values.extend([f"@{username}", username])
+    title = _clean_optional_text(profile.get("title"))
+    if title is not None:
+        values.append(title)
+    parts = [part for part in (_clean_optional_text(profile.get("first_name")), _clean_optional_text(profile.get("last_name"))) if part]
+    if parts:
+        values.append(" ".join(parts))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = " ".join(value.casefold().split()).lstrip("@")
+        if normalized in seen:
+            continue
+        deduped.append(value)
+        seen.add(normalized)
+    return deduped
+
+
+def _best_contact_profile(
+    *,
+    chat_profile: dict[str, Any] | None,
+    sender_profile: dict[str, Any] | None,
+    chat_id: Any,
+) -> dict[str, Any] | None:
+    if chat_profile is not None:
+        return dict(chat_profile)
+    if sender_profile is None:
+        return None
+    sender_id = sender_profile.get("id")
+    if sender_id is None or str(sender_id) != str(chat_id):
+        return None
+    return dict(sender_profile)
+
+
+def _catalog_contact_key(business_connection_id: Any, chat_id: Any) -> tuple[str, str]:
+    return (str(business_connection_id), str(chat_id))
+
+
+def _catalog_contacts_map(catalog: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    entries: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in catalog.get("contacts", []):
+        if not isinstance(entry, dict):
+            continue
+        entries[_catalog_contact_key(entry.get("business_connection_id"), entry.get("chat_id"))] = dict(entry)
+    return entries
+
+
+def _min_iso(left: str | None, right: str | None) -> str | None:
+    left_dt = _parse_datetime(left)
+    right_dt = _parse_datetime(right)
+    if left_dt is None:
+        return right
+    if right_dt is None:
+        return left
+    return left if left_dt <= right_dt else right
+
+
+def _max_iso(left: str | None, right: str | None) -> str | None:
+    left_dt = _parse_datetime(left)
+    right_dt = _parse_datetime(right)
+    if left_dt is None:
+        return right
+    if right_dt is None:
+        return left
+    return left if left_dt >= right_dt else right
+
+
+def _catalog_entry_display_name(entry: dict[str, Any]) -> str:
+    profile = entry.get("current_profile")
+    if isinstance(profile, dict):
+        values = _profile_lookup_values(profile)
+        if values:
+            return values[0]
+    return f"chat:{entry.get('chat_id')}"
+
+
+def _catalog_entry_aliases(entry: dict[str, Any]) -> list[str]:
+    aliases = entry.get("aliases")
+    if not isinstance(aliases, list):
+        return []
+    return [alias for alias in aliases if isinstance(alias, str) and alias.strip()]
+
+
+def _append_catalog_aliases(entry: dict[str, Any], profile: dict[str, Any] | None) -> None:
+    aliases = _catalog_entry_aliases(entry)
+    existing = {" ".join(alias.casefold().split()).lstrip("@") for alias in aliases}
+    for value in _profile_lookup_values(profile):
+        normalized = " ".join(value.casefold().split()).lstrip("@")
+        if normalized in existing:
+            continue
+        aliases.append(value)
+        existing.add(normalized)
+    entry["aliases"] = aliases
+
+
+def _prune_current_aliases(entry: dict[str, Any]) -> None:
+    current_tokens = {
+        " ".join(value.casefold().split()).lstrip("@")
+        for value in _profile_lookup_values(entry.get("current_profile"))
+    }
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for alias in _catalog_entry_aliases(entry):
+        normalized = " ".join(alias.casefold().split()).lstrip("@")
+        if normalized in current_tokens or normalized in seen:
+            continue
+        aliases.append(alias)
+        seen.add(normalized)
+    entry["aliases"] = aliases
+
+
+def _empty_catalog_entry(*, business_connection_id: Any, chat_id: Any) -> dict[str, Any]:
+    return {
+        "business_connection_id": str(business_connection_id),
+        "chat_id": chat_id,
+        "chat_type": None,
+        "current_profile": None,
+        "chat_profile": None,
+        "last_sender_profile": None,
+        "aliases": [],
+        "first_seen_at": None,
+        "last_seen_at": None,
+        "first_message_at": None,
+        "last_message_at": None,
+        "message_count": 0,
+        "edit_count": 0,
+        "deleted_count": 0,
+        "record_count": 0,
+        "unexplained_count": 0,
+    }
+
+
+def _apply_record_to_catalog_entry(entry: dict[str, Any], record: dict[str, Any]) -> None:
+    observed_at = record.get("observed_at")
+    message_at = record.get("message_at") or observed_at
+    event_type = str(record.get("event_type") or "")
+
+    entry["record_count"] = int(entry.get("record_count", 0)) + 1
+    entry["first_seen_at"] = _min_iso(entry.get("first_seen_at"), observed_at)
+    entry["last_seen_at"] = _max_iso(entry.get("last_seen_at"), observed_at)
+
+    if event_type in {"message.created", "message.edited"}:
+        entry["first_message_at"] = _min_iso(entry.get("first_message_at"), message_at)
+        entry["last_message_at"] = _max_iso(entry.get("last_message_at"), message_at)
+        if event_type == "message.created":
+            entry["message_count"] = int(entry.get("message_count", 0)) + 1
+        else:
+            entry["edit_count"] = int(entry.get("edit_count", 0)) + 1
+
+        chat_profile = _normalize_profile_snapshot(record.get("chat_profile"))
+        sender_profile = _normalize_profile_snapshot(record.get("sender_profile"))
+        next_current_profile = _best_contact_profile(
+            chat_profile=chat_profile,
+            sender_profile=sender_profile,
+            chat_id=entry.get("chat_id"),
+        )
+        current_profile = _normalize_profile_snapshot(entry.get("current_profile"))
+        if next_current_profile is not None and current_profile is not None and current_profile != next_current_profile:
+            _append_catalog_aliases(entry, current_profile)
+        if chat_profile is not None:
+            entry["chat_profile"] = chat_profile
+            entry["chat_type"] = _normalize_chat_type(chat_profile.get("type")) or entry.get("chat_type")
+        if sender_profile is not None:
+            entry["last_sender_profile"] = sender_profile
+        if next_current_profile is not None:
+            entry["current_profile"] = next_current_profile
+        _prune_current_aliases(entry)
+        return
+
+    if event_type == "message.deleted":
+        entry["deleted_count"] = int(entry.get("deleted_count", 0)) + 1
+        return
+
+    if event_type == "deletion.classified" and str(record.get("classification") or "") == "unexplained":
+        entry["unexplained_count"] = int(entry.get("unexplained_count", 0)) + 1
+
+
+def _catalog_from_entries(entries: dict[tuple[str, str], dict[str, Any]], *, generated_at: datetime | None = None) -> dict[str, Any]:
+    contacts = sorted(entries.values(), key=lambda entry: (str(entry.get("business_connection_id")), str(entry.get("chat_id"))))
+    return {
+        "schema_version": CATALOG_SCHEMA_VERSION,
+        "generated_at": _isoformat_utc(generated_at or _utcnow()),
+        "contact_count": len(contacts),
+        "contacts": contacts,
+    }
+
+
+def _read_catalog_locked() -> dict[str, Any] | None:
+    path = _catalog_path()
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"unable to read {path.name}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid {path.name}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"invalid {path.name}: top-level value must be an object")
+    contacts = raw.get("contacts")
+    if not isinstance(contacts, list):
+        raise ValueError(f"invalid {path.name}: contacts must be a list")
+    if raw.get("schema_version") != CATALOG_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported {path.name} schema_version {raw.get('schema_version')}"
+        )
+    return raw
+
+
+def _write_catalog_locked(catalog: dict[str, Any]) -> None:
+    path = _catalog_path()
+    tmp_path = path.with_name(path.name + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(catalog, handle, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        os.chmod(tmp_path, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp_path, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _rebuild_catalog_locked() -> dict[str, Any]:
+    entries: dict[tuple[str, str], dict[str, Any]] = {}
+    for chat_dir in _iter_chat_dirs():
+        with _chat_lock(chat_dir):
+            _scan_records(
+                chat_dir,
+                repair_tails=True,
+                on_record=lambda record: _apply_record_to_catalog_entry(
+                    entries.setdefault(
+                        _catalog_contact_key(record.get("business_connection_id"), record.get("chat_id")),
+                        _empty_catalog_entry(
+                            business_connection_id=record.get("business_connection_id"),
+                            chat_id=record.get("chat_id"),
+                        ),
+                    ),
+                    record,
+                ),
+            )
+    catalog = _catalog_from_entries(entries)
+    _write_catalog_locked(catalog)
+    return catalog
+
+
+def rebuild_contact_catalog() -> dict[str, Any]:
+    with _root_lock():
+        return _rebuild_catalog_locked()
+
+
+def _load_contact_catalog(*, rebuild_on_missing: bool, rebuild_on_corrupt: bool) -> tuple[dict[str, Any], bool]:
+    with _root_lock():
+        try:
+            catalog = _read_catalog_locked()
+        except ValueError:
+            if not rebuild_on_corrupt:
+                raise
+            return _rebuild_catalog_locked(), True
+        if catalog is None:
+            if not rebuild_on_missing:
+                return _catalog_from_entries({}), False
+            return _rebuild_catalog_locked(), True
+        return catalog, False
+
+
+def _refresh_contact_catalog(records: Iterable[dict[str, Any]]) -> None:
+    materialized = [record for record in records if isinstance(record, dict)]
+    if not materialized:
+        return
+    with _root_lock():
+        try:
+            catalog = _read_catalog_locked()
+        except ValueError:
+            _rebuild_catalog_locked()
+            return
+        if catalog is None:
+            _rebuild_catalog_locked()
+            return
+        entries = _catalog_contacts_map(catalog)
+        for record in materialized:
+            entry = entries.setdefault(
+                _catalog_contact_key(record.get("business_connection_id"), record.get("chat_id")),
+                _empty_catalog_entry(
+                    business_connection_id=record.get("business_connection_id"),
+                    chat_id=record.get("chat_id"),
+                ),
+            )
+            _apply_record_to_catalog_entry(entry, record)
+        _write_catalog_locked(_catalog_from_entries(entries))
+
+
+def _known_chat_type_from_catalog(
+    business_connection_id: Any,
+    chat_id: Any,
+) -> str | None:
+    try:
+        catalog, _ = _load_contact_catalog(rebuild_on_missing=False, rebuild_on_corrupt=False)
+    except ValueError:
+        return None
+    for entry in catalog.get("contacts", []):
+        if not isinstance(entry, dict):
+            continue
+        if _catalog_contact_key(entry.get("business_connection_id"), entry.get("chat_id")) != _catalog_contact_key(
+            business_connection_id,
+            chat_id,
+        ):
+            continue
+        return _normalize_chat_type(entry.get("chat_type")) or _normalize_chat_type(
+            _get(entry.get("current_profile"), "type")
+        )
+    return None
+
+
+def _known_chat_type_from_history(
+    business_connection_id: Any,
+    chat_id: Any,
+) -> str | None:
+    chat_dir = _history_chat_dir_path(business_connection_id, chat_id)
+    if not chat_dir.exists():
+        return None
+    with _chat_lock(chat_dir):
+        state, _ = _load_chat_state(chat_dir)
+    return _normalize_chat_type(_get(state.latest_chat_profile, "type"))
+
+
+def _known_chat_type_for_capture(
+    business_connection_id: Any,
+    chat_id: Any,
+) -> str | None:
+    return _known_chat_type_from_catalog(business_connection_id, chat_id) or _known_chat_type_from_history(
+        business_connection_id,
+        chat_id,
+    )
 
 
 def _month_filename(observed_at: datetime) -> str:
@@ -574,6 +1034,8 @@ def _build_event(
     direction: str,
     reply_to_message_id: Any,
     text: str | None = None,
+    chat_profile: dict[str, Any] | None = None,
+    sender_profile: dict[str, Any] | None = None,
     deleted_event_id: str | None = None,
     classification: str | None = None,
     replacement_message_id: Any = None,
@@ -603,6 +1065,12 @@ def _build_event(
     }
     if text is not None:
         record["text"] = text
+    normalized_chat_profile = _normalize_profile_snapshot(chat_profile)
+    if normalized_chat_profile is not None:
+        record["chat_profile"] = normalized_chat_profile
+    normalized_sender_profile = _normalize_profile_snapshot(sender_profile)
+    if normalized_sender_profile is not None:
+        record["sender_profile"] = normalized_sender_profile
     if deleted_event_id is not None:
         record["deleted_event_id"] = deleted_event_id
     if classification is not None:
@@ -667,6 +1135,12 @@ def _apply_record_to_state(state: ChatState, record: dict[str, Any]) -> None:
             deleted=False,
             deleted_event_id=None,
         )
+        chat_profile = _normalize_profile_snapshot(record.get("chat_profile"))
+        sender_profile = _normalize_profile_snapshot(record.get("sender_profile"))
+        if chat_profile is not None:
+            state.latest_chat_profile = chat_profile
+        if sender_profile is not None:
+            state.latest_sender_profile = sender_profile
         return
     if event_type == "message.deleted":
         original = state.messages.get(message_key)
@@ -925,7 +1399,15 @@ def _run_scheduled_deletion_timer(chat_dir_text: str, deleted_event_id: str, due
             return
         _DELETION_TIMERS.pop(key, None)
     try:
-        _classify_due_for_chat(chat_dir, history_config_from_env(), now=max(_utcnow(), due_at))
+        appended_records: list[dict[str, Any]] = []
+        _classify_due_for_chat(
+            chat_dir,
+            history_config_from_env(),
+            now=max(_utcnow(), due_at),
+            appended_records=appended_records,
+        )
+        if appended_records:
+            _refresh_contact_catalog(appended_records)
     except Exception as exc:  # noqa: BLE001 - background classification must stay contained
         logger.warning("%s: scheduled deletion classification failed: %s", PLUGIN_NAME, exc, exc_info=True)
 
@@ -957,6 +1439,7 @@ def _sync_pending_deletions_for_chat(
     config: HistoryConfig,
     *,
     now: datetime,
+    appended_records: list[dict[str, Any]] | None = None,
 ) -> int:
     appended = 0
     for deleted_event_id, pending in list(state.pending_deletions.items()):
@@ -981,6 +1464,8 @@ def _sync_pending_deletions_for_chat(
         if record is None or record["event_id"] in state.seen_event_ids:
             continue
         _append_record(chat_dir, record)
+        if appended_records is not None:
+            appended_records.append(record)
         _apply_record_to_state(state, record)
         appended += 1
         _cancel_deletion_timer(chat_dir, deleted_event_id)
@@ -989,11 +1474,17 @@ def _sync_pending_deletions_for_chat(
     return appended
 
 
-def _classify_due_for_chat(chat_dir: Path, config: HistoryConfig, *, now: datetime | None = None) -> int:
+def _classify_due_for_chat(
+    chat_dir: Path,
+    config: HistoryConfig,
+    *,
+    now: datetime | None = None,
+    appended_records: list[dict[str, Any]] | None = None,
+) -> int:
     current = now or _utcnow()
     with _chat_lock(chat_dir):
         state, _ = _load_chat_state(chat_dir)
-        return _sync_pending_deletions_for_chat(chat_dir, state, config, now=current)
+        return _sync_pending_deletions_for_chat(chat_dir, state, config, now=current, appended_records=appended_records)
 
 
 def _iter_chat_dirs() -> Iterator[Path]:
@@ -1086,7 +1577,10 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
     result = MaintenanceResult()
     for chat_dir in _iter_chat_dirs():
         try:
-            result.classified += _classify_due_for_chat(chat_dir, config, now=current)
+            appended_records: list[dict[str, Any]] = []
+            result.classified += _classify_due_for_chat(chat_dir, config, now=current, appended_records=appended_records)
+            if appended_records:
+                _refresh_contact_catalog(appended_records)
         except Exception as exc:  # noqa: BLE001 - maintenance is best effort
             result.warnings.append(f"classification failed for {chat_dir}: {exc}")
     with _root_lock():
@@ -1264,12 +1758,25 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
         return False
 
     business_connection_id = _get(payload, "business_connection_id") or _get(payload, "_hermes_business_connection_id")
-    chat_id = _get(_get(payload, "chat"), "id")
-    if not business_connection_id or chat_id is None or not config.allows(business_connection_id, chat_id):
+    chat = _get(payload, "chat")
+    chat_id = _get(chat, "id")
+    if not business_connection_id or chat_id is None:
+        return False
+    chat_type = _normalize_chat_type(_get(chat, "type"))
+    known_chat_type = None
+    if chat_type is None and not config.exact_chat_allowed(chat_id):
+        known_chat_type = _known_chat_type_for_capture(business_connection_id, chat_id)
+    if not config.allows(
+        business_connection_id,
+        chat_id,
+        chat_type=chat_type,
+        known_chat_type=known_chat_type,
+    ):
         return False
 
     chat_dir: Path | None = None
     wrote = False
+    catalog_records: list[dict[str, Any]] = []
     if event_type == "message.deleted":
         chat_dir = _history_chat_dir(business_connection_id, chat_id)
         with _chat_lock(chat_dir):
@@ -1293,9 +1800,16 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
                 if record["event_id"] in state.seen_event_ids:
                     continue
                 _append_record(chat_dir, record)
+                catalog_records.append(record)
                 _apply_record_to_state(state, record)
                 wrote = True
-            wrote_classifications = _sync_pending_deletions_for_chat(chat_dir, state, config, now=current)
+            wrote_classifications = _sync_pending_deletions_for_chat(
+                chat_dir,
+                state,
+                config,
+                now=current,
+                appended_records=catalog_records,
+            )
             if wrote or wrote_classifications:
                 _store_chat_cache(chat_dir, state)
             wrote = wrote or bool(wrote_classifications)
@@ -1306,6 +1820,8 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
         chat_dir = _history_chat_dir(business_connection_id, chat_id)
         direction = await _resolve_direction(payload, bot=bot)
         message_date = _normalize_timestamp(_get(payload, "date"))
+        chat_profile = _extract_chat_profile(payload)
+        sender_profile = _extract_sender_profile(payload)
         with _chat_lock(chat_dir):
             state, _ = _load_chat_state(chat_dir)
             record = _build_event(
@@ -1321,15 +1837,37 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
                 direction=direction,
                 reply_to_message_id=_get(_get(payload, "reply_to_message"), "message_id"),
                 text=text,
+                chat_profile=chat_profile,
+                sender_profile=sender_profile,
             )
             if record["event_id"] not in state.seen_event_ids:
                 _append_record(chat_dir, record)
+                catalog_records.append(record)
                 _apply_record_to_state(state, record)
                 wrote = True
-            wrote_classifications = _sync_pending_deletions_for_chat(chat_dir, state, config, now=current)
+            wrote_classifications = _sync_pending_deletions_for_chat(
+                chat_dir,
+                state,
+                config,
+                now=current,
+                appended_records=catalog_records,
+            )
             if wrote or wrote_classifications:
                 _store_chat_cache(chat_dir, state)
             wrote = wrote or bool(wrote_classifications)
+
+    if catalog_records:
+        try:
+            _refresh_contact_catalog(catalog_records)
+        except Exception as exc:  # noqa: BLE001 - derived catalog failure must never block canonical history
+            logger.warning(
+                "%s: history contact catalog update failed for connection=%s chat=%s: %s",
+                PLUGIN_NAME,
+                business_connection_id,
+                chat_id,
+                exc,
+                exc_info=True,
+            )
 
     if _should_run_throttled_maintenance(current):
         maintenance = maintain_history(now=current)
@@ -1386,7 +1924,7 @@ def _require_single_chat(*, business_connection_id: str | None, chat_id: str) ->
     return matches[0]
 
 
-def _parse_since(value: str | None) -> datetime | None:
+def _parse_time_bound(value: str | None, *, option_name: str) -> datetime | None:
     if value is None or not value.strip():
         return None
     raw = value.strip()
@@ -1403,9 +1941,243 @@ def _parse_since(value: str | None) -> datetime | None:
         return _utcnow() - timedelta(seconds=amount * seconds)
     parsed = _parse_datetime(raw)
     if parsed is None:
-        raise ValueError(f"unsupported --since value: {value}")
+        raise ValueError(f"unsupported {option_name} value: {value}")
     return parsed
 
+
+def _parse_since(value: str | None) -> datetime | None:
+    return _parse_time_bound(value, option_name="--since")
+
+
+def _month_bounds(path: Path) -> tuple[datetime, datetime] | None:
+    month = _file_month(path)
+    if month is None:
+        return None
+    year, month_value = month
+    start = datetime(year, month_value, 1, tzinfo=timezone.utc)
+    if month_value == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end = datetime(year, month_value + 1, 1, tzinfo=timezone.utc)
+    return start, end
+
+
+def _partition_intersects(path: Path, *, since: datetime | None, until: datetime | None) -> bool:
+    bounds = _month_bounds(path)
+    if bounds is None:
+        return True
+    start, end = bounds
+    if since is not None and end <= since:
+        return False
+    if until is not None and start > until:
+        return False
+    return True
+
+
+def _iter_selected_history_files(chat_dir: Path, *, since: datetime | None, until: datetime | None) -> Iterator[Path]:
+    for path in _iter_history_files(chat_dir):
+        if _partition_intersects(path, since=since, until=until):
+            yield path
+
+
+def _record_observed_at(record: dict[str, Any]) -> datetime | None:
+    return _parse_datetime(record.get("observed_at"))
+
+
+def _record_within_bounds(record: dict[str, Any], *, since: datetime | None, until: datetime | None) -> bool:
+    observed_at = _record_observed_at(record)
+    if observed_at is None:
+        return False
+    if since is not None and observed_at < since:
+        return False
+    if until is not None and observed_at > until:
+        return False
+    return True
+
+
+def _safe_raw_query_needle(query: str) -> str | None:
+    if any(ord(char) < 0x20 or char in {'"', "\\"} for char in query):
+        return None
+    return query.casefold()
+
+
+def _iter_streamed_records(
+    chat_dir: Path,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+    text_query: str | None = None,
+) -> Iterator[dict[str, Any]]:
+    raw_query = None if text_query is None else _safe_raw_query_needle(text_query)
+    for path in _iter_selected_history_files(chat_dir, since=since, until=until):
+        with path.open("r", encoding="utf-8") as handle:
+            for line_no, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                if raw_query is not None and raw_query not in line.casefold():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid JSON in {path.name}:{line_no}: {exc}") from exc
+                if not isinstance(record, dict):
+                    raise ValueError(f"non-object record in {path.name}:{line_no}")
+                if not _record_within_bounds(record, since=since, until=until):
+                    continue
+                if text_query is not None and text_query.casefold() not in str(record.get("text") or "").casefold():
+                    continue
+                yield record
+
+
+def _tail_records(records: Iterable[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    bounded = deque(maxlen=limit)
+    for record in records:
+        bounded.append(record)
+    return list(bounded)
+
+
+def _latest_records(records: Iterable[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    heap: list[tuple[float, int, dict[str, Any]]] = []
+    for sequence, record in enumerate(records):
+        observed_at = _record_observed_at(record)
+        if observed_at is None:
+            continue
+        item = (observed_at.timestamp(), sequence, record)
+        if len(heap) < limit:
+            heapq.heappush(heap, item)
+            continue
+        if item[:2] <= heap[0][:2]:
+            continue
+        heapq.heapreplace(heap, item)
+    return [item[2] for item in sorted(heap)]
+
+
+def _catalog_entries_for_cli() -> list[dict[str, Any]]:
+    catalog, _ = _load_contact_catalog(rebuild_on_missing=True, rebuild_on_corrupt=True)
+    return [entry for entry in catalog.get("contacts", []) if isinstance(entry, dict)]
+
+
+def _normalize_contact_lookup(text: str) -> str:
+    return " ".join(text.strip().casefold().split()).lstrip("@")
+
+
+def _contact_lookup_tokens(entry: dict[str, Any]) -> set[str]:
+    tokens = {
+        _normalize_contact_lookup(value)
+        for value in [*_profile_lookup_values(entry.get("current_profile")), *_catalog_entry_aliases(entry)]
+        if isinstance(value, str) and value.strip()
+    }
+    return {token for token in tokens if token}
+
+
+def _contact_search_haystack(entry: dict[str, Any]) -> str:
+    parts = [
+        _catalog_entry_display_name(entry),
+        *(_profile_lookup_values(entry.get("current_profile"))),
+        *(_catalog_entry_aliases(entry)),
+        str(entry.get("business_connection_id")),
+        str(entry.get("chat_id")),
+        str(entry.get("chat_type") or ""),
+    ]
+    return " | ".join(parts).casefold()
+
+
+def _filter_catalog_entries(
+    *,
+    business_connection_id: str | None = None,
+    chat_id: str | None = None,
+) -> list[dict[str, Any]]:
+    entries = []
+    for entry in _catalog_entries_for_cli():
+        if business_connection_id is not None and str(entry.get("business_connection_id")) != str(business_connection_id):
+            continue
+        if chat_id is not None and str(entry.get("chat_id")) != str(chat_id):
+            continue
+        entries.append(entry)
+    return entries
+
+
+def _resolve_chat_entry(*, business_connection_id: str | None, chat_id: str) -> dict[str, Any]:
+    matches = _filter_catalog_entries(business_connection_id=business_connection_id, chat_id=chat_id)
+    if not matches:
+        raise ValueError("no matching history chat found")
+    if len(matches) > 1:
+        raise ValueError("multiple history chats match; pass --connection explicitly")
+    return matches[0]
+
+
+def _resolve_contact_entry(*, business_connection_id: str | None, contact: str) -> dict[str, Any]:
+    needle = _normalize_contact_lookup(contact)
+    matches = [
+        entry
+        for entry in _filter_catalog_entries(business_connection_id=business_connection_id)
+        if needle in _contact_lookup_tokens(entry)
+    ]
+    if not matches:
+        raise ValueError(f"no matching contact found for {contact!r}")
+    if len(matches) > 1:
+        labels = ", ".join(
+            f"{entry.get('business_connection_id')}:{entry.get('chat_id')}={_catalog_entry_display_name(entry)}"
+            for entry in sorted(matches, key=lambda entry: (str(entry.get("business_connection_id")), str(entry.get("chat_id"))))
+        )
+        raise ValueError(f"contact {contact!r} is ambiguous; choose one of: {labels}")
+    return matches[0]
+
+
+def _resolve_history_entry(
+    *,
+    business_connection_id: str | None,
+    chat_id: str | None,
+    contact: str | None,
+) -> dict[str, Any]:
+    if chat_id and contact:
+        raise ValueError("pass either --chat or --contact, not both")
+    if contact:
+        return _resolve_contact_entry(business_connection_id=business_connection_id, contact=contact)
+    if chat_id:
+        return _resolve_chat_entry(business_connection_id=business_connection_id, chat_id=chat_id)
+    raise ValueError("pass --chat or --contact")
+
+
+def _entry_chat_dir(entry: dict[str, Any]) -> Path:
+    return _history_chat_dir_path(entry.get("business_connection_id"), entry.get("chat_id"))
+
+
+def _contact_summary_line(entry: dict[str, Any]) -> str:
+    profile = entry.get("current_profile") if isinstance(entry.get("current_profile"), dict) else {}
+    username = _clean_optional_text(_get(profile, "username"))
+    username_text = f" username=@{username}" if username else ""
+    aliases = _catalog_entry_aliases(entry)
+    aliases_text = f" aliases={','.join(aliases)}" if aliases else ""
+    return (
+        f"{_catalog_entry_display_name(entry)}{username_text} "
+        f"connection={entry.get('business_connection_id')} chat={entry.get('chat_id')} "
+        f"type={entry.get('chat_type') or 'unknown'} messages={entry.get('message_count', 0)} "
+        f"edits={entry.get('edit_count', 0)} deleted={entry.get('deleted_count', 0)} "
+        f"unexplained={entry.get('unexplained_count', 0)} "
+        f"range={entry.get('first_seen_at')}..{entry.get('last_seen_at')}{aliases_text}"
+    )
+
+
+def _catalog_status_line(*, rebuild: bool = False) -> str:
+    path = _catalog_path()
+    if rebuild:
+        catalog = rebuild_contact_catalog()
+        return (
+            f"status=rebuilt path={path} entries={catalog.get('contact_count', 0)} "
+            f"generated_at={catalog.get('generated_at')}"
+        )
+    with _root_lock():
+        try:
+            catalog = _read_catalog_locked()
+        except ValueError as exc:
+            return f"status=corrupt path={path} error={exc}"
+        if catalog is None:
+            return f"status=missing path={path}"
+        return (
+            f"status=ok path={path} entries={catalog.get('contact_count', 0)} "
+            f"generated_at={catalog.get('generated_at')}"
+        )
 
 def _bounded_limit(raw: int | None, default: int) -> int:
     if raw is None:
@@ -1487,24 +2259,39 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     history_subs = history.add_subparsers(dest="telegram_business_history_command")
 
     chats = history_subs.add_parser("chats", help="List chats with stored history")
+    chats.add_argument("--connection")
     chats.add_argument("--limit", type=int, default=DEFAULT_CHAT_LIMIT)
     chats.set_defaults(_history_action="chats")
+
+    contacts = history_subs.add_parser("contacts", help="List or search current contacts")
+    contacts.add_argument("--connection")
+    contacts.add_argument("--search")
+    contacts.add_argument("--limit", type=int, default=DEFAULT_CHAT_LIMIT)
+    contacts.set_defaults(_history_action="contacts")
+
+    catalog = history_subs.add_parser("catalog", help="Show or rebuild the derived contact catalog")
+    catalog.add_argument("--rebuild", action="store_true")
+    catalog.set_defaults(_history_action="catalog")
 
     stats = history_subs.add_parser("stats", help="Show aggregate history stats")
     stats.set_defaults(_history_action="stats")
 
     show = history_subs.add_parser("show", help="Show a bounded history timeline")
     show.add_argument("--connection")
-    show.add_argument("--chat", required=True)
+    show.add_argument("--chat")
+    show.add_argument("--contact")
     show.add_argument("--since")
+    show.add_argument("--until")
     show.add_argument("--limit", type=int, default=DEFAULT_READ_LIMIT)
     show.set_defaults(_history_action="show")
 
     search = history_subs.add_parser("search", help="Search chat history text")
     search.add_argument("--connection")
-    search.add_argument("--chat", required=True)
+    search.add_argument("--chat")
+    search.add_argument("--contact")
     search.add_argument("--text", required=True)
     search.add_argument("--since")
+    search.add_argument("--until")
     search.add_argument("--limit", type=int, default=DEFAULT_READ_LIMIT)
     search.set_defaults(_history_action="search")
 
@@ -1521,10 +2308,12 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
 
     export = history_subs.add_parser("export", help="Export bounded history records")
     export.add_argument("--connection")
-    export.add_argument("--chat", required=True)
+    export.add_argument("--chat")
+    export.add_argument("--contact")
     export.add_argument("--format", choices=["jsonl", "text"], default="jsonl")
     export.add_argument("--limit", type=int, default=DEFAULT_READ_LIMIT)
     export.add_argument("--since")
+    export.add_argument("--until")
     export.set_defaults(_history_action="export")
 
     verify = history_subs.add_parser("verify", help="Verify canonical history files")
@@ -1538,124 +2327,193 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
 def handle_cli(args: argparse.Namespace) -> int:
     action = getattr(args, "_history_action", None)
     if action is None:
-        print("Usage: hermes telegram-business history <chats|stats|show|search|deletions|export|verify|maintain>")
+        print("Usage: hermes telegram-business history <chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>")
         return 1
-
-    if action == "chats":
-        matches = _iter_chat_matches()
-        summaries = [_chat_summary(records) for _, records in matches]
-        limit = _bounded_limit(getattr(args, "limit", None), DEFAULT_CHAT_LIMIT)
-        for summary in summaries[:limit]:
-            print(
-                f"{summary['business_connection_id']} chat={summary['chat_id']} "
-                f"records={summary['records']} pending={summary['pending_deletions']} "
-                f"unexplained={summary['unexplained_deletions']} "
-                f"range={summary['first_observed_at']}..{summary['last_observed_at']}"
+    try:
+        if action == "chats":
+            entries = sorted(
+                _filter_catalog_entries(business_connection_id=getattr(args, "connection", None)),
+                key=lambda entry: (
+                    _parse_datetime(entry.get("last_seen_at")) or datetime.min.replace(tzinfo=timezone.utc),
+                    str(entry.get("business_connection_id")),
+                    str(entry.get("chat_id")),
+                ),
+                reverse=True,
             )
-        if not summaries:
-            print("No Telegram Business history found.")
-        return 0
-
-    if action == "stats":
-        config = history_config_from_env()
-        stats = collect_history_stats()
-        print(
-            " ".join(
-                [
-                    f"enabled={config.enabled}",
-                    f"connections={config.connections.render() if config.connections else '<unset>'}",
-                    f"chats={config.chats.render() if config.chats else '<unset>'}",
-                    f"correction_window={config.correction_window_seconds}s",
-                    f"nearby_before={config.nearby_before_seconds}s",
-                    f"retention_days={config.retention_days}",
-                    f"max_bytes={config.max_bytes}",
-                    f"chat_count={stats.chat_count}",
-                    f"file_count={stats.file_count}",
-                    f"record_count={stats.record_count}",
-                    f"pending={stats.pending_count}",
-                    f"unexplained={stats.unexplained_count}",
-                    f"total_bytes={stats.total_bytes}",
-                    f"cap_exceeded={stats.cap_exceeded}",
-                ]
-            )
-        )
-        return 0
-
-    if action in {"show", "search", "export"}:
-        _chat_dir, records = _require_single_chat(
-            business_connection_id=getattr(args, "connection", None),
-            chat_id=str(args.chat),
-        )
-        since = _parse_since(getattr(args, "since", None))
-        if since is not None:
-            records = [record for record in records if (_parse_datetime(record.get("observed_at")) or _utcnow()) >= since]
-        if action == "search":
-            query = str(args.text).casefold()
-            records = [
-                record
-                for record in records
-                if query in str(record.get("text") or "").casefold()
-            ]
-        limit = _bounded_limit(getattr(args, "limit", None), DEFAULT_READ_LIMIT)
-        records = _trim_records(records, limit)
-        if action == "export" and args.format == "jsonl":
-            for record in records:
-                print(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+            limit = _bounded_limit(getattr(args, "limit", None), DEFAULT_CHAT_LIMIT)
+            for entry in entries[:limit]:
+                print(_contact_summary_line(entry))
+            if not entries:
+                print("No Telegram Business history found.")
             return 0
-        for record in records:
-            print(_history_text_line(record))
-        return 0
 
-    if action == "deletions":
-        rows: list[str] = []
-        status = str(args.status)
-        for _chat_dir, records in _iter_chat_matches(
-            business_connection_id=getattr(args, "connection", None),
-            chat_id=None if getattr(args, "chat", None) is None else str(args.chat),
-        ):
-            state = _build_chat_state(records)
-            for deleted_event_id, pending in state.pending_deletions.items():
-                if pending.classification is None:
-                    if status == "pending" and pending.deleted_event is not None:
-                        rows.append(
-                            f"{pending.deleted_event.get('observed_at')} message.deleted "
-                            f"connection={pending.deleted_event.get('business_connection_id')} "
-                            f"chat={pending.deleted_event.get('chat_id')} "
-                            f"message={pending.deleted_event.get('message_id')} status=pending"
-                        )
-                    continue
-                if pending.classification.get("classification") != status:
-                    continue
-                rows.append(_history_text_line(pending.classification))
-        limit = _bounded_limit(getattr(args, "limit", None), DEFAULT_READ_LIMIT)
-        for row in rows[:limit]:
-            print(row)
-        if not rows:
-            print("No matching deletions found.")
-        return 0
+        if action == "contacts":
+            entries = _filter_catalog_entries(business_connection_id=getattr(args, "connection", None))
+            search = _clean_optional_text(getattr(args, "search", None))
+            if search is not None:
+                entries = [entry for entry in entries if search.casefold() in _contact_search_haystack(entry)]
+            entries = sorted(
+                entries,
+                key=lambda entry: (
+                    _parse_datetime(entry.get("last_seen_at")) or datetime.min.replace(tzinfo=timezone.utc),
+                    str(entry.get("business_connection_id")),
+                    str(entry.get("chat_id")),
+                ),
+                reverse=True,
+            )
+            limit = _bounded_limit(getattr(args, "limit", None), DEFAULT_CHAT_LIMIT)
+            for entry in entries[:limit]:
+                print(_contact_summary_line(entry))
+            if not entries:
+                print("No matching contacts found.")
+            return 0
 
-    if action == "verify":
-        result = verify_history(repair_tails=bool(getattr(args, "repair_tails", False)))
-        print(
-            f"ok={result.ok} chats={result.chat_count} files={result.file_count} "
-            f"records={result.record_count} repaired_files={result.repaired_files}"
-        )
-        for warning in result.warnings:
-            print(f"warning: {warning}")
-        for error in result.errors:
-            print(f"error: {error}")
-        return 0 if result.ok else 1
+        if action == "catalog":
+            print(_catalog_status_line(rebuild=bool(getattr(args, "rebuild", False))))
+            return 0
 
-    if action == "maintain":
-        result = maintain_history()
-        print(
-            f"classified={result.classified} pruned_files={result.pruned_files} "
-            f"pruned_bytes={result.pruned_bytes} cap_exceeded={result.cap_exceeded} "
-            f"cap_shortfall_bytes={result.cap_shortfall_bytes}"
-        )
-        for warning in result.warnings:
-            print(f"warning: {warning}")
-        return 0
+        if action == "stats":
+            config = history_config_from_env()
+            stats = collect_history_stats()
+            print(
+                " ".join(
+                    [
+                        f"enabled={config.enabled}",
+                        f"connections={config.connections.render() if config.connections else '<unset>'}",
+                        f"chats={config.chats.render() if config.chats else '<unset>'}",
+                        f"chat_types={','.join(sorted(config.chat_types))}",
+                        f"correction_window={config.correction_window_seconds}s",
+                        f"nearby_before={config.nearby_before_seconds}s",
+                        f"retention_days={config.retention_days}",
+                        f"max_bytes={config.max_bytes}",
+                        f"chat_count={stats.chat_count}",
+                        f"file_count={stats.file_count}",
+                        f"record_count={stats.record_count}",
+                        f"pending={stats.pending_count}",
+                        f"unexplained={stats.unexplained_count}",
+                        f"total_bytes={stats.total_bytes}",
+                        f"cap_exceeded={stats.cap_exceeded}",
+                    ]
+                )
+            )
+            return 0
+
+        if action in {"show", "search", "export"}:
+            since = _parse_since(getattr(args, "since", None))
+            until = _parse_time_bound(getattr(args, "until", None), option_name="--until")
+            if since is not None and until is not None and until < since:
+                raise ValueError("--until must be greater than or equal to --since")
+            limit = _bounded_limit(getattr(args, "limit", None), DEFAULT_READ_LIMIT)
+            if action == "search":
+                text_query = str(args.text)
+                if getattr(args, "chat", None) is None and getattr(args, "contact", None) is None:
+                    records = _latest_records(
+                        (
+                            record
+                            for entry in _filter_catalog_entries(business_connection_id=getattr(args, "connection", None))
+                            for record in _iter_streamed_records(
+                                _entry_chat_dir(entry),
+                                since=since,
+                                until=until,
+                                text_query=text_query,
+                            )
+                        ),
+                        limit=limit,
+                    )
+                else:
+                    entry = _resolve_history_entry(
+                        business_connection_id=getattr(args, "connection", None),
+                        chat_id=None if getattr(args, "chat", None) is None else str(args.chat),
+                        contact=getattr(args, "contact", None),
+                    )
+                    records = _tail_records(
+                        _iter_streamed_records(
+                            _entry_chat_dir(entry),
+                            since=since,
+                            until=until,
+                            text_query=text_query,
+                        ),
+                        limit=limit,
+                    )
+            else:
+                entry = _resolve_history_entry(
+                    business_connection_id=getattr(args, "connection", None),
+                    chat_id=None if getattr(args, "chat", None) is None else str(args.chat),
+                    contact=getattr(args, "contact", None),
+                )
+                records = _tail_records(
+                    _iter_streamed_records(
+                        _entry_chat_dir(entry),
+                        since=since,
+                        until=until,
+                        text_query=None,
+                    ),
+                    limit=limit,
+                )
+            if action == "export" and args.format == "jsonl":
+                for record in records:
+                    print(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+                return 0
+            if not records:
+                print("No matching history records found.")
+                return 0
+            for record in records:
+                print(_history_text_line(record))
+            return 0
+
+        if action == "deletions":
+            rows: list[str] = []
+            status = str(args.status)
+            for _chat_dir, records in _iter_chat_matches(
+                business_connection_id=getattr(args, "connection", None),
+                chat_id=None if getattr(args, "chat", None) is None else str(args.chat),
+            ):
+                state = _build_chat_state(records)
+                for deleted_event_id, pending in state.pending_deletions.items():
+                    if pending.classification is None:
+                        if status == "pending" and pending.deleted_event is not None:
+                            rows.append(
+                                f"{pending.deleted_event.get('observed_at')} message.deleted "
+                                f"connection={pending.deleted_event.get('business_connection_id')} "
+                                f"chat={pending.deleted_event.get('chat_id')} "
+                                f"message={pending.deleted_event.get('message_id')} status=pending"
+                            )
+                        continue
+                    if pending.classification.get("classification") != status:
+                        continue
+                    rows.append(_history_text_line(pending.classification))
+            limit = _bounded_limit(getattr(args, "limit", None), DEFAULT_READ_LIMIT)
+            for row in rows[:limit]:
+                print(row)
+            if not rows:
+                print("No matching deletions found.")
+            return 0
+
+        if action == "verify":
+            result = verify_history(repair_tails=bool(getattr(args, "repair_tails", False)))
+            print(
+                f"ok={result.ok} chats={result.chat_count} files={result.file_count} "
+                f"records={result.record_count} repaired_files={result.repaired_files}"
+            )
+            for warning in result.warnings:
+                print(f"warning: {warning}")
+            for error in result.errors:
+                print(f"error: {error}")
+            return 0 if result.ok else 1
+
+        if action == "maintain":
+            result = maintain_history()
+            print(
+                f"classified={result.classified} pruned_files={result.pruned_files} "
+                f"pruned_bytes={result.pruned_bytes} cap_exceeded={result.cap_exceeded} "
+                f"cap_shortfall_bytes={result.cap_shortfall_bytes}"
+            )
+            for warning in result.warnings:
+                print(f"warning: {warning}")
+            return 0
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 1
 
     print(f"Unknown history action: {action}")
     return 1

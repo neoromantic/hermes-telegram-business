@@ -225,7 +225,12 @@ def test_readme_uses_public_name_and_canonical_install_source():
     assert "hermes plugins install neoromantic/hermes-telegram-business --enable" in readme
     assert "legacy-stable" in readme
     assert "HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE" in readme
+    assert "HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES" in readme
     assert "HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS" in readme
+    assert "private Business chats only" in readme
+    assert "contacts.json" in readme
+    assert "hermes telegram-business history contacts" in readme
+    assert "hermes telegram-business history catalog --rebuild" in readme
     assert "hermes telegram-business history show" in readme
     assert "Update.ALL_TYPES" in readme
     assert "PTB 22.6" in readme
@@ -250,6 +255,9 @@ def test_history_skill_documents_runtime_scheduler_and_defaults():
     assert "Update.ALL_TYPES" in skill
     assert "`source`" in skill
     assert "`classification_reason`" in skill
+    assert "HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES" in skill
+    assert "private Business chats only" in skill
+    assert "contacts.json" in skill
     assert "HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS" in skill
     assert "default `0`" in skill
     assert "1073741824" in skill

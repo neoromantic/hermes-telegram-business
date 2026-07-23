@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import sys
+import threading
 import types
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -53,8 +54,6 @@ def plugin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 @pytest.fixture
 def enabled_history(monkeypatch: pytest.MonkeyPatch, plugin):
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
     plugin._history_support.reset_in_memory_caches()
     return plugin
@@ -79,8 +78,18 @@ def make_business_text_update(
     caption: str | None = None,
     business_id: str = "business-123",
     chat_id: int = 991,
+    chat_type: str | None = "private",
+    chat_title: str | None = None,
+    chat_username: str | None = "customer991",
+    chat_first_name: str | None = "Casey",
+    chat_last_name: str | None = "Customer",
     message_id: int = 77,
     from_user_id: int | None = 2000,
+    from_user_is_bot: bool | None = False,
+    from_user_username: str | None = "casey_customer",
+    from_user_first_name: str | None = "Casey",
+    from_user_last_name: str | None = "Customer",
+    from_user_language_code: str | None = "en",
     update_id: int = 42,
     date: datetime | None = None,
     reply_to_message_id: int | None = None,
@@ -89,9 +98,25 @@ def make_business_text_update(
 ):
     payload = SimpleNamespace(
         business_connection_id=business_id,
-        chat=SimpleNamespace(id=chat_id),
+        chat=SimpleNamespace(
+            id=chat_id,
+            type=chat_type,
+            title=chat_title,
+            username=chat_username,
+            first_name=chat_first_name,
+            last_name=chat_last_name,
+        ),
         message_id=message_id,
-        from_user=None if from_user_id is None else SimpleNamespace(id=from_user_id),
+        from_user=None
+        if from_user_id is None
+        else SimpleNamespace(
+            id=from_user_id,
+            is_bot=from_user_is_bot,
+            username=from_user_username,
+            first_name=from_user_first_name,
+            last_name=from_user_last_name,
+            language_code=from_user_language_code,
+        ),
         date=date or datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc),
         text=text,
         caption=caption,
@@ -116,15 +141,23 @@ def make_business_media_update(
     caption: str = "caption-only",
     business_id: str = "business-123",
     chat_id: int = 991,
+    chat_type: str | None = "private",
     message_id: int = 77,
     update_id: int = 42,
     date: datetime | None = None,
 ):
     payload = SimpleNamespace(
         business_connection_id=business_id,
-        chat=SimpleNamespace(id=chat_id),
+        chat=SimpleNamespace(id=chat_id, type=chat_type, first_name="Casey", last_name="Customer", username="customer991"),
         message_id=message_id,
-        from_user=SimpleNamespace(id=2000),
+        from_user=SimpleNamespace(
+            id=2000,
+            is_bot=False,
+            username="casey_customer",
+            first_name="Casey",
+            last_name="Customer",
+            language_code="en",
+        ),
         date=date or datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc),
         text=None,
         caption=caption,
@@ -145,12 +178,13 @@ def make_deleted_update(
     *,
     business_id: str = "business-123",
     chat_id: int = 991,
+    chat_type: str | None = "private",
     message_ids: tuple[int, ...] = (77,),
     update_id: int = 99,
 ):
     payload = SimpleNamespace(
         business_connection_id=business_id,
-        chat=SimpleNamespace(id=chat_id),
+        chat=SimpleNamespace(id=chat_id, type=chat_type, first_name="Casey", last_name="Customer", username="customer991"),
         message_ids=list(message_ids),
         api_kwargs={},
     )
@@ -180,6 +214,11 @@ def load_history_file(plugin, *, business_id: str = "business-123", chat_id: int
         if records and str(records[0].get("business_connection_id")) == business_id and str(records[0].get("chat_id")) == str(chat_id):
             return chat_dir / month
     raise AssertionError("history file not found")
+
+
+def load_catalog(plugin) -> dict[str, Any]:
+    path = plugin._history_support.history_root() / "contacts.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def make_legacy_history_record(
@@ -249,13 +288,16 @@ def make_legacy_history_record(
 
 def append_raw_history_records(plugin, *records: dict[str, Any]) -> None:
     history = plugin._history_support
+    grouped: dict[Path, list[str]] = {}
     for record in records:
         observed_at = history._parse_datetime(record.get("observed_at"))
         assert observed_at is not None
         chat_dir = history._history_chat_dir(record["business_connection_id"], record["chat_id"])
         path = chat_dir / history._month_filename(observed_at)
+        grouped.setdefault(path, []).append(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    for path, lines in grouped.items():
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            handle.writelines(lines)
             handle.flush()
             os.fsync(handle.fileno())
 
@@ -297,8 +339,8 @@ class TimerHarness:
 
 
 @pytest.mark.asyncio
-async def test_history_is_fail_closed_when_disabled_or_scope_is_missing(plugin, monkeypatch: pytest.MonkeyPatch):
-    update = make_business_text_update()
+async def test_history_is_fail_closed_when_disabled_or_missing_chat_type(plugin, monkeypatch: pytest.MonkeyPatch):
+    update = make_business_text_update(chat_type=None)
 
     await plugin._history_support.observe_ptb_update(update, bot=FakeBot())
     assert not plugin._history_support._iter_chat_matches(chat_id="991")
@@ -309,40 +351,124 @@ async def test_history_is_fail_closed_when_disabled_or_scope_is_missing(plugin, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("connections", "chats", "matches"),
-    [
-        ("business-123", "991", True),
-        ("other-connection", "991", False),
-        ("*", "*", True),
-    ],
-)
-async def test_history_scope_supports_exact_and_wildcard(
+async def test_enable_only_private_capture_spans_multiple_connections_and_chats(plugin, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(business_id="business-123", chat_id=991, text="alpha"),
+        bot=FakeBot(),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(business_id="business-456", chat_id=992, text="beta"),
+        bot=FakeBot(),
+    )
+
+    assert [record["text"] for record in load_records(plugin, business_id="business-123", chat_id=991)] == ["alpha"]
+    assert [record["text"] for record in load_records(plugin, business_id="business-456", chat_id=992)] == ["beta"]
+
+
+@pytest.mark.asyncio
+async def test_connection_filter_still_narrows_capture(plugin, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(business_id="business-123", chat_id=991, text="kept"),
+        bot=FakeBot(),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(business_id="business-456", chat_id=992, text="dropped"),
+        bot=FakeBot(),
+    )
+
+    assert [record["text"] for record in load_records(plugin, business_id="business-123", chat_id=991)] == ["kept"]
+    assert not plugin._history_support._iter_chat_matches(business_connection_id="business-456", chat_id="992")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_type", ["group", "supergroup", "channel"])
+async def test_history_skips_non_private_chat_types_by_default(plugin, monkeypatch: pytest.MonkeyPatch, chat_type: str):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+
+    wrote = await plugin._history_support.observe_ptb_update(
+        make_business_text_update(chat_type=chat_type, chat_title=f"{chat_type} room", chat_first_name=None, chat_last_name=None),
+        bot=FakeBot(),
+    )
+
+    assert wrote is False
+    assert not plugin._history_support._iter_chat_matches(chat_id="991")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_type", ["group", "supergroup", "channel"])
+async def test_history_chat_type_opt_in_allows_additional_chat_types(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
-    connections: str,
-    chats: str,
-    matches: bool,
+    chat_type: str,
 ):
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", connections)
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", chats)
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES", f"private,{chat_type}")
 
-    await plugin._history_support.observe_ptb_update(make_business_text_update(), bot=FakeBot())
+    wrote = await plugin._history_support.observe_ptb_update(
+        make_business_text_update(chat_type=chat_type, chat_title=f"{chat_type} room", chat_first_name=None, chat_last_name=None),
+        bot=FakeBot(),
+    )
 
-    found = bool(plugin._history_support._iter_chat_matches(chat_id="991"))
-    assert found is matches
+    assert wrote is True
+    assert load_records(plugin)[0]["chat_profile"]["type"] == chat_type
+
+
+@pytest.mark.asyncio
+async def test_exact_chat_id_opt_in_allows_group_chat_even_without_chat_type_opt_in(plugin, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
+
+    wrote = await plugin._history_support.observe_ptb_update(
+        make_business_text_update(chat_type="group", chat_title="support room", chat_first_name=None, chat_last_name=None),
+        bot=FakeBot(),
+    )
+
+    assert wrote is True
+    assert load_records(plugin)[0]["chat_profile"]["type"] == "group"
+
+
+@pytest.mark.asyncio
+async def test_delete_updates_follow_same_chat_boundary_and_known_type_fallback(plugin, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+
+    skipped = await plugin._history_support.observe_ptb_update(
+        make_deleted_update(chat_type="group", message_ids=(77,), update_id=1),
+        bot=FakeBot(),
+    )
+    assert skipped is False
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(chat_type="private", message_id=77, update_id=2, text="hello"),
+        bot=FakeBot(),
+    )
+    wrote = await plugin._history_support.observe_ptb_update(
+        make_deleted_update(chat_type=None, message_ids=(77,), update_id=3),
+        bot=FakeBot(),
+    )
+
+    assert wrote is True
+    assert [record["event_type"] for record in load_records(plugin)] == ["message.created", "message.deleted"]
 
 
 def test_history_config_defaults_and_env_overrides(plugin, monkeypatch: pytest.MonkeyPatch):
     config = plugin._history_support.history_config_from_env()
+    assert config.connections is None
+    assert config.chats is None
+    assert config.chat_types == {"private"}
     assert config.nearby_before_seconds == 15
     assert config.retention_days == 0
     assert config.max_bytes == 1024 * 1024 * 1024
 
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS", "7")
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES", "private,group")
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "0")
     config = plugin._history_support.history_config_from_env()
+    assert config.chat_types == {"group", "private"}
     assert config.nearby_before_seconds == 7
     assert config.retention_days == 0
 
@@ -470,6 +596,192 @@ async def test_history_records_store_canonical_source_for_all_event_types(enable
         "message.edited": "edited_business_message",
         "message.deleted": "deleted_business_messages",
         "deletion.classified": "deleted_business_messages",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_and_edit_records_store_profile_snapshots_and_catalog_aliases(enabled_history):
+    plugin = enabled_history
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            text="hello",
+            update_id=1,
+            date=base,
+            chat_username="alice-old",
+            chat_first_name="Alice",
+            chat_last_name="Smith",
+            from_user_username="alice_sender_old",
+            from_user_first_name="Alice",
+            from_user_last_name="Smith",
+        ),
+        bot=FakeBot(),
+        now=base,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            text="hello again",
+            update_id=2,
+            date=base,
+            edited=True,
+            chat_username="alice-new",
+            chat_first_name="Alicia",
+            chat_last_name="Smith",
+            from_user_username="alice_sender_new",
+            from_user_first_name="Alicia",
+            from_user_last_name="Smith",
+        ),
+        bot=FakeBot(),
+        now=base + timedelta(seconds=1),
+    )
+
+    records = load_records(plugin)
+    assert records[0]["chat_profile"] == {
+        "id": 991,
+        "type": "private",
+        "username": "alice-old",
+        "first_name": "Alice",
+        "last_name": "Smith",
+    }
+    assert records[0]["sender_profile"] == {
+        "id": 2000,
+        "is_bot": False,
+        "username": "alice_sender_old",
+        "first_name": "Alice",
+        "last_name": "Smith",
+        "language_code": "en",
+    }
+    catalog = load_catalog(plugin)
+    entry = catalog["contacts"][0]
+    assert entry["current_profile"]["username"] == "alice-new"
+    assert entry["current_profile"]["first_name"] == "Alicia"
+    assert "@alice-old" in entry["aliases"]
+    assert "Alice Smith" in entry["aliases"]
+    assert "@alice-new" not in entry["aliases"]
+
+
+@pytest.mark.asyncio
+async def test_catalog_update_failure_does_not_block_canonical_append(enabled_history, monkeypatch: pytest.MonkeyPatch, caplog):
+    plugin = enabled_history
+    monkeypatch.setattr(
+        plugin._history_support,
+        "_refresh_contact_catalog",
+        lambda _records: (_ for _ in ()).throw(RuntimeError("catalog broke")),
+    )
+
+    wrote = await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="still written", update_id=1),
+        bot=FakeBot(),
+    )
+
+    assert wrote is True
+    assert load_records(plugin)[0]["text"] == "still written"
+    assert "history contact catalog update failed" in caplog.text
+
+
+def test_catalog_rebuild_supports_old_jsonl_without_profile_snapshots(plugin, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    append_raw_history_records(
+        plugin,
+        make_legacy_history_record(
+            plugin,
+            event_type="message.created",
+            source="business_message",
+            observed_at=datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc),
+            telegram_update_id=1,
+            direction="incoming",
+            text="legacy",
+        ),
+    )
+
+    catalog = plugin._history_support.rebuild_contact_catalog()
+
+    assert catalog["contact_count"] == 1
+    entry = catalog["contacts"][0]
+    assert entry["business_connection_id"] == "business-123"
+    assert entry["chat_id"] == 991
+    assert entry["current_profile"] is None
+    assert entry["message_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_catalog_missing_and_corrupt_can_be_rebuilt(enabled_history):
+    plugin = enabled_history
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="hello", update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+    catalog_path = plugin._history_support.history_root() / "contacts.json"
+    catalog_path.unlink()
+
+    status = plugin._history_support._catalog_status_line()
+    rebuilt = plugin._history_support._catalog_status_line(rebuild=True)
+    assert status.startswith("status=missing ")
+    assert rebuilt.startswith("status=rebuilt ")
+    assert catalog_path.exists()
+
+    catalog_path.write_text("{broken", encoding="utf-8")
+    corrupt = plugin._history_support._catalog_status_line()
+    assert corrupt.startswith("status=corrupt ")
+
+
+def test_catalog_concurrent_refresh_preserves_all_entries(plugin):
+    history = plugin._history_support
+    history.rebuild_contact_catalog()
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    record_one = history._build_event(
+        event_type="message.created",
+        source="business_message",
+        observed_at=base,
+        telegram_update_id=1,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="inbound",
+        reply_to_message_id=None,
+        text="one",
+        chat_profile={"id": 991, "type": "private", "username": "one", "first_name": "One"},
+        sender_profile={"id": 2000, "username": "one", "first_name": "One"},
+    )
+    record_two = history._build_event(
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(seconds=1),
+        telegram_update_id=2,
+        business_connection_id="business-456",
+        chat_id=992,
+        message_id=78,
+        message_at=base + timedelta(seconds=1),
+        sender_id=2001,
+        direction="inbound",
+        reply_to_message_id=None,
+        text="two",
+        chat_profile={"id": 992, "type": "private", "username": "two", "first_name": "Two"},
+        sender_profile={"id": 2001, "username": "two", "first_name": "Two"},
+    )
+
+    barrier = threading.Barrier(2)
+
+    def _refresh(record):
+        barrier.wait()
+        history._refresh_contact_catalog([record])
+
+    first = threading.Thread(target=_refresh, args=(record_one,))
+    second = threading.Thread(target=_refresh, args=(record_two,))
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+
+    catalog = load_catalog(plugin)
+    assert {(entry["business_connection_id"], entry["chat_id"]) for entry in catalog["contacts"]} == {
+        ("business-123", 991),
+        ("business-456", 992),
     }
 
 
@@ -1258,6 +1570,220 @@ async def test_history_cli_show_search_export_deletions_and_verify(enabled_histo
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "ok=True" in output
+
+
+@pytest.mark.asyncio
+async def test_history_cli_contacts_catalog_and_contact_resolution(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            chat_id=991,
+            chat_username="alice-one",
+            chat_first_name="Alice",
+            chat_last_name="Smith",
+            from_user_username="alice_sender_one",
+            text="first alice",
+            update_id=1,
+            date=base,
+        ),
+        bot=FakeBot(),
+        now=base,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            chat_id=992,
+            chat_username="alice-two",
+            chat_first_name="Alice",
+            chat_last_name="Smith",
+            from_user_username="alice_sender_two",
+            text="second alice",
+            update_id=2,
+            date=base,
+        ),
+        bot=FakeBot(),
+        now=base + timedelta(seconds=1),
+    )
+
+    parser = _build_history_parser(plugin)
+
+    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "contacts", "--search", "alice"]))
+    output = capsys.readouterr().out.strip().splitlines()
+    assert exit_code == 0
+    assert any("username=@alice-one" in line for line in output)
+    assert any("username=@alice-two" in line for line in output)
+
+    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "catalog"]))
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert output.startswith("status=ok ")
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "show", "--contact", "Alice Smith", "--limit", "1"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 1
+    assert "ambiguous" in output
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "show", "--contact", "@alice-two", "--limit", "1"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert "chat=992" in output
+    assert "second alice" in output
+
+
+@pytest.mark.asyncio
+async def test_history_cli_prunes_months_and_answers_contact_last_week_workflow(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    fixed_now = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(plugin._history_support, "_utcnow", lambda: fixed_now)
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            text="june recap",
+            date=datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc),
+            update_id=1,
+            chat_username="casey-weekly",
+            from_user_username="casey-weekly",
+        ),
+        bot=FakeBot(),
+        now=datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            text="last week plan",
+            date=datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc),
+            update_id=2,
+            chat_username="casey-weekly",
+            from_user_username="casey-weekly",
+        ),
+        bot=FakeBot(),
+        now=datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc),
+    )
+
+    selected: list[str] = []
+    original_selector = plugin._history_support._iter_selected_history_files
+
+    def _spy_selector(chat_dir: Path, *, since, until):
+        paths = list(original_selector(chat_dir, since=since, until=until))
+        selected.extend(path.name for path in paths)
+        return iter(paths)
+
+    monkeypatch.setattr(plugin._history_support, "_iter_selected_history_files", _spy_selector)
+    parser = _build_history_parser(plugin)
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "show", "--contact", "@casey-weekly", "--since", "7d", "--limit", "10"])
+    )
+    output = capsys.readouterr().out.strip()
+
+    assert exit_code == 0
+    assert "last week plan" in output
+    assert "june recap" not in output
+    assert selected == ["2026-07.jsonl"]
+
+
+@pytest.mark.asyncio
+async def test_history_cli_global_search_is_bounded(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    for offset, chat_id, text in (
+        (0, 991, "refund alpha"),
+        (1, 992, "refund beta"),
+        (2, 993, "refund gamma"),
+    ):
+        await plugin._history_support.observe_ptb_update(
+            make_business_text_update(
+                chat_id=chat_id,
+                text=text,
+                update_id=offset + 1,
+                date=base + timedelta(seconds=offset),
+                chat_username=f"customer-{chat_id}",
+                from_user_username=f"customer-{chat_id}",
+            ),
+            bot=FakeBot(),
+            now=base + timedelta(seconds=offset),
+        )
+
+    parser = _build_history_parser(plugin)
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "search", "--text", "refund", "--limit", "2"])
+    )
+    output = capsys.readouterr().out.strip().splitlines()
+
+    assert exit_code == 0
+    assert len(output) == 2
+    assert "refund alpha" not in "\n".join(output)
+    assert "refund beta" in output[0]
+    assert "refund gamma" in output[1]
+
+
+def test_streaming_query_scale_prunes_partitions_and_keeps_results_bounded(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    history = plugin._history_support
+    records = []
+    for month, total in ((6, 250), (7, 1250)):
+        for index in range(total):
+            observed_at = datetime(2026, month, 10, 12, 0, tzinfo=timezone.utc) + timedelta(seconds=index)
+            records.append(
+                history._build_event(
+                    event_type="message.created",
+                    source="business_message",
+                    observed_at=observed_at,
+                    telegram_update_id=month * 10000 + index,
+                    business_connection_id="business-123",
+                    chat_id=991,
+                    message_id=month * 10000 + index,
+                    message_at=observed_at,
+                    sender_id=2000,
+                    direction="inbound",
+                    reply_to_message_id=None,
+                    text=f"needle record {month}-{index}",
+                    chat_profile={"id": 991, "type": "private", "username": "scale-user", "first_name": "Scale"},
+                    sender_profile={"id": 2000, "username": "scale-user", "first_name": "Scale"},
+                )
+            )
+    append_raw_history_records(plugin, *records)
+    history.rebuild_contact_catalog()
+
+    selected: list[str] = []
+    original_selector = history._iter_selected_history_files
+
+    def _spy_selector(chat_dir: Path, *, since, until):
+        paths = list(original_selector(chat_dir, since=since, until=until))
+        selected.extend(path.name for path in paths)
+        return iter(paths)
+
+    monkeypatch.setattr(history, "_iter_selected_history_files", _spy_selector)
+    parser = _build_history_parser(plugin)
+    exit_code = history.handle_cli(
+        parser.parse_args(
+            [
+                "history",
+                "search",
+                "--contact",
+                "@scale-user",
+                "--text",
+                "needle",
+                "--since",
+                "2026-07-01T00:00:00Z",
+                "--until",
+                "2026-07-31T23:59:59Z",
+                "--limit",
+                "25",
+            ]
+        )
+    )
+    output = capsys.readouterr().out.strip().splitlines()
+
+    assert exit_code == 0
+    assert len(output) == 25
+    assert selected == ["2026-07.jsonl"]
+    assert all("needle record 7-" in line for line in output)
 
 
 @pytest.mark.asyncio
