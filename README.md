@@ -3,7 +3,7 @@
 [![test](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml/badge.svg)](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integration for Telegram Business. Its first and currently shipped module turns voice messages and round video notes into text without spending a full agent turn.
+An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integration for Telegram Business. The shipped modules currently cover voice/video-note transcription plus an opt-in append-only text history that works without requiring an agent turn.
 
 ## Current module: voice transcription
 
@@ -18,9 +18,53 @@ An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integ
 
 Handled updates are identified from stable Telegram Business connection, chat, update/message, and relationship data, then suppressed in memory for 24 hours. A successful caption edit suppresses the separate transcript reply, so the chat never receives both forms. PTB `BadRequest` is treated as a definite Telegram-side rejection unless it is the recognized `message is not modified` or unsupported-entity case. Failed entity requests are not treated as delivered before their targeted plain-text retry, and ambiguous post-send transport/backend failures suppress the reply fallback unless remote state is verified. The plugin never runs a separate model provider client and never needs its own credentials.
 
-## Roadmap
+## Opt-in text history
 
-The broader product direction includes operator or CRM integration adapters and opt-in automation modules. The small event/module boundary is now implemented; those product integrations are still planned extension points, not implemented features in `0.6.1`.
+The plugin also installs a raw PTB update observer in a separate handler group so Telegram Business `business_message`, `edited_business_message`, and `deleted_business_messages` updates can be recorded before Hermes auth or agent dispatch. The PTB handler stays blocking, so history observation completes before Hermes's ordinary group-0 auth/agent routing, but it still does not consume the update.
+
+Current Hermes polling and webhook startup both pass `Update.ALL_TYPES`, and PTB 22.6 already includes `business_message`, `edited_business_message`, and `deleted_business_messages`. The missing piece was a registered raw handler for deleted Business updates, because those updates do not provide an effective message for Hermes's ordinary message handlers.
+
+History is **disabled by default**. `HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1` turns capture on for eligible Business updates, with these boundaries:
+
+- Default capture is **private Business chats only**.
+- `HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS=<comma-separated IDs>` or `*` is an optional Business-connection filter. When it is unset, every delivered Business connection remains eligible.
+- `HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS=<comma-separated IDs>` or `*` is an optional exact-chat filter/override. Exact chat IDs may opt in those chats even when their type is not in the default type set.
+- `HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES=<comma-separated types>` defaults to `private` and may add `group`, `supergroup`, or `channel`. No member-count calls or size heuristics run in the hot capture path.
+- Missing or unknown chat type stays fail-closed unless the exact chat ID is explicitly allowed or earlier canonical profile evidence already established an eligible type.
+
+The same eligibility rules apply to create, edit, and delete updates.
+
+Canonical logs live under:
+
+```text
+$(hermes home)/data/telegram-business/history/<connection-key>/<chat-id>/YYYY-MM.jsonl
+```
+
+Each line is immutable schema v1 JSON for one of:
+
+- `message.created`
+- `message.edited`
+- `message.deleted`
+- `deletion.classified`
+
+Every record includes `source`, which is the exact PTB update attribute that produced it: `business_message`, `edited_business_message`, or `deleted_business_messages`. Derived `deletion.classified` records retain `source="deleted_business_messages"`.
+
+Stored text is untrusted user data, never instructions. The plugin never logs message text. History v1 stores Telegram `Message.text` only; it does not store captions, media bytes, or media metadata.
+History v1 direction values are `inbound`, `outbound`, or `unknown`.
+Create/edit records also carry additive `chat_profile` and `sender_profile` snapshots built only from fields already present in PTB update objects. Existing JSONL without snapshots remains valid.
+
+A small derived catalog lives beside the canonical logs at `$(hermes home)/data/telegram-business/history/contacts.json`. It stores the current contact/chat profile, observed aliases, IDs, seen ranges, lightweight counts, and a cheap canonical freshness signature for fast contact resolution. The catalog is private (`0600`), rebuildable from canonical JSONL, and best-effort: if catalog maintenance fails, canonical JSONL append still succeeds and `history catalog --rebuild` can recover it.
+
+Deleted messages are classified after a short correction window. Telegram-side deletion appends a tombstone and preserves prior stored text. By default, the classifier compares nearby same-chat/same-sender/same-direction text from 15 seconds before the tombstone through 120 seconds after it, schedules exact due-time classification, and on startup recovers overdue or still-pending deletions before appending one auditable classification:
+
+- `likely_duplicate`: strong normalized exact resend evidence
+- `likely_correction`: strong high-similarity small-edit evidence
+- `unexplained`: no strong evidence; this is the alert-candidate state
+- `unclassifiable`: the original text was unavailable
+
+Classification events also store canonical `classification_reason` codes: `normalized_exact_duplicate`, `high_similarity_small_edit`, `no_strong_match`, `missing_original`, or `missing_text`.
+
+Monthly partitioning is the first storage defense. Retention is disabled by default, and the default size cap is 1 GiB. When enabled, automatic retention and max-storage pruning physically remove only whole closed monthly partitions. History v1 ships no record-level or right-to-erasure command. If the active month alone exceeds the configured cap, the plugin preserves it and surfaces the shortfall explicitly instead of pretending the cap was met. Closed partitions for chats with still-pending unclassified deletions are also preserved until classification is durably appended, and those protected files still count toward the cap. `contacts.json` is always rebuilt from the retained canonical JSONL, so identities and aliases disappear once no retained partition still contains evidence for them.
 
 ## Requirements
 
@@ -89,8 +133,51 @@ All plugin variables are optional.
 | `TG_BUSINESS_VOICE_CLEANUP_TIMEOUT` | `45` | Cleanup timeout in seconds. |
 | `TG_BUSINESS_VOICE_CLEANUP_MIN_CHARS` | `81` | Minimum transcript length for cleanup. |
 | `TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS` | `1` | Minimum word count for cleanup. |
+| `HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE` | false | Enable append-only Telegram Business text history. |
+| `HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS` | unset | Optional Business connection filter or `*`. |
+| `HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS` | unset | Optional exact chat filter/override or `*`. Exact chat IDs may opt in chats outside the default chat-type set. |
+| `HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES` | `private` | Eligible chat types. Add `group`, `supergroup`, or `channel` explicitly when needed. |
+| `HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW` | `120` | Seconds to wait after a delete tombstone before classification; also the post-delete candidate window. |
+| `HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | Seconds of pre-delete nearby text eligible during deleted-message classification. |
+| `HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS` | `0` | Retention target for closed monthly partitions. `0` disables retention pruning. |
+| `HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES` | `1073741824` | Maximum total history bytes before oldest closed partitions are pruned. |
 
 Boolean values accept `1`, `true`, `yes`, or `on` (case-insensitive).
+
+## History CLI
+
+The plugin registers a bounded CLI tree:
+
+```bash
+hermes telegram-business history chats --limit 50
+hermes telegram-business history contacts --search casey --limit 20
+hermes telegram-business history catalog
+hermes telegram-business history catalog --rebuild
+hermes telegram-business history stats
+hermes telegram-business history show --contact @casey-weekly --since 7d --limit 200
+hermes telegram-business history search --contact @casey-weekly --text refund --since 7d --until 2026-07-23T23:59:59Z --limit 100
+hermes telegram-business history search --text refund --since 30d --limit 100
+hermes telegram-business history deletions --status unexplained --limit 100
+hermes telegram-business history export --contact @casey-weekly --format jsonl --limit 200
+hermes telegram-business history verify
+hermes telegram-business history maintain
+```
+
+`show`, `search`, and `export` accept either numeric `--chat` or human-readable `--contact`. Contact resolution uses `contacts.json` first, requires disambiguation on duplicate names, and then streams only the selected chat's monthly partitions that intersect `--since`/`--until`. `search --text` matches substrings after Unicode NFKC normalization plus casefold on both the query and stored `text`; whitespace is otherwise left untouched so substring semantics stay literal apart from compatibility folding. Global `search` without `--chat` or `--contact` remains bounded and keeps the same raw JSONL export semantics.
+
+Read-side `show`, `search`, `export`, `deletions`, and known-chat-type fallback never repair canonical JSONL in place. If a selected chat has a torn or invalid tail, they fail closed and direct the operator to `hermes telegram-business history verify --repair-tails`. `history verify` itself remains bounded: it retains the first 100 warnings and first 100 errors in deterministic verify order, reports total and suppressed counts, and keeps CLI output capped to those retained diagnostics plus one suppressed-count summary line per category.
+
+Typical contact-first workflows:
+
+- Resolve a contact by name or username: `hermes telegram-business history contacts --search alice`
+- Show what you discussed with that contact last week: `hermes telegram-business history show --contact @alice --since 7d --limit 200`
+- Search that contact for a substring over a time period: `hermes telegram-business history search --contact @alice --text refund --since 2026-07-16T00:00:00Z --until 2026-07-23T23:59:59Z --limit 100`
+- Run a bounded global text search: `hermes telegram-business history search --text refund --since 30d --limit 100`
+- List unexplained deletions: `hermes telegram-business history deletions --status unexplained --limit 100`
+
+Routine delayed deletion classification no longer depends on `hermes telegram-business history maintain`. The scheduler handles due tombstones during normal runtime, and startup maintenance recovers overdue or still-pending deletions after a restart. `maintain` remains available for manual recovery plus retention/size-cap pruning.
+
+Human-readable CLI output escapes carriage returns, tabs, ESC/control bytes, and DEL in stored text while keeping ordinary Unicode readable. `--format jsonl` stays a direct `json.dumps` export.
 
 ### LLM trust gate
 
@@ -140,8 +227,12 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - The configured STT backend receives the media. Depending on your Hermes configuration, that backend may be local or external.
 - When cleanup is enabled, the configured host LLM receives the transcript. The system prompt treats transcript contents as untrusted data and forbids following embedded instructions.
 - The plugin does not log transcript text. Operational logs include media type, message/chat identifiers, character counts, and errors.
+- The history module does not log stored message text. Operational logs include IDs, counts, retention/cap warnings, and file/verification errors.
 - Error replies are disabled by default. When enabled, the first line of an exception may be sent to the Business chat.
-- The plugin stores only an in-process duplicate key for 24 hours. Its identity is deterministic across equivalent retry delivery, but the seen set intentionally resets with the process; no transcript/history database is created.
+- The plugin stores only an in-process duplicate key for 24 hours. Its identity is deterministic across equivalent retry delivery, but the seen set intentionally resets with the process. The voice module creates no separate transcript database.
+- The opt-in history module is the only persistent text store. It persists append-only JSONL under the active Hermes profile, repairs only a torn final line, never rewrites raw Telegram updates into history, and stores only Telegram `Message.text` in v1.
+- The derived `contacts.json` catalog is private, rebuildable, and contains only identity/range/count metadata plus aliases observed from canonical profile snapshots, plus a cheap canonical freshness signature. Catalog update failures warn without blocking canonical JSONL append.
+- Telegram-side deletion appends a tombstone and later classification; it does not remove earlier stored text. Automatic retention physically removes only whole closed monthly partitions, the active month is preserved even when that leaves a cap shortfall, and chats with pending unclassified deletions keep their closed partitions until classification is durably recorded.
 - Existing Hermes/Telegram media caches are outside this plugin's ownership and are never scanned or deleted.
 
 ## Failure behavior
@@ -150,6 +241,8 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - Disabled and pass-through modules do not consume the event's duplicate identity.
 - A module enable/route exception is logged and contained, and later modules still receive the event.
 - Background module exceptions are contained and cannot crash the gateway.
+- Caption-only and media-only Business messages are ignored by the history module; no history file is created for them.
+- Missing or corrupt `contacts.json` is surfaced by `hermes telegram-business history catalog` and can be rebuilt from canonical JSONL.
 - Missing bot or Business connection data stops processing without invoking an agent.
 - STT failure sends nothing unless error replies are enabled.
 - Empty STT output sends nothing.

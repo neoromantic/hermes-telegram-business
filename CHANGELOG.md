@@ -9,6 +9,15 @@
 - Preserve existing caption text and entities, and fall back to Business-scoped replies for incoming, long, expired, uncertain, or uneditable messages.
 - Render transcript caption blocks and reply chunks with native `expandable_blockquote` entities using UTF-16 offsets.
 - Keep long and emoji-heavy transcripts complete with UTF-16-safe chunking, and align caption/reply fallback by retrying the selected surface as plain text when Telegram rejects expandable entities.
+- Add opt-in raw, no-agent Telegram Business text history captured from blocking PTB Business update observation.
+- Persist immutable delete tombstones plus source-tagged `deletion.classified` records with canonical `classification_reason` codes.
+- Align history schema v1 direction values to `inbound|outbound|unknown` and classify nearby delete candidates across the 15-second pre-window plus the existing post-delete correction window.
+- Default global history opt-in to private Business chats, keep connection/chat filters optional, and allow explicit chat-type or exact-chat overrides without group-size heuristics.
+- Add additive `chat_profile`/`sender_profile` snapshots plus a rebuildable `contacts.json` directory with aliases, counts, and current contact resolution data.
+- Keep history storage and CLI bounded with streamed JSONL scans, catalog-first contact lookup, `--until`, bounded global search, closed-partition pruning, and terminal-safe text rendering.
+- Fix the raw Business observer path so Hermes startup handling with `Update.ALL_TYPES` also records deleted Business updates.
+- Rebuild the derived contact catalog from retained canonical JSONL after prune/recovery, remove identities when no retained evidence remains, and verify freshness from canonical file metadata even if the dirty marker could not be written.
+- Keep read-only history lookups non-mutating on torn tails, require explicit `history verify --repair-tails` repair, restore exact retained tombstone membership checks during verify, and cap retained verify diagnostics while preserving total/suppressed counts.
 
 ## 0.6.1 - 2026-07-18
 
