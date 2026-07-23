@@ -1377,7 +1377,7 @@ async def test_torn_tail_is_repaired_before_next_append_without_full_read_bytes(
 
 
 @pytest.mark.asyncio
-async def test_streamed_show_repairs_torn_tail_before_scanning(enabled_history, capsys):
+async def test_streamed_show_errors_on_torn_tail_without_mutation(enabled_history, capsys):
     plugin = enabled_history
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
 
@@ -1389,15 +1389,15 @@ async def test_streamed_show_repairs_torn_tail_before_scanning(enabled_history, 
     history_file = load_history_file(plugin)
     with history_file.open("ab") as handle:
         handle.write(b"{\"event_id\":\"broken\"")
+    torn_bytes = history_file.read_bytes()
 
     parser = _build_history_parser(plugin)
     exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "show", "--chat", "991", "--limit", "5"]))
     output = capsys.readouterr().out.strip()
 
-    assert exit_code == 0
-    assert "text=one" in output
-    assert len(history_file.read_text(encoding="utf-8").splitlines()) == 1
-    assert history_file.read_bytes().endswith(b"\n")
+    assert exit_code == 1
+    assert "verify --repair-tails" in output
+    assert history_file.read_bytes() == torn_bytes
 
 
 @pytest.mark.asyncio
@@ -1639,10 +1639,10 @@ async def test_second_append_uses_cached_chat_state_without_full_reload(enabled_
     original_loader = plugin._history_support._load_chat_state_from_disk
     loads = 0
 
-    def _counting_loader(chat_dir: Path):
+    def _counting_loader(chat_dir: Path, *, repair_tails: bool):
         nonlocal loads
         loads += 1
-        return original_loader(chat_dir)
+        return original_loader(chat_dir, repair_tails=repair_tails)
 
     monkeypatch.setattr(plugin._history_support, "_load_chat_state_from_disk", _counting_loader)
 
@@ -1668,10 +1668,10 @@ async def test_external_file_signature_change_invalidates_cached_chat_state(enab
     original_loader = plugin._history_support._load_chat_state_from_disk
     loads = 0
 
-    def _counting_loader(chat_dir: Path):
+    def _counting_loader(chat_dir: Path, *, repair_tails: bool):
         nonlocal loads
         loads += 1
-        return original_loader(chat_dir)
+        return original_loader(chat_dir, repair_tails=repair_tails)
 
     monkeypatch.setattr(plugin._history_support, "_load_chat_state_from_disk", _counting_loader)
 
@@ -3187,9 +3187,41 @@ def test_verify_history_reports_active_month_torn_tail_without_repair(plugin):
     verification = history.verify_history()
 
     assert verification.ok is False
-    assert verification.record_count == 1
     assert verification.repaired_files == 0
-    assert any(f"torn tail remains in {history_file.name}" in error for error in verification.errors)
+    assert any(history_file.name in error and "verify --repair-tails" in error for error in verification.errors)
+
+
+def test_verify_history_repairs_valid_final_record_missing_newline(plugin):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    record = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base,
+        telegram_update_id=1,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="inbound",
+        text="repair newline only",
+    )
+    append_raw_history_records(plugin, record)
+
+    history_file = load_history_file(plugin)
+    with history_file.open("rb+") as handle:
+        handle.seek(-1, os.SEEK_END)
+        handle.truncate()
+
+    verification = history.verify_history(repair_tails=True)
+
+    assert verification.ok is True
+    assert verification.record_count == 1
+    assert verification.repaired_files == 1
+    assert history_file.read_bytes().endswith(b"\n")
+    assert len(history_file.read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_verify_history_repairs_partial_torn_tail_without_full_load(plugin, monkeypatch: pytest.MonkeyPatch):
@@ -3263,7 +3295,7 @@ def test_verify_history_cleans_duplicate_temp_files_when_duplicate_audit_errors(
     monkeypatch.setattr(history, "VERIFY_EVENT_ID_CHUNK_RECORDS", 1)
 
     def _boom(duplicate_tracker):
-        duplicate_tracker._flush_chunk()
+        duplicate_tracker._spill._flush_chunk()
         raise RuntimeError("boom")
 
     monkeypatch.setattr(history, "_iter_duplicate_event_id_warnings", _boom)
@@ -3273,6 +3305,343 @@ def test_verify_history_cleans_duplicate_temp_files_when_duplicate_audit_errors(
     assert verification.ok is False
     assert any("duplicate event_id audit failed: boom" in error for error in verification.errors)
     assert not list(history.history_root().glob(f"{history.VERIFY_EVENT_ID_TEMP_DIR_PREFIX}*"))
+
+
+def test_verify_history_allows_multiple_classifications_for_one_retained_tombstone_out_of_order(plugin):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    deleted = make_legacy_history_record(
+        plugin,
+        event_type="message.deleted",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(seconds=2),
+        telegram_update_id=2,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="unknown",
+    )
+    classified_before = make_legacy_history_record(
+        plugin,
+        event_type="deletion.classified",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(seconds=1),
+        telegram_update_id=3,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="unknown",
+        deleted_event_id=str(deleted["event_id"]),
+        classification="unexplained",
+        classification_reason="no_strong_match",
+        evaluated_at=base + timedelta(seconds=3),
+        deleted_observed_at=base + timedelta(seconds=2),
+    )
+    classified_after = make_legacy_history_record(
+        plugin,
+        event_type="deletion.classified",
+        source="deleted_business_messages",
+        observed_at=base + timedelta(seconds=4),
+        telegram_update_id=4,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="unknown",
+        deleted_event_id=str(deleted["event_id"]),
+        classification="likely_duplicate",
+        classification_reason="normalized_exact_duplicate",
+        evaluated_at=base + timedelta(seconds=4),
+        deleted_observed_at=base + timedelta(seconds=2),
+    )
+
+    append_raw_history_records(plugin, classified_before, deleted, classified_after)
+
+    verification = history.verify_history()
+
+    assert verification.ok is True
+    assert verification.warning_count == 0
+    assert not verification.warnings
+
+
+def test_streamed_read_path_does_not_truncate_during_root_scoped_verify_pass(enabled_history, monkeypatch: pytest.MonkeyPatch):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    asyncio.run(
+        history.observe_ptb_update(
+            make_business_text_update(text="root scoped verify", message_id=77, update_id=1, date=base),
+            bot=FakeBot(),
+            now=base,
+        )
+    )
+
+    chat_dir = history._history_chat_dir("business-123", 991)
+    history_file = load_history_file(plugin)
+    with history_file.open("rb+") as handle:
+        handle.seek(-1, os.SEEK_END)
+        handle.truncate()
+    torn_bytes = history_file.read_bytes()
+
+    original_iter_chat_dirs = history._iter_chat_dirs
+    verify_selected = threading.Event()
+    allow_verify = threading.Event()
+    verify_done = threading.Event()
+    stream_done = threading.Event()
+    results: dict[str, Any] = {}
+
+    def _blocking_iter_chat_dirs():
+        verify_selected.set()
+        assert allow_verify.wait(timeout=5)
+        yield from original_iter_chat_dirs()
+
+    monkeypatch.setattr(history, "_iter_chat_dirs", _blocking_iter_chat_dirs)
+
+    def _verify() -> None:
+        try:
+            results["verify"] = history.verify_history()
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["verify_exc"] = exc
+        finally:
+            verify_done.set()
+
+    def _stream() -> None:
+        try:
+            with history._streamed_records_locked(chat_dir, since=None, until=None, text_query=None) as records:
+                list(records)
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["stream_exc"] = exc
+        finally:
+            stream_done.set()
+
+    verify_thread = threading.Thread(target=_verify)
+    stream_thread = threading.Thread(target=_stream)
+    verify_thread.start()
+    assert verify_selected.wait(timeout=5)
+
+    stream_thread.start()
+    stream_thread.join(timeout=5)
+
+    assert stream_done.is_set()
+    assert "stream_exc" in results
+    assert "verify --repair-tails" in str(results["stream_exc"])
+    assert history_file.read_bytes() == torn_bytes
+    assert history_file.read_bytes().endswith(b"\n") is False
+
+    allow_verify.set()
+    verify_thread.join(timeout=5)
+
+    assert not verify_thread.is_alive()
+    assert verify_done.is_set()
+    assert "verify_exc" not in results
+    assert results["verify"].ok is False
+
+
+def test_known_chat_type_fallback_does_not_repair_torn_tail(enabled_history):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    asyncio.run(
+        history.observe_ptb_update(
+            make_business_text_update(text="known type source", message_id=77, update_id=1, date=base),
+            bot=FakeBot(),
+            now=base,
+        )
+    )
+
+    history_file = load_history_file(plugin)
+    with history_file.open("rb+") as handle:
+        handle.seek(-1, os.SEEK_END)
+        handle.truncate()
+    torn_bytes = history_file.read_bytes()
+    history._mark_catalog_dirty("force_known_type_history_fallback")
+
+    with pytest.raises(ValueError, match="verify --repair-tails"):
+        asyncio.run(
+            history.observe_ptb_update(
+                make_deleted_update(chat_type=None, message_ids=(77,), update_id=2),
+                bot=FakeBot(),
+                now=base + timedelta(seconds=1),
+            )
+        )
+
+    assert history_file.read_bytes() == torn_bytes
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("history", "show", "--chat", "991"),
+        ("history", "search", "--chat", "991", "--text", "hello"),
+        ("history", "export", "--chat", "991"),
+        ("history", "deletions", "--chat", "991", "--status", "pending"),
+    ],
+)
+def test_history_cli_read_paths_error_on_torn_tail_without_mutation(enabled_history, argv: tuple[str, ...]):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    asyncio.run(
+        history.observe_ptb_update(
+            make_business_text_update(text="cli torn tail", message_id=77, update_id=1, date=base),
+            bot=FakeBot(),
+            now=base,
+        )
+    )
+
+    history_file = load_history_file(plugin)
+    with history_file.open("rb+") as handle:
+        handle.seek(-1, os.SEEK_END)
+        handle.truncate()
+    torn_bytes = history_file.read_bytes()
+
+    exit_code, output = _run_history_cli(plugin, *argv)
+
+    assert exit_code == 1
+    assert "verify --repair-tails" in output
+    assert history_file.read_bytes() == torn_bytes
+
+
+def test_verify_history_caps_diagnostics_and_cli_output(plugin, monkeypatch: pytest.MonkeyPatch):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    records: list[dict[str, Any]] = []
+    update_id = 1
+
+    duplicate_seed = make_legacy_history_record(
+        plugin,
+        event_type="message.created",
+        source="business_message",
+        observed_at=base,
+        telegram_update_id=update_id,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=1000,
+        message_at=base,
+        sender_id=2000,
+        direction="inbound",
+        text="duplicate seed",
+    )
+    records.append(duplicate_seed)
+    update_id += 1
+    duplicate_event_id = duplicate_seed["event_id"]
+
+    for index in range(1000):
+        record = make_legacy_history_record(
+            plugin,
+            event_type="message.created",
+            source="business_message",
+            observed_at=base + timedelta(seconds=1 + index),
+            telegram_update_id=update_id,
+            business_connection_id="business-123",
+            chat_id=991,
+            message_id=2000 + index,
+            message_at=base + timedelta(seconds=1 + index),
+            sender_id=2000,
+            direction="inbound",
+            text=f"duplicate {index}",
+        )
+        record["event_id"] = duplicate_event_id
+        records.append(record)
+        update_id += 1
+
+    for index in range(1000):
+        record = make_legacy_history_record(
+            plugin,
+            event_type="message.created",
+            source="business_message",
+            observed_at=base + timedelta(hours=1, seconds=index),
+            telegram_update_id=update_id,
+            business_connection_id="business-123",
+            chat_id=991,
+            message_id=4000 + index,
+            message_at=base + timedelta(hours=1, seconds=index),
+            sender_id=2000,
+            direction="inbound",
+            text=f"schema warning {index}",
+        )
+        record["schema_version"] = 999
+        records.append(record)
+        update_id += 1
+
+    for index in range(1000):
+        record = make_legacy_history_record(
+            plugin,
+            event_type="message.created",
+            source="business_message",
+            observed_at=base + timedelta(hours=2, seconds=index),
+            telegram_update_id=update_id,
+            business_connection_id="business-123",
+            chat_id=991,
+            message_id=6000 + index,
+            message_at=base + timedelta(hours=2, seconds=index),
+            sender_id=2000,
+            direction="inbound",
+            text=f"missing event id {index}",
+        )
+        record.pop("event_id")
+        records.append(record)
+        update_id += 1
+
+    for index in range(1000):
+        record = make_legacy_history_record(
+            plugin,
+            event_type="deletion.classified",
+            source="deleted_business_messages",
+            observed_at=base + timedelta(hours=3, seconds=index),
+            telegram_update_id=update_id,
+            business_connection_id="business-123",
+            chat_id=991,
+            message_id=8000 + index,
+            message_at=None,
+            sender_id=None,
+            direction="unknown",
+            deleted_event_id=f"outside-{index}",
+            classification="unexplained",
+            classification_reason="no_strong_match",
+            evaluated_at=base + timedelta(hours=3, seconds=index),
+            deleted_observed_at=base + timedelta(hours=2, seconds=index),
+        )
+        records.append(record)
+        update_id += 1
+
+    append_raw_history_records(plugin, *records)
+    monkeypatch.setattr(history, "VERIFY_EVENT_ID_CHUNK_RECORDS", 7)
+    monkeypatch.setattr(history, "VERIFY_REFERENCE_CHUNK_RECORDS", 7)
+    monkeypatch.setattr(history, "VERIFY_DIAGNOSTIC_LIMIT", 5)
+
+    verification = history.verify_history()
+
+    assert verification.ok is False
+    assert verification.error_count == 1000
+    assert verification.warning_count == 3000
+    assert verification.suppressed_error_count == 995
+    assert verification.suppressed_warning_count == 2995
+    assert len(verification.errors) == 5
+    assert len(verification.warnings) == 5
+    assert all("missing event_id" in error for error in verification.errors)
+    assert all("duplicate event_id" in warning for warning in verification.warnings)
+    assert not list(history.history_root().glob(".verify-*"))
+
+    exit_code, output = _run_history_cli(plugin, "history", "verify")
+    output_lines = output.splitlines()
+
+    assert exit_code == 1
+    assert output_lines[0] == (
+        f"ok=False chats=1 files=1 records={len(records)} repaired_files=0 "
+        "errors=1000 warnings=3000"
+    )
+    assert len(output_lines) == 13
+    assert all(line.startswith("warning: ") and "duplicate event_id" in line for line in output_lines[1:6])
+    assert output_lines[6] == "warning: suppressed 2995 additional warnings"
+    assert all(line.startswith("error: ") and "missing event_id" in line for line in output_lines[7:12])
+    assert output_lines[12] == "error: suppressed 995 additional errors"
+    assert not list(history.history_root().glob(".verify-*"))
 
 
 def _build_history_parser(plugin):
@@ -3501,7 +3870,13 @@ async def test_history_cli_numeric_chat_resolution_surfaces_catalog_freshness_er
 
     history = plugin._history_support
 
-    def _raise_catalog_error(*, rebuild_on_missing: bool, rebuild_on_corrupt: bool, rebuild_on_dirty: bool):
+    def _raise_catalog_error(
+        *,
+        rebuild_on_missing: bool,
+        rebuild_on_corrupt: bool,
+        rebuild_on_dirty: bool,
+        repair_tails: bool,
+    ):
         raise history.CatalogRebuildChangedError("canonical history changed during catalog rebuild")
 
     monkeypatch.setattr(history, "_load_contact_catalog", _raise_catalog_error)

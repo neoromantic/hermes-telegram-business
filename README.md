@@ -165,6 +165,8 @@ hermes telegram-business history maintain
 
 `show`, `search`, and `export` accept either numeric `--chat` or human-readable `--contact`. Contact resolution uses `contacts.json` first, requires disambiguation on duplicate names, and then streams only the selected chat's monthly partitions that intersect `--since`/`--until`. `search --text` matches substrings after Unicode NFKC normalization plus casefold on both the query and stored `text`; whitespace is otherwise left untouched so substring semantics stay literal apart from compatibility folding. Global `search` without `--chat` or `--contact` remains bounded and keeps the same raw JSONL export semantics.
 
+Read-side `show`, `search`, `export`, `deletions`, and known-chat-type fallback never repair canonical JSONL in place. If a selected chat has a torn or invalid tail, they fail closed and direct the operator to `hermes telegram-business history verify --repair-tails`. `history verify` itself remains bounded: it retains the first 100 warnings and first 100 errors in deterministic verify order, reports total and suppressed counts, and keeps CLI output capped to those retained diagnostics plus one suppressed-count summary line per category.
+
 Typical contact-first workflows:
 
 - Resolve a contact by name or username: `hermes telegram-business history contacts --search alice`

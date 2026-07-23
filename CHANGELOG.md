@@ -17,6 +17,7 @@
 - Keep history storage and CLI bounded with streamed JSONL scans, catalog-first contact lookup, `--until`, bounded global search, closed-partition pruning, and terminal-safe text rendering.
 - Fix the raw Business observer path so Hermes startup handling with `Update.ALL_TYPES` also records deleted Business updates.
 - Rebuild the derived contact catalog from retained canonical JSONL after prune/recovery, remove identities when no retained evidence remains, and verify freshness from canonical file metadata even if the dirty marker could not be written.
+- Keep read-only history lookups non-mutating on torn tails, require explicit `history verify --repair-tails` repair, restore exact retained tombstone membership checks during verify, and cap retained verify diagnostics while preserving total/suppressed counts.
 
 ## 0.6.1 - 2026-07-18
 
