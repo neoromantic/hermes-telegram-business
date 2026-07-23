@@ -322,11 +322,8 @@ class _SortedChunkSpill:
 
     def _ensure_temp_dir(self) -> Path:
         if self._temp_dir is None:
-            root = history_root()
-            _ensure_private_dir(root)
             self._temp_dir = tempfile.TemporaryDirectory(
                 prefix=self.temp_dir_prefix,
-                dir=root,
             )
             try:
                 os.chmod(self._temp_dir.name, 0o700)
@@ -559,6 +556,10 @@ class CatalogRebuildChangedError(ValueError):
     """Canonical history changed during every contact-catalog rebuild retry."""
 
 
+class HistoryLockUninitializedError(ValueError):
+    """A required pre-initialized history lock is missing for a read-only scan."""
+
+
 @dataclass(frozen=True)
 class CatalogStatus:
     state: str
@@ -710,15 +711,11 @@ def skill_path() -> Path:
 
 
 def _catalog_path() -> Path:
-    root = history_root()
-    _ensure_private_dir(root)
-    return root / CATALOG_FILENAME
+    return history_root() / CATALOG_FILENAME
 
 
 def _catalog_dirty_path() -> Path:
-    root = history_root()
-    _ensure_private_dir(root)
-    return root / CATALOG_DIRTY_FILENAME
+    return history_root() / CATALOG_DIRTY_FILENAME
 
 
 def _missing_path_chain(path: Path) -> list[Path]:
@@ -825,13 +822,13 @@ def _history_chat_dir_path(business_connection_id: Any, chat_id: Any) -> Path:
 
 
 def _history_chat_dir(business_connection_id: Any, chat_id: Any) -> Path:
-    root = history_root()
-    connection_dir = root / _path_key(business_connection_id)
-    chat_dir = _history_chat_dir_path(business_connection_id, chat_id)
-    _ensure_private_dir(root)
-    _ensure_private_dir(connection_dir)
+    return _history_chat_dir_path(business_connection_id, chat_id)
+
+
+def _ensure_history_chat_dir(chat_dir: Path) -> None:
+    _ensure_private_dir(history_root())
+    _ensure_private_dir(chat_dir.parent)
     _ensure_private_dir(chat_dir)
-    return chat_dir
 
 
 def _chat_lock_path(chat_dir: Path) -> Path:
@@ -839,18 +836,51 @@ def _chat_lock_path(chat_dir: Path) -> Path:
 
 
 def _root_lock_path() -> Path:
-    root = history_root()
-    _ensure_private_dir(root)
-    return root / ".lock"
+    return history_root() / ".lock"
+
+
+def _lock_rebuild_instruction() -> str:
+    return (
+        "run 'hermes telegram-business history catalog --rebuild' "
+        "or 'hermes telegram-business history maintain'"
+    )
+
+
+def _chat_lock_label(chat_dir: Path) -> str:
+    try:
+        return chat_dir.relative_to(history_root()).as_posix()
+    except ValueError:
+        return str(chat_dir)
+
+
+def _missing_root_lock_error() -> HistoryLockUninitializedError:
+    return HistoryLockUninitializedError(
+        f"history root lock is uninitialized; {_lock_rebuild_instruction()}"
+    )
+
+
+def _missing_chat_lock_error(chat_dir: Path) -> HistoryLockUninitializedError:
+    return HistoryLockUninitializedError(
+        f"history chat lock is uninitialized for {_chat_lock_label(chat_dir)}; {_lock_rebuild_instruction()}"
+    )
 
 
 @contextmanager
-def _locked_path(path: Path) -> Iterator[None]:
-    _ensure_private_dir(path.parent)
-    _ensure_private_file(path)
-    with path.open("r+b") as handle:
+def _locked_existing_path(
+    path: Path,
+    *,
+    shared: bool,
+    missing_error: Callable[[], Exception] | None = None,
+) -> Iterator[None]:
+    try:
+        handle = path.open("r+b")
+    except FileNotFoundError as exc:
+        if missing_error is None:
+            raise
+        raise missing_error() from exc
+    with handle:
         if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         try:
             yield
         finally:
@@ -859,14 +889,38 @@ def _locked_path(path: Path) -> Iterator[None]:
 
 
 @contextmanager
-def _chat_lock(chat_dir: Path) -> Iterator[None]:
-    with _locked_path(_chat_lock_path(chat_dir)):
+def _chat_writer_lock(chat_dir: Path) -> Iterator[None]:
+    _ensure_history_chat_dir(chat_dir)
+    _ensure_private_file(_chat_lock_path(chat_dir))
+    with _locked_existing_path(_chat_lock_path(chat_dir), shared=False):
         yield
 
 
 @contextmanager
-def _root_lock() -> Iterator[None]:
-    with _locked_path(_root_lock_path()):
+def _chat_read_lock(chat_dir: Path) -> Iterator[None]:
+    with _locked_existing_path(
+        _chat_lock_path(chat_dir),
+        shared=True,
+        missing_error=lambda: _missing_chat_lock_error(chat_dir),
+    ):
+        yield
+
+
+@contextmanager
+def _root_writer_lock() -> Iterator[None]:
+    _ensure_private_dir(history_root())
+    _ensure_private_file(_root_lock_path())
+    with _locked_existing_path(_root_lock_path(), shared=False):
+        yield
+
+
+@contextmanager
+def _root_read_lock() -> Iterator[None]:
+    with _locked_existing_path(
+        _root_lock_path(),
+        shared=True,
+        missing_error=_missing_root_lock_error,
+    ):
         yield
 
 
@@ -1155,6 +1209,38 @@ def _history_source_signature() -> dict[str, Any]:
     }
 
 
+def _history_source_signature_locked(
+    *,
+    chat_lock: Callable[[Path], Any],
+) -> dict[str, Any]:
+    root = history_root()
+    if not root.exists():
+        return _empty_history_source_signature()
+    digest = hashlib.sha256()
+    file_count = 0
+    total_bytes = 0
+    for chat_dir in _iter_chat_dirs():
+        with chat_lock(chat_dir):
+            for path in _iter_history_files(chat_dir):
+                try:
+                    stat_result = path.stat()
+                except OSError:
+                    continue
+                digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(str(stat_result.st_size).encode("ascii"))
+                digest.update(b"\0")
+                digest.update(str(stat_result.st_mtime_ns).encode("ascii"))
+                digest.update(b"\n")
+                file_count += 1
+                total_bytes += stat_result.st_size
+    return {
+        "sha256": digest.hexdigest(),
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+    }
+
+
 def _normalize_history_source_signature(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -1182,7 +1268,7 @@ def _catalog_is_fresh_locked(catalog: dict[str, Any]) -> bool:
     stored_signature = _catalog_source_signature(catalog)
     if stored_signature is None:
         return False
-    return stored_signature == _history_source_signature()
+    return stored_signature == _history_source_signature_locked(chat_lock=_chat_read_lock)
 
 
 def _catalog_from_entries(
@@ -1195,7 +1281,7 @@ def _catalog_from_entries(
     return {
         "schema_version": CATALOG_SCHEMA_VERSION,
         "generated_at": _isoformat_utc(generated_at or _utcnow()),
-        "source_signature": _normalize_history_source_signature(source_signature) or _history_source_signature(),
+        "source_signature": _normalize_history_source_signature(source_signature) or _empty_history_source_signature(),
         "contact_count": len(contacts),
         "contacts": contacts,
     }
@@ -1227,8 +1313,11 @@ def _catalog_rebuild_instruction() -> str:
     return "run 'hermes telegram-business history catalog --rebuild'"
 
 
-def _contact_catalog_status_locked() -> CatalogStatus:
-    source_signature = _history_source_signature()
+def _contact_catalog_status_locked(
+    *,
+    chat_lock: Callable[[Path], Any],
+) -> CatalogStatus:
+    source_signature = _history_source_signature_locked(chat_lock=chat_lock)
     history_empty = source_signature == _empty_history_source_signature()
     dirty = _catalog_dirty_locked()
     try:
@@ -1247,8 +1336,11 @@ def _contact_catalog_status_locked() -> CatalogStatus:
 
 
 def _contact_catalog_status() -> CatalogStatus:
-    with _root_lock():
-        return _contact_catalog_status_locked()
+    root = history_root()
+    if not root.exists():
+        return CatalogStatus(state="missing", history_empty=True)
+    with _root_read_lock():
+        return _contact_catalog_status_locked(chat_lock=_chat_read_lock)
 
 
 def _catalog_read_error(status: CatalogStatus) -> ValueError:
@@ -1284,10 +1376,10 @@ def _write_catalog_locked(catalog: dict[str, Any]) -> None:
 
 def _rebuild_catalog_locked(*, repair_tails: bool) -> dict[str, Any]:
     for _attempt in range(CATALOG_REBUILD_RETRIES):
-        source_signature = _history_source_signature()
+        source_signature = _history_source_signature_locked(chat_lock=_chat_writer_lock)
         entries: dict[tuple[str, str], dict[str, Any]] = {}
         for chat_dir in _iter_chat_dirs():
-            with _chat_lock(chat_dir):
+            with _chat_writer_lock(chat_dir):
                 _scan_records(
                     chat_dir,
                     repair_tails=repair_tails,
@@ -1302,7 +1394,7 @@ def _rebuild_catalog_locked(*, repair_tails: bool) -> dict[str, Any]:
                         record,
                     ),
                 )
-        if _history_source_signature() != source_signature:
+        if _history_source_signature_locked(chat_lock=_chat_writer_lock) != source_signature:
             continue
         catalog = _catalog_from_entries(entries, source_signature=source_signature)
         _write_catalog_locked(catalog)
@@ -1311,7 +1403,7 @@ def _rebuild_catalog_locked(*, repair_tails: bool) -> dict[str, Any]:
 
 
 def rebuild_contact_catalog() -> dict[str, Any]:
-    with _root_lock():
+    with _root_writer_lock():
         try:
             return _rebuild_catalog_locked(repair_tails=False)
         except ValueError as exc:
@@ -1329,20 +1421,29 @@ def _load_contact_catalog(
     allow_missing_empty: bool,
     repair_tails: bool,
 ) -> tuple[dict[str, Any], bool]:
-    with _root_lock():
-        status = _contact_catalog_status_locked()
+    should_rebuild = any((rebuild_on_missing, rebuild_on_corrupt, rebuild_on_dirty, rebuild_on_stale))
+    root = history_root()
+    if not root.exists() and not should_rebuild:
+        missing = CatalogStatus(state="missing", history_empty=True)
+        if allow_missing_empty:
+            return _catalog_from_entries({}, source_signature=_empty_history_source_signature()), False
+        raise _catalog_read_error(missing)
+    root_lock = _root_writer_lock if should_rebuild else _root_read_lock
+    chat_lock = _chat_writer_lock if should_rebuild else _chat_read_lock
+    with root_lock():
+        status = _contact_catalog_status_locked(chat_lock=chat_lock)
         if status.state == "ok":
             assert status.catalog is not None
             return status.catalog, False
         if status.state == "missing" and allow_missing_empty and status.history_empty:
             return _catalog_from_entries({}, source_signature=_empty_history_source_signature()), False
-        should_rebuild = (
+        should_rebuild_now = (
             (status.state == "missing" and rebuild_on_missing)
             or (status.state == "corrupt" and rebuild_on_corrupt)
             or (status.state == "dirty" and rebuild_on_dirty)
             or (status.state == "stale" and rebuild_on_stale)
         )
-        if should_rebuild:
+        if should_rebuild_now:
             return _rebuild_catalog_locked(repair_tails=repair_tails), True
         raise _catalog_read_error(status)
 
@@ -1377,7 +1478,12 @@ def _refresh_contact_catalog_locked(
             ),
         )
         _apply_record_to_catalog_entry(entry, record)
-    _write_catalog_locked(_catalog_from_entries(entries, source_signature=_history_source_signature()))
+    _write_catalog_locked(
+        _catalog_from_entries(
+            entries,
+            source_signature=_history_source_signature_locked(chat_lock=_chat_writer_lock),
+        )
+    )
 
 
 def _refresh_contact_catalog(
@@ -1385,12 +1491,12 @@ def _refresh_contact_catalog(
     *,
     base_source_signature: dict[str, Any] | None = None,
 ) -> None:
-    with _root_lock():
+    with _root_writer_lock():
         _refresh_contact_catalog_locked(records, base_source_signature=base_source_signature)
 
 
 def _mark_catalog_dirty(reason: str) -> None:
-    with _root_lock():
+    with _root_writer_lock():
         _mark_catalog_dirty_locked(reason)
 
 
@@ -1417,7 +1523,7 @@ def _refresh_contact_catalog_best_effort(
     dirty_reason: str,
     base_source_signature: dict[str, Any] | None = None,
 ) -> tuple[Exception | None, Exception | None]:
-    with _root_lock():
+    with _root_writer_lock():
         return _refresh_contact_catalog_best_effort_locked(
             records,
             dirty_reason=dirty_reason,
@@ -1429,7 +1535,10 @@ def _known_chat_type_from_catalog(
     business_connection_id: Any,
     chat_id: Any,
 ) -> str | None:
-    with _root_lock():
+    root = history_root()
+    if not root.exists():
+        return None
+    with _root_read_lock():
         if _catalog_dirty_locked():
             return None
         try:
@@ -1461,7 +1570,7 @@ def _known_chat_type_from_history(
     chat_dir = _history_chat_dir_path(business_connection_id, chat_id)
     if not chat_dir.exists():
         return None
-    with _chat_lock(chat_dir):
+    with _chat_read_lock(chat_dir):
         try:
             state, _ = _load_chat_state(chat_dir, repair_tails=False)
         except ValueError as exc:
@@ -1793,6 +1902,7 @@ def _append_record(chat_dir: Path, record: dict[str, Any]) -> bool:
     # helpers may still call this primitive or inject raw JSONL directly.
     observed_at = _parse_datetime(record.get("observed_at")) or _utcnow()
     path = chat_dir / _month_filename(observed_at)
+    _ensure_history_chat_dir(chat_dir)
     _ensure_private_file(path)
     line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
     with path.open("a", encoding="utf-8") as handle:
@@ -1831,10 +1941,10 @@ def _mutate_chat_history_transactionally(
 ) -> tuple[MutationResult, Exception | None, Exception | None]:
     # Production canonical writers must hold root before chat so every append and
     # its derived catalog publish/dirty handling become one root-scoped commit.
-    with _root_lock():
-        base_source_signature = _history_source_signature()
+    with _root_writer_lock():
+        base_source_signature = _history_source_signature_locked(chat_lock=_chat_writer_lock)
         catalog_records: list[dict[str, Any]] = []
-        with _chat_lock(chat_dir):
+        with _chat_writer_lock(chat_dir):
             state, _ = _load_chat_state(chat_dir, repair_tails=True)
             result = mutate(state, catalog_records)
             if catalog_records:
@@ -2322,7 +2432,7 @@ def _is_active_month_file(path: Path, now: datetime) -> bool:
 
 
 def _unlink_pruned_partition(path: Path) -> int:
-    with _chat_lock(path.parent):
+    with _chat_writer_lock(path.parent):
         size = path.stat().st_size
         path.unlink()
         _fsync_parent_directory(path)
@@ -2356,7 +2466,8 @@ def _scan_chat_live_pending_summary(chat_dir: Path, *, repair_tails: bool) -> _C
     tracker = _LivePendingDeletionTracker()
     record_count = 0
     unexplained_count = 0
-    with _chat_lock(chat_dir):
+    chat_lock = _chat_writer_lock if repair_tails else _chat_read_lock
+    with chat_lock(chat_dir):
         paths = _iter_history_files(chat_dir)
 
         def _consume(record: dict[str, Any]) -> None:
@@ -2438,7 +2549,19 @@ def collect_history_stats(*, now: datetime | None = None) -> HistoryStats:
     unexplained_count = 0
     file_count = 0
     total_bytes = 0
-    with _root_lock():
+    root = history_root()
+    if not root.exists():
+        return HistoryStats(
+            chat_count=0,
+            file_count=0,
+            record_count=0,
+            total_bytes=0,
+            pending_count=0,
+            unexplained_count=0,
+            cap_exceeded=False,
+            cap_shortfall_bytes=0,
+        )
+    with _root_read_lock():
         for chat_dir in _iter_chat_dirs():
             chat_count += 1
             summary = _scan_chat_live_pending_summary(chat_dir, repair_tails=False)
@@ -2491,7 +2614,7 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
                 result.warnings.append(f"classification catalog refresh failed for {chat_dir}: {refresh_exc}{detail}")
         except Exception as exc:  # noqa: BLE001 - maintenance is best effort
             result.warnings.append(f"classification failed for {chat_dir}: {exc}")
-    with _root_lock():
+    with _root_writer_lock():
         pruned_any = False
         inventory = _collect_prune_inventory(current)
         total_bytes = inventory.total_bytes
@@ -2595,64 +2718,82 @@ def verify_history(*, repair_tails: bool = False, now: datetime | None = None) -
         warnings.add(order_key=(ordinal, phase, warning_serial), message=message)
         warning_serial += 1
 
+    root = history_root()
+    if not repair_tails and not root.exists():
+        return VerificationResult(
+            ok=True,
+            chat_count=0,
+            file_count=0,
+            record_count=0,
+        )
+
+    root_lock = _root_writer_lock if repair_tails else _root_read_lock
+    chat_lock = _chat_writer_lock if repair_tails else _chat_read_lock
     try:
-        with _root_lock():
+        with root_lock():
             for chat_dir in _iter_chat_dirs():
                 chat_count += 1
-                with _chat_lock(chat_dir):
-                    paths = _iter_history_files(chat_dir)
-                    file_count += len(paths)
-                    try:
-                        def _consume(record: dict[str, Any]) -> None:
-                            nonlocal record_count
-                            ordinal = record_count
-                            record_count += 1
-                            event_id = str(record.get("event_id") or "")
-                            if not event_id:
-                                _record_error(f"{chat_dir}: missing event_id")
-                                return
-                            duplicate_tracker.add(event_id=event_id, chat_label=str(chat_dir), ordinal=ordinal)
-                            if record.get("schema_version") != SCHEMA_VERSION:
-                                _record_warning(
-                                    ordinal,
-                                    1,
-                                    f"{chat_dir}: unsupported schema_version {record.get('schema_version')}",
+                try:
+                    chat_context = chat_lock(chat_dir)
+                    with chat_context:
+                        paths = _iter_history_files(chat_dir)
+                        file_count += len(paths)
+                        try:
+                            def _consume(record: dict[str, Any]) -> None:
+                                nonlocal record_count
+                                ordinal = record_count
+                                record_count += 1
+                                event_id = str(record.get("event_id") or "")
+                                if not event_id:
+                                    _record_error(f"{chat_dir}: missing event_id")
+                                    return
+                                duplicate_tracker.add(event_id=event_id, chat_label=str(chat_dir), ordinal=ordinal)
+                                if record.get("schema_version") != SCHEMA_VERSION:
+                                    _record_warning(
+                                        ordinal,
+                                        1,
+                                        f"{chat_dir}: unsupported schema_version {record.get('schema_version')}",
+                                    )
+                                event_type = str(record.get("event_type") or "")
+                                if event_type == "message.deleted":
+                                    reference_tracker.observe_deleted(chat_label=str(chat_dir), event_id=event_id)
+                                    return
+                                if event_type != "deletion.classified":
+                                    return
+                                reference_tracker.observe_classified(
+                                    chat_label=str(chat_dir),
+                                    deleted_event_id=str(record.get("deleted_event_id") or ""),
+                                    ordinal=ordinal,
+                                    event_id=event_id,
+                                    deleted_observed_at=_isoformat_utc(_parse_datetime(record.get("deleted_observed_at"))),
                                 )
-                            event_type = str(record.get("event_type") or "")
-                            if event_type == "message.deleted":
-                                reference_tracker.observe_deleted(chat_label=str(chat_dir), event_id=event_id)
-                                return
-                            if event_type != "deletion.classified":
-                                return
-                            reference_tracker.observe_classified(
-                                chat_label=str(chat_dir),
-                                deleted_event_id=str(record.get("deleted_event_id") or ""),
-                                ordinal=ordinal,
-                                event_id=event_id,
-                                deleted_observed_at=_isoformat_utc(_parse_datetime(record.get("deleted_observed_at"))),
-                            )
 
-                        repaired = _scan_history_files(paths, repair_tails=repair_tails, on_record=_consume)
-                    except Exception as exc:  # noqa: BLE001 - collect and continue
-                        total_bytes += sum(size for _, size in _history_file_snapshot(paths))
-                        _record_error(f"{chat_dir}: {exc}")
-                        continue
-                    if repaired:
-                        _invalidate_chat_cache(chat_dir)
-                    repaired_files += repaired
-                    file_snapshot = _history_file_snapshot(paths)
-                    total_bytes += sum(size for _, size in file_snapshot)
+                            repaired = _scan_history_files(paths, repair_tails=repair_tails, on_record=_consume)
+                        except Exception as exc:  # noqa: BLE001 - collect and continue
+                            total_bytes += sum(size for _, size in _history_file_snapshot(paths))
+                            _record_error(f"{chat_dir}: {exc}")
+                            continue
+                        if repaired:
+                            _invalidate_chat_cache(chat_dir)
+                        repaired_files += repaired
+                        file_snapshot = _history_file_snapshot(paths)
+                        total_bytes += sum(size for _, size in file_snapshot)
+                except HistoryLockUninitializedError as exc:
+                    _record_error(str(exc))
+                    continue
+    except HistoryLockUninitializedError as exc:
+        _record_error(str(exc))
 
-        try:
-            for ordinal, message in _iter_duplicate_event_id_warnings(duplicate_tracker):
-                _record_warning(ordinal, 0, message)
-        except Exception as exc:  # noqa: BLE001 - collect and continue
-            _record_error(f"duplicate event_id audit failed: {exc}")
-        try:
-            for ordinal, message in _iter_retained_tombstone_membership_warnings(reference_tracker):
-                _record_warning(ordinal, 2, message)
-        except Exception as exc:  # noqa: BLE001 - collect and continue
-            _record_error(f"retained tombstone audit failed: {exc}")
+    try:
+        for ordinal, message in _iter_duplicate_event_id_warnings(duplicate_tracker):
+            _record_warning(ordinal, 0, message)
+    except Exception as exc:  # noqa: BLE001 - collect and continue
+        _record_error(f"duplicate event_id audit failed: {exc}")
+    try:
+        for ordinal, message in _iter_retained_tombstone_membership_warnings(reference_tracker):
+            _record_warning(ordinal, 2, message)
+    except Exception as exc:  # noqa: BLE001 - collect and continue
+        _record_error(f"retained tombstone audit failed: {exc}")
     finally:
         duplicate_tracker.close()
         reference_tracker.close()
@@ -2954,7 +3095,7 @@ def _streamed_records_locked(
     text_query: str | None = None,
 ) -> Iterator[Iterator[dict[str, Any]]]:
     normalized_text_query = None if text_query is None else _normalize_search_text(text_query)
-    with _chat_lock(chat_dir):
+    with _chat_read_lock(chat_dir):
         selected_files = list(_iter_selected_history_files(chat_dir, since=since, until=until))
         for path in selected_files:
             _raise_if_tail_repair_required(path)

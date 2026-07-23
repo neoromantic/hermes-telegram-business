@@ -237,6 +237,34 @@ def snapshot_history_tree(plugin) -> dict[str, bytes]:
     }
 
 
+def snapshot_history_state(plugin) -> dict[str, tuple[str, int, bytes | None]]:
+    root = plugin._history_support.history_root()
+    if not root.exists():
+        return {}
+    state: dict[str, tuple[str, int, bytes | None]] = {
+        ".": ("dir", stat.S_IMODE(root.stat().st_mode), None),
+    }
+    for path in sorted(root.rglob("*")):
+        key = path.relative_to(root).as_posix()
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if path.is_dir():
+            state[key] = ("dir", mode, None)
+        else:
+            state[key] = ("file", mode, path.read_bytes())
+    return state
+
+
+def remove_history_locks(plugin) -> None:
+    history = plugin._history_support
+    root_lock = history._root_lock_path()
+    if root_lock.exists():
+        root_lock.unlink()
+    for chat_dir in history._iter_chat_dirs():
+        chat_lock = history._chat_lock_path(chat_dir)
+        if chat_lock.exists():
+            chat_lock.unlink()
+
+
 def make_legacy_history_record(
     plugin,
     *,
@@ -304,18 +332,17 @@ def make_legacy_history_record(
 
 def append_raw_history_records(plugin, *records: dict[str, Any]) -> None:
     history = plugin._history_support
-    grouped: dict[Path, list[str]] = {}
+    initialized: set[Path] = set()
     for record in records:
         observed_at = history._parse_datetime(record.get("observed_at"))
         assert observed_at is not None
-        chat_dir = history._history_chat_dir(record["business_connection_id"], record["chat_id"])
-        path = chat_dir / history._month_filename(observed_at)
-        grouped.setdefault(path, []).append(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-    for path, lines in grouped.items():
-        with path.open("a", encoding="utf-8") as handle:
-            handle.writelines(lines)
-            handle.flush()
-            os.fsync(handle.fileno())
+        chat_dir = history._history_chat_dir_path(record["business_connection_id"], record["chat_id"])
+        if chat_dir not in initialized:
+            history._ensure_history_chat_dir(chat_dir)
+            history._ensure_private_file(history._root_lock_path())
+            history._ensure_private_file(history._chat_lock_path(chat_dir))
+            initialized.add(chat_dir)
+        history._append_record(chat_dir, record)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync only")
@@ -545,6 +572,55 @@ async def test_history_is_fail_closed_when_disabled_or_missing_chat_type(plugin,
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
     await plugin._history_support.observe_ptb_update(update, bot=FakeBot())
     assert not load_records(plugin, chat_id=991)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("argv", "expected_exit", "expected_output"),
+    [
+        (("history", "catalog"), 0, "status=missing "),
+        (("history", "chats"), 0, "No Telegram Business history found."),
+        (("history", "contacts"), 0, "No matching contacts found."),
+        (("history", "stats"), 0, "chat_count=0"),
+        (("history", "verify"), 0, "ok=True chats=0 files=0 records=0"),
+        (("history", "show", "--chat", "991", "--limit", "1"), 1, "no matching history chat found"),
+        (("history", "search", "--text", "hello", "--limit", "5"), 0, "No matching history records found."),
+        (("history", "export", "--chat", "991", "--format", "text", "--limit", "1"), 1, "no matching history chat found"),
+        (("history", "deletions", "--chat", "991", "--status", "pending", "--limit", "1"), 1, "no matching history chat found"),
+    ],
+)
+async def test_absent_history_read_paths_leave_tree_absent(
+    enabled_history,
+    argv: tuple[str, ...],
+    expected_exit: int,
+    expected_output: str,
+):
+    plugin = enabled_history
+
+    assert snapshot_history_state(plugin) == {}
+
+    exit_code, output = _run_history_cli(plugin, *argv)
+
+    assert exit_code == expected_exit
+    assert expected_output in output
+    assert snapshot_history_state(plugin) == {}
+    assert not plugin._history_support.history_root().exists()
+
+
+@pytest.mark.asyncio
+async def test_absent_history_unknown_type_probe_rejects_without_side_effects(enabled_history):
+    plugin = enabled_history
+    before = snapshot_history_state(plugin)
+
+    wrote = await plugin._history_support.observe_ptb_update(
+        make_business_text_update(chat_type=None, text="unknown type probe"),
+        bot=FakeBot(),
+    )
+
+    assert wrote is False
+    assert before == {}
+    assert snapshot_history_state(plugin) == before
+    assert not plugin._history_support.history_root().exists()
 
 
 @pytest.mark.asyncio
@@ -916,21 +992,21 @@ async def test_catalog_status_is_read_only_and_contacts_fail_closed_without_muta
             ),
         )
 
-    before = snapshot_history_tree(plugin)
+    before = snapshot_history_state(plugin)
 
     exit_code, output = _run_history_cli(plugin, "history", "catalog")
 
     assert exit_code == 0
     assert output.startswith(f"status={state} ")
     assert "history catalog --rebuild" in output
-    assert snapshot_history_tree(plugin) == before
+    assert snapshot_history_state(plugin) == before
 
     exit_code, output = _run_history_cli(plugin, "history", "contacts")
 
     assert exit_code == 1
     assert f"history contact catalog is {state}" in output
     assert "history catalog --rebuild" in output
-    assert snapshot_history_tree(plugin) == before
+    assert snapshot_history_state(plugin) == before
 
 
 @pytest.mark.asyncio
@@ -975,14 +1051,83 @@ async def test_catalog_backed_cli_reads_fail_closed_on_stale_catalog_without_mut
             text="stale append",
         ),
     )
-    before = snapshot_history_tree(plugin)
+    before = snapshot_history_state(plugin)
 
     exit_code, output = _run_history_cli(plugin, *argv)
 
     assert exit_code == 1
     assert "history contact catalog is stale" in output
     assert "history catalog --rebuild" in output
-    assert snapshot_history_tree(plugin) == before
+    assert snapshot_history_state(plugin) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("history", "catalog"),
+        ("history", "stats"),
+        ("history", "verify"),
+    ],
+)
+async def test_missing_root_lock_fails_closed_without_mutation(
+    enabled_history,
+    argv: tuple[str, ...],
+):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await history.observe_ptb_update(
+        make_business_text_update(text="root lock archive", update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+
+    root_lock = history._root_lock_path()
+    root_lock.unlink()
+    before = snapshot_history_state(plugin)
+
+    exit_code, output = _run_history_cli(plugin, *argv)
+
+    assert exit_code == 1
+    assert "history root lock is uninitialized" in output
+    assert snapshot_history_state(plugin) == before
+    assert not root_lock.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("history", "catalog"),
+        ("history", "show", "--chat", "991", "--limit", "1"),
+        ("history", "verify"),
+    ],
+)
+async def test_missing_chat_lock_fails_closed_without_mutation(
+    enabled_history,
+    argv: tuple[str, ...],
+):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await history.observe_ptb_update(
+        make_business_text_update(text="chat lock archive", update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+
+    chat_dir = history._history_chat_dir_path("business-123", 991)
+    chat_lock = history._chat_lock_path(chat_dir)
+    chat_lock.unlink()
+    before = snapshot_history_state(plugin)
+
+    exit_code, output = _run_history_cli(plugin, *argv)
+
+    assert exit_code == 1
+    assert "history chat lock is uninitialized" in output
+    assert snapshot_history_state(plugin) == before
+    assert not chat_lock.exists()
 
 
 def test_catalog_rebuild_supports_old_jsonl_without_profile_snapshots(plugin, monkeypatch: pytest.MonkeyPatch):
@@ -1145,6 +1290,82 @@ async def test_catalog_rebuild_fails_on_torn_tail_without_mutation_then_succeeds
 
 
 @pytest.mark.asyncio
+async def test_catalog_rebuild_reinitializes_missing_locks_and_restores_normal_reads(enabled_history):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await history.observe_ptb_update(
+        make_business_text_update(text="rebuild init", update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+
+    chat_dir = history._history_chat_dir_path("business-123", 991)
+    remove_history_locks(plugin)
+
+    catalog = history.rebuild_contact_catalog()
+
+    assert catalog["contact_count"] == 1
+    assert history._root_lock_path().exists()
+    assert history._chat_lock_path(chat_dir).exists()
+    exit_code, output = _run_history_cli(plugin, "history", "contacts")
+    assert exit_code == 0
+    assert "chat=991" in output
+
+
+@pytest.mark.asyncio
+async def test_capture_write_reinitializes_missing_locks_and_restores_normal_reads(enabled_history):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await history.observe_ptb_update(
+        make_business_text_update(text="before reinit", message_id=77, update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+
+    chat_dir = history._history_chat_dir_path("business-123", 991)
+    remove_history_locks(plugin)
+
+    wrote = await history.observe_ptb_update(
+        make_business_text_update(text="after reinit", message_id=78, update_id=2, date=base + timedelta(seconds=1)),
+        bot=FakeBot(),
+        now=base + timedelta(seconds=1),
+    )
+
+    assert wrote is True
+    assert history._root_lock_path().exists()
+    assert history._chat_lock_path(chat_dir).exists()
+    assert [record["message_id"] for record in load_records(plugin)] == [77, 78]
+    exit_code, output = _run_history_cli(plugin, "history", "show", "--chat", "991", "--limit", "2")
+    assert exit_code == 0
+    assert "after reinit" in output
+
+
+@pytest.mark.asyncio
+async def test_verify_repair_reinitializes_missing_locks_and_restores_normal_verify(enabled_history):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await history.observe_ptb_update(
+        make_business_text_update(text="verify init", update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+
+    chat_dir = history._history_chat_dir_path("business-123", 991)
+    remove_history_locks(plugin)
+
+    repaired = history.verify_history(repair_tails=True)
+    verified = history.verify_history()
+
+    assert repaired.ok is True
+    assert verified.ok is True
+    assert history._root_lock_path().exists()
+    assert history._chat_lock_path(chat_dir).exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("argv", "expected_exit", "expected_output"),
     [
@@ -1196,7 +1417,7 @@ async def test_catalog_rebuild_exhaustion_returns_cli_error(
 
     calls = 0
 
-    def _changing_signature() -> dict[str, Any]:
+    def _changing_signature(*_args, **_kwargs) -> dict[str, Any]:
         nonlocal calls
         calls += 1
         return {
@@ -1206,6 +1427,7 @@ async def test_catalog_rebuild_exhaustion_returns_cli_error(
         }
 
     monkeypatch.setattr(plugin._history_support, "_history_source_signature", _changing_signature)
+    monkeypatch.setattr(plugin._history_support, "_history_source_signature_locked", _changing_signature)
 
     exit_code, output = _run_history_cli(plugin, *argv)
 
@@ -1548,7 +1770,7 @@ async def test_streamed_read_waits_for_concurrent_append_and_never_exposes_parti
     reader_result: dict[str, Any] = {}
 
     def _writer() -> None:
-        with history._chat_lock(chat_dir):
+        with history._chat_writer_lock(chat_dir):
             with history_file.open("a", encoding="utf-8") as handle:
                 handle.write(serialized[:midpoint])
                 handle.flush()
@@ -1674,6 +1896,90 @@ def test_streamed_reader_holding_chat_does_not_deadlock_capture(enabled_history,
             now=base,
         )
     )
+
+    chat_dir = history._history_chat_dir("business-123", 991)
+    history_file = load_history_file(plugin)
+    original_open = Path.open
+    reader_selected = threading.Event()
+    allow_reader_open = threading.Event()
+    reader_done = threading.Event()
+    writer_done = threading.Event()
+    results: dict[str, Any] = {}
+
+    def _blocking_open(path_obj: Path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if path_obj == history_file and "r" in mode:
+            reader_selected.set()
+            assert allow_reader_open.wait(timeout=5)
+        return original_open(path_obj, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _blocking_open)
+
+    def _reader() -> None:
+        try:
+            with history._streamed_records_locked(chat_dir, since=None, until=None, text_query=None) as records:
+                results["records"] = list(records)
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["reader_exc"] = exc
+        finally:
+            reader_done.set()
+
+    def _writer() -> None:
+        try:
+            results["writer"] = asyncio.run(
+                history.observe_ptb_update(
+                    make_business_text_update(
+                        text="two",
+                        message_id=78,
+                        update_id=2,
+                        date=base + timedelta(seconds=1),
+                    ),
+                    bot=FakeBot(),
+                    now=base + timedelta(seconds=1),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["writer_exc"] = exc
+        finally:
+            writer_done.set()
+
+    reader_thread = threading.Thread(target=_reader)
+    writer_thread = threading.Thread(target=_writer)
+    reader_thread.start()
+    assert reader_selected.wait(timeout=5)
+
+    writer_thread.start()
+    assert writer_done.wait(timeout=0.1) is False
+
+    allow_reader_open.set()
+    reader_thread.join(timeout=5)
+    writer_thread.join(timeout=5)
+
+    assert not reader_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert reader_done.is_set()
+    assert writer_done.is_set()
+    assert "reader_exc" not in results
+    assert "writer_exc" not in results
+    assert results["writer"] is True
+    assert [record["message_id"] for record in results["records"]] == [77]
+    assert [record["message_id"] for record in load_records(plugin)] == [77, 78]
+
+
+def test_reinitialized_read_lock_still_serializes_capture_writer(enabled_history, monkeypatch: pytest.MonkeyPatch):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    asyncio.run(
+        history.observe_ptb_update(
+            make_business_text_update(text="one", message_id=77, update_id=1, date=base),
+            bot=FakeBot(),
+            now=base,
+        )
+    )
+    remove_history_locks(plugin)
+    history.rebuild_contact_catalog()
 
     chat_dir = history._history_chat_dir("business-123", 991)
     history_file = load_history_file(plugin)
@@ -2487,7 +2793,7 @@ async def test_month_boundary_pending_deletion_protects_closed_partition_until_c
     assert not any(record["event_type"] == "deletion.classified" for record in load_records(reloaded))
 
     chat_dir = reloaded._history_support._history_chat_dir("business-123", 991)
-    with reloaded._history_support._chat_lock(chat_dir):
+    with reloaded._history_support._chat_read_lock(chat_dir):
         state, _ = reloaded._history_support._load_chat_state(chat_dir)
     assert any(pending.classification is None for pending in state.pending_deletions.values())
 
