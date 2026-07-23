@@ -559,6 +559,14 @@ class CatalogRebuildChangedError(ValueError):
     """Canonical history changed during every contact-catalog rebuild retry."""
 
 
+@dataclass(frozen=True)
+class CatalogStatus:
+    state: str
+    catalog: dict[str, Any] | None = None
+    detail: str | None = None
+    history_empty: bool = False
+
+
 def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -1215,6 +1223,38 @@ def _read_catalog_locked() -> dict[str, Any] | None:
     return raw
 
 
+def _catalog_rebuild_instruction() -> str:
+    return "run 'hermes telegram-business history catalog --rebuild'"
+
+
+def _contact_catalog_status_locked() -> CatalogStatus:
+    source_signature = _history_source_signature()
+    history_empty = source_signature == _empty_history_source_signature()
+    dirty = _catalog_dirty_locked()
+    try:
+        catalog = _read_catalog_locked()
+    except ValueError as exc:
+        if dirty:
+            return CatalogStatus(state="dirty", detail=str(exc), history_empty=history_empty)
+        return CatalogStatus(state="corrupt", detail=str(exc), history_empty=history_empty)
+    if dirty:
+        return CatalogStatus(state="dirty", catalog=catalog, history_empty=history_empty)
+    if catalog is None:
+        return CatalogStatus(state="missing", history_empty=history_empty)
+    if _catalog_source_signature(catalog) != source_signature:
+        return CatalogStatus(state="stale", catalog=catalog, history_empty=history_empty)
+    return CatalogStatus(state="ok", catalog=catalog, history_empty=history_empty)
+
+
+def _contact_catalog_status() -> CatalogStatus:
+    with _root_lock():
+        return _contact_catalog_status_locked()
+
+
+def _catalog_read_error(status: CatalogStatus) -> ValueError:
+    return ValueError(f"history contact catalog is {status.state}; {_catalog_rebuild_instruction()}")
+
+
 def _catalog_dirty_locked() -> bool:
     return _catalog_dirty_path().exists()
 
@@ -1272,7 +1312,12 @@ def _rebuild_catalog_locked(*, repair_tails: bool) -> dict[str, Any]:
 
 def rebuild_contact_catalog() -> dict[str, Any]:
     with _root_lock():
-        return _rebuild_catalog_locked(repair_tails=True)
+        try:
+            return _rebuild_catalog_locked(repair_tails=False)
+        except ValueError as exc:
+            if _tail_repair_instruction() not in str(exc):
+                raise
+            raise ValueError(f"{exc}; then {_catalog_rebuild_instruction()}") from exc
 
 
 def _load_contact_catalog(
@@ -1280,25 +1325,26 @@ def _load_contact_catalog(
     rebuild_on_missing: bool,
     rebuild_on_corrupt: bool,
     rebuild_on_dirty: bool,
+    rebuild_on_stale: bool,
+    allow_missing_empty: bool,
     repair_tails: bool,
 ) -> tuple[dict[str, Any], bool]:
     with _root_lock():
-        dirty = _catalog_dirty_locked()
-        try:
-            catalog = _read_catalog_locked()
-        except ValueError:
-            if not rebuild_on_corrupt:
-                raise
+        status = _contact_catalog_status_locked()
+        if status.state == "ok":
+            assert status.catalog is not None
+            return status.catalog, False
+        if status.state == "missing" and allow_missing_empty and status.history_empty:
+            return _catalog_from_entries({}, source_signature=_empty_history_source_signature()), False
+        should_rebuild = (
+            (status.state == "missing" and rebuild_on_missing)
+            or (status.state == "corrupt" and rebuild_on_corrupt)
+            or (status.state == "dirty" and rebuild_on_dirty)
+            or (status.state == "stale" and rebuild_on_stale)
+        )
+        if should_rebuild:
             return _rebuild_catalog_locked(repair_tails=repair_tails), True
-        if catalog is None:
-            if not rebuild_on_missing:
-                return _catalog_from_entries({}), False
-            return _rebuild_catalog_locked(repair_tails=repair_tails), True
-        if dirty and rebuild_on_dirty:
-            return _rebuild_catalog_locked(repair_tails=repair_tails), True
-        if not _catalog_is_fresh_locked(catalog):
-            return _rebuild_catalog_locked(repair_tails=repair_tails), True
-        return catalog, False
+        raise _catalog_read_error(status)
 
 
 def _refresh_contact_catalog_locked(
@@ -2993,9 +3039,11 @@ def _latest_records_across_entries(
 
 def _catalog_entries_for_cli() -> list[dict[str, Any]]:
     catalog, _ = _load_contact_catalog(
-        rebuild_on_missing=True,
-        rebuild_on_corrupt=True,
-        rebuild_on_dirty=True,
+        rebuild_on_missing=False,
+        rebuild_on_corrupt=False,
+        rebuild_on_dirty=False,
+        rebuild_on_stale=False,
+        allow_missing_empty=True,
         repair_tails=False,
     )
     return [entry for entry in catalog.get("contacts", []) if isinstance(entry, dict)]
@@ -3233,20 +3281,18 @@ def _catalog_status_line(*, rebuild: bool = False) -> str:
             f"status=rebuilt path={path} entries={catalog.get('contact_count', 0)} "
             f"generated_at={catalog.get('generated_at')}"
         )
-    try:
-        catalog, rebuilt = _load_contact_catalog(
-            rebuild_on_missing=True,
-            rebuild_on_corrupt=True,
-            rebuild_on_dirty=True,
-            repair_tails=True,
-        )
-    except (OSError, ValueError) as exc:
-        return f"status=error path={path} error={exc}"
-    status = "rebuilt" if rebuilt else "ok"
-    return (
-        f"status={status} path={path} entries={catalog.get('contact_count', 0)} "
-        f"generated_at={catalog.get('generated_at')}"
-    )
+    status = _contact_catalog_status()
+    fields = [f"status={status.state}", f"path={path}"]
+    if status.catalog is not None:
+        fields.append(f"entries={status.catalog.get('contact_count', 0)}")
+        fields.append(f"generated_at={status.catalog.get('generated_at')}")
+    if status.state == "missing":
+        fields.append(f"history_empty={status.history_empty}")
+    if status.detail:
+        fields.append(f"detail={status.detail}")
+    if status.state != "ok":
+        fields.append(f"next_action={_catalog_rebuild_instruction()}")
+    return " ".join(fields)
 
 def _bounded_limit(raw: int | None, default: int) -> int:
     if raw is None:

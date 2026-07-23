@@ -226,6 +226,17 @@ def catalog_dirty_path(plugin) -> Path:
     return plugin._history_support.history_root() / ".contacts.json.dirty"
 
 
+def snapshot_history_tree(plugin) -> dict[str, bytes]:
+    root = plugin._history_support.history_root()
+    if not root.exists():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def make_legacy_history_record(
     plugin,
     *,
@@ -865,126 +876,113 @@ async def test_catalog_update_failure_does_not_block_canonical_append(enabled_hi
 
 
 @pytest.mark.asyncio
-async def test_catalog_refresh_failure_recovers_on_cli_reads_and_clears_dirty_marker(
+@pytest.mark.parametrize("state", ["missing", "corrupt", "dirty", "stale"])
+async def test_catalog_status_is_read_only_and_contacts_fail_closed_without_mutation(
     enabled_history,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys,
+    state: str,
 ):
     plugin = enabled_history
+    history = plugin._history_support
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
-    calls = 0
-    original_refresh = plugin._history_support._refresh_contact_catalog_locked
-
-    def _fail_once(records, *, base_source_signature=None):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise RuntimeError("catalog broke")
-        return original_refresh(records, base_source_signature=base_source_signature)
-
-    monkeypatch.setattr(plugin._history_support, "_refresh_contact_catalog_locked", _fail_once)
-
-    wrote = await plugin._history_support.observe_ptb_update(
-        make_business_text_update(chat_id=994, chat_username="recovery-user", text="recover me", update_id=1, date=base),
-        bot=FakeBot(),
-        now=base,
-    )
-
-    assert wrote is True
-    assert catalog_dirty_path(plugin).exists()
-
-    parser = _build_history_parser(plugin)
-    exit_code = plugin._history_support.handle_cli(
-        parser.parse_args(["history", "search", "--text", "recover", "--limit", "5"])
-    )
-    output = capsys.readouterr().out.strip()
-
-    assert exit_code == 0
-    assert "chat=994" in output
-    assert "recover me" in output
-    assert not catalog_dirty_path(plugin).exists()
-
-    exit_code = plugin._history_support.handle_cli(
-        parser.parse_args(["history", "show", "--chat", "994", "--limit", "1"])
-    )
-    output = capsys.readouterr().out.strip()
-
-    assert exit_code == 0
-    assert "chat=994" in output
-    assert "recover me" in output
-
-
-@pytest.mark.asyncio
-async def test_stale_readable_catalog_rebuilds_after_refresh_and_dirty_marker_failures(
-    enabled_history,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys,
-):
-    plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
-
-    await plugin._history_support.observe_ptb_update(
+    await history.observe_ptb_update(
         make_business_text_update(text="first contact", update_id=1, date=base),
         bot=FakeBot(),
         now=base,
     )
+    history.rebuild_contact_catalog()
 
-    def _fail_refresh(_records, *, base_source_signature=None):
-        raise RuntimeError("catalog broke")
+    if state == "missing":
+        history._catalog_path().unlink()
+    elif state == "corrupt":
+        history._catalog_path().write_text("{broken", encoding="utf-8")
+    elif state == "dirty":
+        history._mark_catalog_dirty("forced dirty state")
+    else:
+        append_raw_history_records(
+            plugin,
+            make_legacy_history_record(
+                plugin,
+                event_type="message.created",
+                source="business_message",
+                observed_at=base + timedelta(seconds=1),
+                telegram_update_id=2,
+                business_connection_id="business-123",
+                chat_id=991,
+                message_id=78,
+                message_at=base + timedelta(seconds=1),
+                sender_id=2000,
+                direction="incoming",
+                text="stale append",
+            ),
+        )
 
-    def _fail_dirty(_reason: str):
-        raise OSError("dirty broke")
+    before = snapshot_history_tree(plugin)
 
-    monkeypatch.setattr(plugin._history_support, "_refresh_contact_catalog_locked", _fail_refresh)
-    monkeypatch.setattr(plugin._history_support, "_mark_catalog_dirty_locked", _fail_dirty)
+    exit_code, output = _run_history_cli(plugin, "history", "catalog")
 
-    wrote = await plugin._history_support.observe_ptb_update(
-        make_business_text_update(
-            chat_id=994,
-            chat_username="recovery-user",
-            from_user_username="recovery-user",
-            text="recover me",
-            update_id=2,
-            date=base + timedelta(seconds=1),
-        ),
+    assert exit_code == 0
+    assert output.startswith(f"status={state} ")
+    assert "history catalog --rebuild" in output
+    assert snapshot_history_tree(plugin) == before
+
+    exit_code, output = _run_history_cli(plugin, "history", "contacts")
+
+    assert exit_code == 1
+    assert f"history contact catalog is {state}" in output
+    assert "history catalog --rebuild" in output
+    assert snapshot_history_tree(plugin) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("history", "chats"),
+        ("history", "contacts"),
+        ("history", "show", "--chat", "991", "--limit", "1"),
+        ("history", "search", "--text", "first", "--limit", "5"),
+        ("history", "export", "--chat", "991", "--format", "text", "--limit", "1"),
+        ("history", "deletions", "--chat", "991", "--status", "pending", "--limit", "1"),
+    ],
+)
+async def test_catalog_backed_cli_reads_fail_closed_on_stale_catalog_without_mutation(
+    enabled_history,
+    argv: tuple[str, ...],
+):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await history.observe_ptb_update(
+        make_business_text_update(text="first contact", update_id=1, date=base),
         bot=FakeBot(),
-        now=base + timedelta(seconds=1),
+        now=base,
     )
-
-    assert wrote is True
-    assert not catalog_dirty_path(plugin).exists()
-    assert load_catalog(plugin)["contact_count"] == 1
-
-    plugin._history_support.reset_in_memory_caches()
-    reloaded = _load_plugin_module(monkeypatch, plugin._history_support.history_root().parents[2])
-    parser = _build_history_parser(reloaded)
-
-    exit_code = reloaded._history_support.handle_cli(
-        parser.parse_args(["history", "contacts", "--search", "recovery-user"])
+    history.rebuild_contact_catalog()
+    append_raw_history_records(
+        plugin,
+        make_legacy_history_record(
+            plugin,
+            event_type="message.created",
+            source="business_message",
+            observed_at=base + timedelta(seconds=1),
+            telegram_update_id=2,
+            business_connection_id="business-123",
+            chat_id=991,
+            message_id=78,
+            message_at=base + timedelta(seconds=1),
+            sender_id=2000,
+            direction="incoming",
+            text="stale append",
+        ),
     )
-    contacts_output = capsys.readouterr().out.strip()
+    before = snapshot_history_tree(plugin)
 
-    assert exit_code == 0
-    assert "chat=994" in contacts_output
+    exit_code, output = _run_history_cli(plugin, *argv)
 
-    exit_code = reloaded._history_support.handle_cli(
-        parser.parse_args(["history", "show", "--contact", "@recovery-user", "--limit", "1"])
-    )
-    show_output = capsys.readouterr().out.strip()
-
-    assert exit_code == 0
-    assert "chat=994" in show_output
-    assert "recover me" in show_output
-
-    exit_code = reloaded._history_support.handle_cli(
-        parser.parse_args(["history", "search", "--text", "recover", "--limit", "5"])
-    )
-    search_output = capsys.readouterr().out.strip()
-
-    assert exit_code == 0
-    assert "chat=994" in search_output
-    assert "recover me" in search_output
-    assert load_catalog(reloaded)["contact_count"] == 2
+    assert exit_code == 1
+    assert "history contact catalog is stale" in output
+    assert "history catalog --rebuild" in output
+    assert snapshot_history_tree(plugin) == before
 
 
 def test_catalog_rebuild_supports_old_jsonl_without_profile_snapshots(plugin, monkeypatch: pytest.MonkeyPatch):
@@ -1013,62 +1011,169 @@ def test_catalog_rebuild_supports_old_jsonl_without_profile_snapshots(plugin, mo
 
 
 @pytest.mark.asyncio
-async def test_catalog_missing_and_corrupt_can_be_rebuilt(enabled_history, capsys):
+async def test_catalog_missing_and_corrupt_can_be_rebuilt_explicitly_without_touching_canonical_history(
+    enabled_history,
+):
     plugin = enabled_history
+    history = plugin._history_support
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
-    await plugin._history_support.observe_ptb_update(
+    await history.observe_ptb_update(
         make_business_text_update(text="hello", update_id=1, date=base),
         bot=FakeBot(),
         now=base,
     )
-    catalog_path = plugin._history_support.history_root() / "contacts.json"
-    parser = _build_history_parser(plugin)
+    catalog_path = history.history_root() / "contacts.json"
+    canonical_before = snapshot_history_tree(plugin)
     catalog_path.unlink()
 
-    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "catalog"]))
-    status = capsys.readouterr().out.strip()
-    assert exit_code == 0
-    assert status.startswith("status=rebuilt ")
+    exit_code, status = _run_history_cli(plugin, "history", "catalog")
 
-    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "catalog", "--rebuild"]))
-    rebuilt = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert status.startswith("status=missing ")
+    assert snapshot_history_tree(plugin) == {k: v for k, v in canonical_before.items() if k != "contacts.json"}
+
+    exit_code, rebuilt = _run_history_cli(plugin, "history", "catalog", "--rebuild")
+
     assert exit_code == 0
     assert rebuilt.startswith("status=rebuilt ")
     assert catalog_path.exists()
+    assert {
+        path: data for path, data in snapshot_history_tree(plugin).items() if not path.endswith("contacts.json")
+    } == {
+        path: data for path, data in canonical_before.items() if not path.endswith("contacts.json")
+    }
 
     catalog_path.write_text("{broken", encoding="utf-8")
-    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "catalog"]))
-    corrupt = capsys.readouterr().out.strip()
+    before_corrupt_rebuild = snapshot_history_tree(plugin)
+
+    exit_code, corrupt = _run_history_cli(plugin, "history", "catalog")
+
     assert exit_code == 0
-    assert corrupt.startswith("status=rebuilt ")
+    assert corrupt.startswith("status=corrupt ")
+    assert snapshot_history_tree(plugin) == before_corrupt_rebuild
+
+    exit_code, rebuilt = _run_history_cli(plugin, "history", "catalog", "--rebuild")
+
+    assert exit_code == 0
+    assert rebuilt.startswith("status=rebuilt ")
+    assert {
+        path: data for path, data in snapshot_history_tree(plugin).items() if not path.endswith("contacts.json")
+    } == {
+        path: data for path, data in before_corrupt_rebuild.items() if not path.endswith("contacts.json")
+    }
+
+
+@pytest.mark.asyncio
+async def test_catalog_rebuild_updates_only_derived_state(enabled_history):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await history.observe_ptb_update(
+        make_business_text_update(text="first contact", message_id=77, update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+    history.rebuild_contact_catalog()
+    append_raw_history_records(
+        plugin,
+        make_legacy_history_record(
+            plugin,
+            event_type="message.created",
+            source="business_message",
+            observed_at=base + timedelta(seconds=1),
+            telegram_update_id=2,
+            business_connection_id="business-123",
+            chat_id=991,
+            message_id=78,
+            message_at=base + timedelta(seconds=1),
+            sender_id=2000,
+            direction="incoming",
+            text="second contact",
+        ),
+    )
+    history._mark_catalog_dirty("force rebuild path")
+    before = snapshot_history_tree(plugin)
+
+    exit_code, output = _run_history_cli(plugin, "history", "catalog", "--rebuild")
+
+    assert exit_code == 0
+    assert output.startswith("status=rebuilt ")
+    after = snapshot_history_tree(plugin)
+    changed = {path for path in set(before) | set(after) if before.get(path) != after.get(path)}
+    assert changed <= {"contacts.json", ".contacts.json.dirty"}
+    assert ".contacts.json.dirty" not in after
+    assert load_catalog(plugin)["contacts"][0]["message_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_catalog_rebuild_fails_on_torn_tail_without_mutation_then_succeeds_after_verify_repair(enabled_history):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    await history.observe_ptb_update(
+        make_business_text_update(text="hello", message_id=77, update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+    history_file = load_history_file(plugin)
+    with history_file.open("ab") as handle:
+        handle.write(b"{\"event_id\":\"broken\"")
+    before = snapshot_history_tree(plugin)
+
+    exit_code, output = _run_history_cli(plugin, "history", "catalog", "--rebuild")
+
+    assert exit_code == 1
+    assert "verify --repair-tails" in output
+    assert "history catalog --rebuild" in output
+    assert snapshot_history_tree(plugin) == before
+
+    exit_code, output = _run_history_cli(plugin, "history", "verify", "--repair-tails")
+
+    assert exit_code == 0
+    assert "ok=True" in output
+    after_verify = snapshot_history_tree(plugin)
+
+    exit_code, output = _run_history_cli(plugin, "history", "catalog", "--rebuild")
+
+    assert exit_code == 0
+    assert output.startswith("status=rebuilt ")
+    after_rebuild = snapshot_history_tree(plugin)
+    changed = {path for path in set(after_verify) | set(after_rebuild) if after_verify.get(path) != after_rebuild.get(path)}
+    assert changed <= {"contacts.json", ".contacts.json.dirty"}
+    assert history_file.read_bytes().endswith(b"\n")
+    assert load_catalog(plugin)["contact_count"] == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("argv", "expected_exit", "expected_output"),
     [
-        (["history", "catalog"], 0, "status=error "),
+        (["history", "catalog"], 0, "status=stale "),
         (["history", "catalog", "--rebuild"], 1, "error: canonical history changed during catalog rebuild"),
-        (["history", "contacts"], 1, "error: canonical history changed during catalog rebuild"),
+        (
+            ["history", "contacts"],
+            1,
+            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
+        ),
         (
             ["history", "show", "--contact", "@customer991", "--limit", "1"],
             1,
-            "error: canonical history changed during catalog rebuild",
+            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
         ),
         (
             ["history", "search", "--contact", "@customer991", "--text", "hello", "--limit", "1"],
             1,
-            "error: canonical history changed during catalog rebuild",
+            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
         ),
         (
             ["history", "export", "--contact", "@customer991", "--format", "text", "--limit", "1"],
             1,
-            "error: canonical history changed during catalog rebuild",
+            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
         ),
         (
             ["history", "search", "--text", "hello", "--limit", "1"],
             1,
-            "error: canonical history changed during catalog rebuild",
+            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
         ),
     ],
 )
@@ -1329,7 +1434,13 @@ async def test_numeric_chat_lookup_without_connection_checks_canonical_duplicate
     ambiguous = capsys.readouterr().out.strip()
 
     assert exit_code == 1
-    assert "multiple history chats match" in ambiguous
+    assert "history contact catalog is stale" in ambiguous
+    assert "history catalog --rebuild" in ambiguous
+
+    exit_code, rebuilt = _run_history_cli(reloaded, "history", "catalog", "--rebuild")
+
+    assert exit_code == 0
+    assert rebuilt.startswith("status=rebuilt ")
 
     exit_code = reloaded._history_support.handle_cli(
         parser.parse_args(["history", "show", "--connection", "business-456", "--chat", "991", "--limit", "1"])
@@ -1396,7 +1507,8 @@ async def test_streamed_show_errors_on_torn_tail_without_mutation(enabled_histor
     output = capsys.readouterr().out.strip()
 
     assert exit_code == 1
-    assert "verify --repair-tails" in output
+    assert "history contact catalog is stale" in output
+    assert "history catalog --rebuild" in output
     assert history_file.read_bytes() == torn_bytes
 
 
@@ -2518,45 +2630,51 @@ async def test_retention_prune_rebuilds_catalog_from_remaining_canonical_history
 
 
 @pytest.mark.asyncio
-async def test_post_prune_catalog_rebuild_failure_marks_dirty_and_cli_recovers(
+async def test_post_prune_catalog_rebuild_failure_marks_dirty_until_explicit_rebuild(
     enabled_history,
     monkeypatch: pytest.MonkeyPatch,
-    capsys,
 ):
     plugin = enabled_history
+    history = plugin._history_support
     june_time = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
     july_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
 
-    await plugin._history_support.observe_ptb_update(
+    await history.observe_ptb_update(
         make_business_text_update(text="old month", message_id=77, update_id=1, date=june_time),
         bot=FakeBot(),
         now=june_time,
     )
-    await plugin._history_support.observe_ptb_update(
+    await history.observe_ptb_update(
         make_business_text_update(text="current month", message_id=78, update_id=2, date=july_time),
         bot=FakeBot(),
         now=july_time,
     )
 
     old_file = load_history_file(plugin, month="2026-06.jsonl")
-    original_write_catalog = plugin._history_support._write_catalog_locked
+    original_write_catalog = history._write_catalog_locked
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "10")
     monkeypatch.setattr(
-        plugin._history_support,
+        history,
         "_write_catalog_locked",
         lambda _catalog: (_ for _ in ()).throw(OSError("catalog write failed")),
     )
 
-    result = plugin._history_support.maintain_history(now=july_time)
+    result = history.maintain_history(now=july_time)
 
     assert not old_file.exists()
     assert any("post-prune contact catalog rebuild failed" in warning for warning in result.warnings)
     assert catalog_dirty_path(plugin).exists()
 
-    monkeypatch.setattr(plugin._history_support, "_write_catalog_locked", original_write_catalog)
-    parser = _build_history_parser(plugin)
-    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "catalog"]))
-    output = capsys.readouterr().out.strip()
+    before_status = snapshot_history_tree(plugin)
+    monkeypatch.setattr(history, "_write_catalog_locked", original_write_catalog)
+
+    exit_code, output = _run_history_cli(plugin, "history", "catalog")
+
+    assert exit_code == 0
+    assert output.startswith("status=dirty ")
+    assert snapshot_history_tree(plugin) == before_status
+
+    exit_code, output = _run_history_cli(plugin, "history", "catalog", "--rebuild")
 
     assert exit_code == 0
     assert output.startswith("status=rebuilt ")
@@ -3503,7 +3621,8 @@ def test_history_cli_read_paths_error_on_torn_tail_without_mutation(enabled_hist
     exit_code, output = _run_history_cli(plugin, *argv)
 
     assert exit_code == 1
-    assert "verify --repair-tails" in output
+    assert "history contact catalog is stale" in output
+    assert "history catalog --rebuild" in output
     assert history_file.read_bytes() == torn_bytes
 
 
@@ -3875,9 +3994,11 @@ async def test_history_cli_numeric_chat_resolution_surfaces_catalog_freshness_er
         rebuild_on_missing: bool,
         rebuild_on_corrupt: bool,
         rebuild_on_dirty: bool,
+        rebuild_on_stale: bool,
+        allow_missing_empty: bool,
         repair_tails: bool,
     ):
-        raise history.CatalogRebuildChangedError("canonical history changed during catalog rebuild")
+        raise ValueError("history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'")
 
     monkeypatch.setattr(history, "_load_contact_catalog", _raise_catalog_error)
     monkeypatch.setattr(
@@ -3891,7 +4012,7 @@ async def test_history_cli_numeric_chat_resolution_surfaces_catalog_freshness_er
     output = capsys.readouterr().out.strip()
 
     assert exit_code == 1
-    assert "canonical history changed during catalog rebuild" in output
+    assert "history contact catalog is stale" in output
 
 
 @pytest.mark.asyncio
