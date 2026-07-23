@@ -368,6 +368,128 @@ def test_fsync_parent_directory_surfaces_real_io_failures(plugin, monkeypatch: p
     assert closed == [29]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync only")
+def test_first_append_fsyncs_new_directories_and_first_month_file_in_order(plugin, monkeypatch: pytest.MonkeyPatch):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    root = history.history_root()
+    data_dir = root.parent.parent
+    transport_dir = root.parent
+    connection_dir = root / history._path_key("business-123")
+    chat_dir_path = connection_dir / history._safe_part(991)
+    month_path = chat_dir_path / history._month_filename(base)
+    parent_fsyncs: list[Path] = []
+    original_fsync_parent = history._fsync_parent_directory
+
+    def _record_parent_fsync(path: Path) -> bool:
+        parent_fsyncs.append(path)
+        return original_fsync_parent(path)
+
+    monkeypatch.setattr(history, "_fsync_parent_directory", _record_parent_fsync)
+
+    chat_dir = history._history_chat_dir("business-123", 991)
+    record = history._build_event(
+        event_type="message.created",
+        source="business_message",
+        observed_at=base,
+        telegram_update_id=1,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="inbound",
+        reply_to_message_id=None,
+        text="hello",
+    )
+    history._append_record(chat_dir, record)
+
+    assert chat_dir == chat_dir_path
+    assert parent_fsyncs == [data_dir, transport_dir, root, connection_dir, chat_dir_path, month_path]
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(connection_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(chat_dir_path.stat().st_mode) == 0o700
+    assert stat.S_IMODE(month_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync only")
+def test_subsequent_append_to_existing_month_skips_parent_directory_fsync(plugin, monkeypatch: pytest.MonkeyPatch):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    chat_dir = history._history_chat_dir("business-123", 991)
+    first_record = history._build_event(
+        event_type="message.created",
+        source="business_message",
+        observed_at=base,
+        telegram_update_id=1,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="inbound",
+        reply_to_message_id=None,
+        text="hello",
+    )
+    history._append_record(chat_dir, first_record)
+
+    parent_fsyncs: list[Path] = []
+    monkeypatch.setattr(history, "_fsync_parent_directory", lambda path: parent_fsyncs.append(path) or True)
+
+    second_record = history._build_event(
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(seconds=1),
+        telegram_update_id=2,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=78,
+        message_at=base + timedelta(seconds=1),
+        sender_id=2000,
+        direction="inbound",
+        reply_to_message_id=None,
+        text="again",
+    )
+    history._append_record(chat_dir, second_record)
+
+    month_path = chat_dir / history._month_filename(base)
+    assert parent_fsyncs == []
+    assert stat.S_IMODE(month_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync only")
+def test_first_append_surfaces_directory_fsync_failures(plugin, monkeypatch: pytest.MonkeyPatch):
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    chat_dir = history._history_chat_dir("business-123", 991)
+    month_path = chat_dir / history._month_filename(base)
+
+    def _broken_parent_fsync(path: Path) -> bool:
+        if path == month_path:
+            raise OSError(errno.EIO, "directory fsync failed")
+        return True
+
+    monkeypatch.setattr(history, "_fsync_parent_directory", _broken_parent_fsync)
+
+    record = history._build_event(
+        event_type="message.created",
+        source="business_message",
+        observed_at=base,
+        telegram_update_id=1,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=77,
+        message_at=base,
+        sender_id=2000,
+        direction="inbound",
+        reply_to_message_id=None,
+        text="hello",
+    )
+
+    with pytest.raises(OSError, match="directory fsync failed"):
+        history._append_record(chat_dir, record)
+
+
 class TimerHarness:
     class FakeTimer:
         def __init__(self, registry: list["TimerHarness.FakeTimer"], interval: float, function, args=None, kwargs=None):
@@ -1940,6 +2062,93 @@ async def test_identical_pre_delete_message_within_nearby_before_window_is_likel
     assert classifications[-1]["classification"] == "likely_duplicate"
     assert classifications[-1]["classification_reason"] == "normalized_exact_duplicate"
     assert classifications[-1]["replacement_message_id"] == 88
+
+
+@pytest.mark.asyncio
+async def test_post_delete_exact_duplicate_is_preferred_over_nearer_pre_delete_duplicate(enabled_history):
+    plugin = enabled_history
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    bot = FakeBot()
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="same text", message_id=77, update_id=1, date=base),
+        bot=bot,
+        now=base,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="same text", message_id=88, update_id=2, date=base),
+        bot=bot,
+        now=base + timedelta(seconds=9),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_deleted_update(message_ids=(77,), update_id=3),
+        bot=bot,
+        now=base + timedelta(seconds=10),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="same text", message_id=99, update_id=4, date=base),
+        bot=bot,
+        now=base + timedelta(seconds=14),
+    )
+    plugin._history_support.maintain_history(now=base + timedelta(seconds=30))
+
+    classifications = [record for record in load_records(plugin) if record["event_type"] == "deletion.classified"]
+
+    assert classifications[-1]["classification"] == "likely_duplicate"
+    assert classifications[-1]["classification_reason"] == "normalized_exact_duplicate"
+    assert classifications[-1]["replacement_message_id"] == 99
+    assert classifications[-1]["classification_score"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_post_delete_correction_beats_pre_delete_duplicate_and_similar_candidates(enabled_history):
+    plugin = enabled_history
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    bot = FakeBot()
+    original_text = "Hello wrld"
+    correction_text = "Hello world"
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text=original_text, message_id=77, update_id=1, date=base),
+        bot=bot,
+        now=base,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text=correction_text, message_id=89, update_id=2, date=base),
+        bot=bot,
+        now=base + timedelta(seconds=8),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text=original_text, message_id=88, update_id=3, date=base),
+        bot=bot,
+        now=base + timedelta(seconds=9),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_deleted_update(message_ids=(77,), update_id=4),
+        bot=bot,
+        now=base + timedelta(seconds=10),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text=correction_text, message_id=99, update_id=5, date=base),
+        bot=bot,
+        now=base + timedelta(seconds=15),
+    )
+    plugin._history_support.maintain_history(now=base + timedelta(seconds=30))
+
+    classifications = [record for record in load_records(plugin) if record["event_type"] == "deletion.classified"]
+    expected_score = round(
+        plugin._history_support._similarity_score(
+            plugin._history_support._normalize_compare_text(original_text),
+            plugin._history_support._normalize_compare_text(correction_text),
+        ),
+        4,
+    )
+
+    assert classifications[-1]["classification"] == "likely_correction"
+    assert classifications[-1]["classification_reason"] == "high_similarity_small_edit"
+    assert classifications[-1]["classification_method"] == "high_similarity_small_edit"
+    assert classifications[-1]["replacement_message_id"] == 99
+    assert classifications[-1]["classification_score"] == expected_score
 
 
 @pytest.mark.asyncio

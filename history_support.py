@@ -375,21 +375,62 @@ def _catalog_dirty_path() -> Path:
     return root / CATALOG_DIRTY_FILENAME
 
 
-def _ensure_private_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
+def _missing_path_chain(path: Path) -> list[Path]:
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    missing.reverse()
+    return missing
+
+
+def _ensure_private_dir(path: Path) -> bool:
+    missing = _missing_path_chain(path)
+    if not missing:
+        path.mkdir(exist_ok=True)
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+        return False
+
+    for current in missing:
+        try:
+            os.mkdir(current, 0o700)
+        except FileExistsError:
+            if not current.is_dir():
+                raise
+        _fsync_parent_directory(current)
     try:
         os.chmod(path, 0o700)
     except OSError:
         pass
+    return True
 
 
-def _ensure_private_file(path: Path) -> None:
-    if not path.exists():
-        path.touch(mode=0o600)
+def _ensure_private_file(path: Path) -> bool:
+    created = not path.exists()
+    if created:
+        try:
+            descriptor = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if not path.exists():
+                raise
+        else:
+            os.close(descriptor)
+    if path.is_dir():
+        raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), str(path))
     try:
         os.chmod(path, 0o600)
     except OSError:
         pass
+    if created:
+        _fsync_parent_directory(path)
+    return created
 
 
 def _fsync_parent_directory(path: Path) -> bool:
@@ -1547,16 +1588,41 @@ def _classify_one_deletion(
         nearby_candidates.append((delta, candidate))
 
     if nearby_candidates:
-        exact = sorted(
-            (
-                (delta, candidate)
-                for delta, candidate in nearby_candidates
-                if _normalize_compare_text(candidate.text) == original_text
-            ),
-            key=lambda item: (item[0], str(item[1].message_id)),
-        )
-        if exact:
-            best_delta, best = exact[0]
+        def _best_exact(candidates: list[tuple[float, MessageState]]) -> MessageState | None:
+            exact = sorted(
+                (
+                    (abs(delta), candidate)
+                    for delta, candidate in candidates
+                    if _normalize_compare_text(candidate.text) == original_text
+                ),
+                key=lambda item: (item[0], str(item[1].message_id)),
+            )
+            if not exact:
+                return None
+            return exact[0][1]
+
+        def _best_similar(candidates: list[tuple[float, MessageState]]) -> tuple[float, MessageState] | None:
+            similarity_candidates: list[tuple[float, float, MessageState]] = []
+            for delta, candidate in candidates:
+                candidate_text = _normalize_compare_text(candidate.text)
+                if len(original_text) < 8 or len(candidate_text) < 8:
+                    continue
+                ratio = _similarity_score(original_text, candidate_text)
+                length_gap = abs(len(original_text) - len(candidate_text))
+                max_length_gap = max(3, min(12, int(max(len(original_text), len(candidate_text)) * 0.15)))
+                if ratio >= 0.93 and length_gap <= max_length_gap:
+                    similarity_candidates.append((ratio, abs(delta), candidate))
+            if not similarity_candidates:
+                return None
+            similarity_candidates.sort(key=lambda item: (-item[0], item[1], str(item[2].message_id)))
+            best_ratio, _best_delta, best = similarity_candidates[0]
+            return best_ratio, best
+
+        post_delete_candidates = [(delta, candidate) for delta, candidate in nearby_candidates if delta >= 0]
+        pre_delete_candidates = [(delta, candidate) for delta, candidate in nearby_candidates if delta < 0]
+
+        best = _best_exact(post_delete_candidates)
+        if best is not None:
             return _build_event(
                 event_type="deletion.classified",
                 source=str(deleted_event.get("source") or "deleted_business_messages"),
@@ -1578,19 +1644,56 @@ def _classify_one_deletion(
                 deleted_observed_at=deleted_at,
             )
 
-        similarity_candidates: list[tuple[float, float, MessageState]] = []
-        for delta, candidate in nearby_candidates:
-            candidate_text = _normalize_compare_text(candidate.text)
-            if len(original_text) < 8 or len(candidate_text) < 8:
-                continue
-            ratio = _similarity_score(original_text, candidate_text)
-            length_gap = abs(len(original_text) - len(candidate_text))
-            max_length_gap = max(3, min(12, int(max(len(original_text), len(candidate_text)) * 0.15)))
-            if ratio >= 0.93 and length_gap <= max_length_gap:
-                similarity_candidates.append((ratio, delta, candidate))
-        if similarity_candidates:
-            similarity_candidates.sort(key=lambda item: (-item[0], item[1], str(item[2].message_id)))
-            best_ratio, _best_delta, best = similarity_candidates[0]
+        post_similar = _best_similar(post_delete_candidates)
+        if post_similar is not None:
+            best_ratio, best = post_similar
+            return _build_event(
+                event_type="deletion.classified",
+                source=str(deleted_event.get("source") or "deleted_business_messages"),
+                observed_at=now,
+                telegram_update_id=deleted_event.get("telegram_update_id"),
+                business_connection_id=deleted_event["business_connection_id"],
+                chat_id=deleted_event["chat_id"],
+                message_id=deleted_event.get("message_id"),
+                message_at=deleted_event.get("message_at"),
+                sender_id=deleted_event.get("sender_id"),
+                direction=_normalize_history_direction(deleted_event.get("direction")),
+                reply_to_message_id=deleted_event.get("reply_to_message_id"),
+                deleted_event_id=deleted_event["event_id"],
+                classification="likely_correction",
+                replacement_message_id=best.message_id,
+                classification_reason="high_similarity_small_edit",
+                classification_score=best_ratio,
+                evaluated_at=now,
+                deleted_observed_at=deleted_at,
+            )
+
+        best = _best_exact(pre_delete_candidates)
+        if best is not None:
+            return _build_event(
+                event_type="deletion.classified",
+                source=str(deleted_event.get("source") or "deleted_business_messages"),
+                observed_at=now,
+                telegram_update_id=deleted_event.get("telegram_update_id"),
+                business_connection_id=deleted_event["business_connection_id"],
+                chat_id=deleted_event["chat_id"],
+                message_id=deleted_event.get("message_id"),
+                message_at=deleted_event.get("message_at"),
+                sender_id=deleted_event.get("sender_id"),
+                direction=_normalize_history_direction(deleted_event.get("direction")),
+                reply_to_message_id=deleted_event.get("reply_to_message_id"),
+                deleted_event_id=deleted_event["event_id"],
+                classification="likely_duplicate",
+                replacement_message_id=best.message_id,
+                classification_reason="normalized_exact_duplicate",
+                classification_score=1.0,
+                evaluated_at=now,
+                deleted_observed_at=deleted_at,
+            )
+
+        pre_similar = _best_similar(pre_delete_candidates)
+        if pre_similar is not None:
+            best_ratio, best = pre_similar
             return _build_event(
                 event_type="deletion.classified",
                 source=str(deleted_event.get("source") or "deleted_business_messages"),
