@@ -17,6 +17,7 @@ import re
 import shutil
 import stat
 import threading
+import unicodedata
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -65,6 +66,7 @@ TAIL_SCAN_CHUNK_BYTES = 64 * 1024
 SCHEMA_VERSION = 1
 CATALOG_SCHEMA_VERSION = 1
 CATALOG_FILENAME = "contacts.json"
+CATALOG_DIRTY_FILENAME = ".contacts.json.dirty"
 KNOWN_CHAT_TYPES = frozenset({"private", "group", "supergroup", "channel"})
 DEFAULT_HISTORY_CHAT_TYPES = frozenset({"private"})
 
@@ -360,6 +362,12 @@ def _catalog_path() -> Path:
     return root / CATALOG_FILENAME
 
 
+def _catalog_dirty_path() -> Path:
+    root = history_root()
+    _ensure_private_dir(root)
+    return root / CATALOG_DIRTY_FILENAME
+
+
 def _ensure_private_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     try:
@@ -371,6 +379,24 @@ def _ensure_private_dir(path: Path) -> None:
 def _ensure_private_file(path: Path) -> None:
     if not path.exists():
         path.touch(mode=0o600)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    tmp_path = path.with_name(path.name + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        os.chmod(tmp_path, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp_path, path)
     try:
         os.chmod(path, 0o600)
     except OSError:
@@ -438,6 +464,14 @@ def _clean_optional_text(value: Any) -> str | None:
     return text or None
 
 
+def _normalize_lookup_text(value: str, *, strip_username_prefix: bool = False) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    normalized = " ".join(normalized.strip().split()).casefold()
+    if strip_username_prefix:
+        normalized = normalized.lstrip("@")
+    return normalized
+
+
 def _extract_profile_snapshot(source: Any, fields: tuple[str, ...]) -> dict[str, Any] | None:
     snapshot: dict[str, Any] = {}
     for field_name in fields:
@@ -503,7 +537,7 @@ def _profile_lookup_values(profile: dict[str, Any] | None) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
     for value in values:
-        normalized = " ".join(value.casefold().split()).lstrip("@")
+        normalized = _normalize_lookup_text(value, strip_username_prefix=True)
         if normalized in seen:
             continue
         deduped.append(value)
@@ -578,9 +612,9 @@ def _catalog_entry_aliases(entry: dict[str, Any]) -> list[str]:
 
 def _append_catalog_aliases(entry: dict[str, Any], profile: dict[str, Any] | None) -> None:
     aliases = _catalog_entry_aliases(entry)
-    existing = {" ".join(alias.casefold().split()).lstrip("@") for alias in aliases}
+    existing = {_normalize_lookup_text(alias, strip_username_prefix=True) for alias in aliases}
     for value in _profile_lookup_values(profile):
-        normalized = " ".join(value.casefold().split()).lstrip("@")
+        normalized = _normalize_lookup_text(value, strip_username_prefix=True)
         if normalized in existing:
             continue
         aliases.append(value)
@@ -590,13 +624,13 @@ def _append_catalog_aliases(entry: dict[str, Any], profile: dict[str, Any] | Non
 
 def _prune_current_aliases(entry: dict[str, Any]) -> None:
     current_tokens = {
-        " ".join(value.casefold().split()).lstrip("@")
+        _normalize_lookup_text(value, strip_username_prefix=True)
         for value in _profile_lookup_values(entry.get("current_profile"))
     }
     aliases: list[str] = []
     seen: set[str] = set()
     for alias in _catalog_entry_aliases(entry):
-        normalized = " ".join(alias.casefold().split()).lstrip("@")
+        normalized = _normalize_lookup_text(alias, strip_username_prefix=True)
         if normalized in current_tokens or normalized in seen:
             continue
         aliases.append(alias)
@@ -702,23 +736,30 @@ def _read_catalog_locked() -> dict[str, Any] | None:
     return raw
 
 
+def _catalog_dirty_locked() -> bool:
+    return _catalog_dirty_path().exists()
+
+
+def _mark_catalog_dirty_locked(reason: str) -> None:
+    _write_json_atomic(
+        _catalog_dirty_path(),
+        {
+            "marked_at": _isoformat_utc(_utcnow()),
+            "reason": str(reason),
+        },
+    )
+
+
+def _clear_catalog_dirty_locked() -> None:
+    path = _catalog_dirty_path()
+    if not path.exists():
+        return
+    path.unlink()
+
+
 def _write_catalog_locked(catalog: dict[str, Any]) -> None:
-    path = _catalog_path()
-    tmp_path = path.with_name(path.name + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as handle:
-        json.dump(catalog, handle, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    try:
-        os.chmod(tmp_path, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp_path, path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    _write_json_atomic(_catalog_path(), catalog)
+    _clear_catalog_dirty_locked()
 
 
 def _rebuild_catalog_locked() -> dict[str, Any]:
@@ -749,8 +790,14 @@ def rebuild_contact_catalog() -> dict[str, Any]:
         return _rebuild_catalog_locked()
 
 
-def _load_contact_catalog(*, rebuild_on_missing: bool, rebuild_on_corrupt: bool) -> tuple[dict[str, Any], bool]:
+def _load_contact_catalog(
+    *,
+    rebuild_on_missing: bool,
+    rebuild_on_corrupt: bool,
+    rebuild_on_dirty: bool,
+) -> tuple[dict[str, Any], bool]:
     with _root_lock():
+        dirty = _catalog_dirty_locked()
         try:
             catalog = _read_catalog_locked()
         except ValueError:
@@ -760,6 +807,8 @@ def _load_contact_catalog(*, rebuild_on_missing: bool, rebuild_on_corrupt: bool)
         if catalog is None:
             if not rebuild_on_missing:
                 return _catalog_from_entries({}), False
+            return _rebuild_catalog_locked(), True
+        if dirty and rebuild_on_dirty:
             return _rebuild_catalog_locked(), True
         return catalog, False
 
@@ -790,25 +839,51 @@ def _refresh_contact_catalog(records: Iterable[dict[str, Any]]) -> None:
         _write_catalog_locked(_catalog_from_entries(entries))
 
 
+def _mark_catalog_dirty(reason: str) -> None:
+    with _root_lock():
+        _mark_catalog_dirty_locked(reason)
+
+
+def _refresh_contact_catalog_best_effort(
+    records: Iterable[dict[str, Any]],
+    *,
+    dirty_reason: str,
+) -> tuple[Exception | None, Exception | None]:
+    try:
+        _refresh_contact_catalog(records)
+    except Exception as exc:  # noqa: BLE001 - caller decides how to surface catalog drift
+        try:
+            _mark_catalog_dirty(dirty_reason)
+        except Exception as dirty_exc:  # noqa: BLE001 - surface both failures to the caller
+            return exc, dirty_exc
+        return exc, None
+    return None, None
+
+
 def _known_chat_type_from_catalog(
     business_connection_id: Any,
     chat_id: Any,
 ) -> str | None:
-    try:
-        catalog, _ = _load_contact_catalog(rebuild_on_missing=False, rebuild_on_corrupt=False)
-    except ValueError:
-        return None
-    for entry in catalog.get("contacts", []):
-        if not isinstance(entry, dict):
-            continue
-        if _catalog_contact_key(entry.get("business_connection_id"), entry.get("chat_id")) != _catalog_contact_key(
-            business_connection_id,
-            chat_id,
-        ):
-            continue
-        return _normalize_chat_type(entry.get("chat_type")) or _normalize_chat_type(
-            _get(entry.get("current_profile"), "type")
-        )
+    with _root_lock():
+        if _catalog_dirty_locked():
+            return None
+        try:
+            catalog = _read_catalog_locked()
+        except ValueError:
+            return None
+        if catalog is None:
+            return None
+        for entry in catalog.get("contacts", []):
+            if not isinstance(entry, dict):
+                continue
+            if _catalog_contact_key(entry.get("business_connection_id"), entry.get("chat_id")) != _catalog_contact_key(
+                business_connection_id,
+                chat_id,
+            ):
+                continue
+            return _normalize_chat_type(entry.get("chat_type")) or _normalize_chat_type(
+                _get(entry.get("current_profile"), "type")
+            )
     return None
 
 
@@ -1407,7 +1482,13 @@ def _run_scheduled_deletion_timer(chat_dir_text: str, deleted_event_id: str, due
             appended_records=appended_records,
         )
         if appended_records:
-            _refresh_contact_catalog(appended_records)
+            refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort(
+                appended_records,
+                dirty_reason="scheduled_classification_refresh_failed",
+            )
+            if refresh_exc is not None:
+                detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
+                logger.warning("%s: scheduled deletion classification catalog refresh failed: %s%s", PLUGIN_NAME, refresh_exc, detail)
     except Exception as exc:  # noqa: BLE001 - background classification must stay contained
         logger.warning("%s: scheduled deletion classification failed: %s", PLUGIN_NAME, exc, exc_info=True)
 
@@ -1580,10 +1661,17 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
             appended_records: list[dict[str, Any]] = []
             result.classified += _classify_due_for_chat(chat_dir, config, now=current, appended_records=appended_records)
             if appended_records:
-                _refresh_contact_catalog(appended_records)
+                refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort(
+                    appended_records,
+                    dirty_reason="maintenance_classification_refresh_failed",
+                )
+                if refresh_exc is not None:
+                    detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
+                    result.warnings.append(f"classification catalog refresh failed for {chat_dir}: {refresh_exc}{detail}")
         except Exception as exc:  # noqa: BLE001 - maintenance is best effort
             result.warnings.append(f"classification failed for {chat_dir}: {exc}")
     with _root_lock():
+        pruned_any = False
         if config.retention_days > 0:
             cutoff = current - timedelta(days=config.retention_days)
             retention_cutoff = datetime(cutoff.year, cutoff.month, 1, tzinfo=timezone.utc)
@@ -1600,6 +1688,7 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
                     _invalidate_chat_cache(path.parent)
                     result.pruned_files += 1
                     result.pruned_bytes += size
+                    pruned_any = True
                 except OSError as exc:
                     result.warnings.append(f"retention prune failed for {path}: {exc}")
 
@@ -1617,8 +1706,22 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
                 total_bytes -= size
                 result.pruned_files += 1
                 result.pruned_bytes += size
+                pruned_any = True
             except OSError as exc:
                 result.warnings.append(f"size prune failed for {path}: {exc}")
+
+        if pruned_any:
+            try:
+                _rebuild_catalog_locked()
+            except Exception as exc:  # noqa: BLE001 - canonical pruning is already complete
+                try:
+                    _mark_catalog_dirty_locked("post_prune_catalog_rebuild_failed")
+                except Exception as dirty_exc:  # noqa: BLE001 - report both failures
+                    result.warnings.append(
+                        f"post-prune contact catalog rebuild failed: {exc}; catalog dirty marker failed: {dirty_exc}"
+                    )
+                else:
+                    result.warnings.append(f"post-prune contact catalog rebuild failed: {exc}; derived catalog marked dirty")
 
         if total_bytes > config.max_bytes:
             result.cap_exceeded = True
@@ -1857,16 +1960,20 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
             wrote = wrote or bool(wrote_classifications)
 
     if catalog_records:
-        try:
-            _refresh_contact_catalog(catalog_records)
-        except Exception as exc:  # noqa: BLE001 - derived catalog failure must never block canonical history
+        refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort(
+            catalog_records,
+            dirty_reason="incremental_capture_refresh_failed",
+        )
+        if refresh_exc is not None:  # noqa: BLE001 - derived catalog failure must never block canonical history
+            detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
             logger.warning(
-                "%s: history contact catalog update failed for connection=%s chat=%s: %s",
+                "%s: history contact catalog update failed for connection=%s chat=%s: %s%s",
                 PLUGIN_NAME,
                 business_connection_id,
                 chat_id,
-                exc,
-                exc_info=True,
+                refresh_exc,
+                detail,
+                exc_info=(type(refresh_exc), refresh_exc, refresh_exc.__traceback__),
             )
 
     if _should_run_throttled_maintenance(current):
@@ -2001,32 +2108,46 @@ def _safe_raw_query_needle(query: str) -> str | None:
     return query.casefold()
 
 
-def _iter_streamed_records(
+@contextmanager
+def _streamed_records_locked(
     chat_dir: Path,
     *,
     since: datetime | None,
     until: datetime | None,
     text_query: str | None = None,
-) -> Iterator[dict[str, Any]]:
+) -> Iterator[Iterator[dict[str, Any]]]:
     raw_query = None if text_query is None else _safe_raw_query_needle(text_query)
-    for path in _iter_selected_history_files(chat_dir, since=since, until=until):
-        with path.open("r", encoding="utf-8") as handle:
-            for line_no, line in enumerate(handle, start=1):
-                if not line.strip():
-                    continue
-                if raw_query is not None and raw_query not in line.casefold():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"invalid JSON in {path.name}:{line_no}: {exc}") from exc
-                if not isinstance(record, dict):
-                    raise ValueError(f"non-object record in {path.name}:{line_no}")
-                if not _record_within_bounds(record, since=since, until=until):
-                    continue
-                if text_query is not None and text_query.casefold() not in str(record.get("text") or "").casefold():
-                    continue
-                yield record
+    with _chat_lock(chat_dir):
+        selected_files = list(_iter_selected_history_files(chat_dir, since=since, until=until))
+        repaired = False
+        current = _utcnow()
+        for path in selected_files:
+            if _is_active_month_file(path, current) and _repair_torn_tail(path):
+                repaired = True
+        if repaired:
+            _invalidate_chat_cache(chat_dir)
+
+        def _iter_records() -> Iterator[dict[str, Any]]:
+            for path in selected_files:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line_no, line in enumerate(handle, start=1):
+                        if not line.strip():
+                            continue
+                        if raw_query is not None and raw_query not in line.casefold():
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            raise ValueError(f"invalid JSON in {path.name}:{line_no}: {exc}") from exc
+                        if not isinstance(record, dict):
+                            raise ValueError(f"non-object record in {path.name}:{line_no}")
+                        if not _record_within_bounds(record, since=since, until=until):
+                            continue
+                        if text_query is not None and text_query.casefold() not in str(record.get("text") or "").casefold():
+                            continue
+                        yield record
+
+        yield _iter_records()
 
 
 def _tail_records(records: Iterable[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
@@ -2052,13 +2173,49 @@ def _latest_records(records: Iterable[dict[str, Any]], *, limit: int) -> list[di
     return [item[2] for item in sorted(heap)]
 
 
+def _latest_records_across_entries(
+    entries: Iterable[dict[str, Any]],
+    *,
+    since: datetime | None,
+    until: datetime | None,
+    text_query: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    heap: list[tuple[float, int, dict[str, Any]]] = []
+    sequence = 0
+    for entry in entries:
+        with _streamed_records_locked(
+            _entry_chat_dir(entry),
+            since=since,
+            until=until,
+            text_query=text_query,
+        ) as records:
+            for record in records:
+                observed_at = _record_observed_at(record)
+                if observed_at is None:
+                    continue
+                item = (observed_at.timestamp(), sequence, record)
+                sequence += 1
+                if len(heap) < limit:
+                    heapq.heappush(heap, item)
+                    continue
+                if item[:2] <= heap[0][:2]:
+                    continue
+                heapq.heapreplace(heap, item)
+    return [item[2] for item in sorted(heap)]
+
+
 def _catalog_entries_for_cli() -> list[dict[str, Any]]:
-    catalog, _ = _load_contact_catalog(rebuild_on_missing=True, rebuild_on_corrupt=True)
+    catalog, _ = _load_contact_catalog(
+        rebuild_on_missing=True,
+        rebuild_on_corrupt=True,
+        rebuild_on_dirty=True,
+    )
     return [entry for entry in catalog.get("contacts", []) if isinstance(entry, dict)]
 
 
 def _normalize_contact_lookup(text: str) -> str:
-    return " ".join(text.strip().casefold().split()).lstrip("@")
+    return _normalize_lookup_text(text, strip_username_prefix=True)
 
 
 def _contact_lookup_tokens(entry: dict[str, Any]) -> set[str]:
@@ -2079,7 +2236,7 @@ def _contact_search_haystack(entry: dict[str, Any]) -> str:
         str(entry.get("chat_id")),
         str(entry.get("chat_type") or ""),
     ]
-    return " | ".join(parts).casefold()
+    return " | ".join(_normalize_lookup_text(part) for part in parts if part)
 
 
 def _filter_catalog_entries(
@@ -2098,9 +2255,43 @@ def _filter_catalog_entries(
 
 
 def _resolve_chat_entry(*, business_connection_id: str | None, chat_id: str) -> dict[str, Any]:
-    matches = _filter_catalog_entries(business_connection_id=business_connection_id, chat_id=chat_id)
+    matches: list[dict[str, Any]] = []
+    catalog_error: Exception | None = None
+    try:
+        matches = _filter_catalog_entries(business_connection_id=business_connection_id, chat_id=chat_id)
+    except Exception as exc:  # noqa: BLE001 - numeric chat lookup falls back to canonical history
+        catalog_error = exc
     if not matches:
-        raise ValueError("no matching history chat found")
+        try:
+            rebuilt_catalog = rebuild_contact_catalog()
+        except Exception as exc:  # noqa: BLE001 - fall back to canonical history if rebuild itself fails
+            if catalog_error is None:
+                catalog_error = exc
+        else:
+            matches = [
+                entry
+                for entry in rebuilt_catalog.get("contacts", [])
+                if isinstance(entry, dict)
+                and (business_connection_id is None or str(entry.get("business_connection_id")) == str(business_connection_id))
+                and str(entry.get("chat_id")) == str(chat_id)
+            ]
+    if not matches:
+        try:
+            _chat_dir, records = _require_single_chat(business_connection_id=business_connection_id, chat_id=chat_id)
+        except ValueError:
+            if catalog_error is not None:
+                raise ValueError(str(catalog_error)) from catalog_error
+            raise
+        if not records:
+            raise ValueError("no matching history chat found")
+        first = records[0]
+        entry = _empty_catalog_entry(
+            business_connection_id=first.get("business_connection_id"),
+            chat_id=first.get("chat_id"),
+        )
+        for record in records:
+            _apply_record_to_catalog_entry(entry, record)
+        return entry
     if len(matches) > 1:
         raise ValueError("multiple history chats match; pass --connection explicitly")
     return matches[0]
@@ -2167,17 +2358,19 @@ def _catalog_status_line(*, rebuild: bool = False) -> str:
             f"status=rebuilt path={path} entries={catalog.get('contact_count', 0)} "
             f"generated_at={catalog.get('generated_at')}"
         )
-    with _root_lock():
-        try:
-            catalog = _read_catalog_locked()
-        except ValueError as exc:
-            return f"status=corrupt path={path} error={exc}"
-        if catalog is None:
-            return f"status=missing path={path}"
-        return (
-            f"status=ok path={path} entries={catalog.get('contact_count', 0)} "
-            f"generated_at={catalog.get('generated_at')}"
+    try:
+        catalog, rebuilt = _load_contact_catalog(
+            rebuild_on_missing=True,
+            rebuild_on_corrupt=True,
+            rebuild_on_dirty=True,
         )
+    except (OSError, ValueError) as exc:
+        return f"status=error path={path} error={exc}"
+    status = "rebuilt" if rebuilt else "ok"
+    return (
+        f"status={status} path={path} entries={catalog.get('contact_count', 0)} "
+        f"generated_at={catalog.get('generated_at')}"
+    )
 
 def _bounded_limit(raw: int | None, default: int) -> int:
     if raw is None:
@@ -2351,7 +2544,8 @@ def handle_cli(args: argparse.Namespace) -> int:
             entries = _filter_catalog_entries(business_connection_id=getattr(args, "connection", None))
             search = _clean_optional_text(getattr(args, "search", None))
             if search is not None:
-                entries = [entry for entry in entries if search.casefold() in _contact_search_haystack(entry)]
+                normalized_search = _normalize_lookup_text(search)
+                entries = [entry for entry in entries if normalized_search in _contact_search_haystack(entry)]
             entries = sorted(
                 entries,
                 key=lambda entry: (
@@ -2407,17 +2601,11 @@ def handle_cli(args: argparse.Namespace) -> int:
             if action == "search":
                 text_query = str(args.text)
                 if getattr(args, "chat", None) is None and getattr(args, "contact", None) is None:
-                    records = _latest_records(
-                        (
-                            record
-                            for entry in _filter_catalog_entries(business_connection_id=getattr(args, "connection", None))
-                            for record in _iter_streamed_records(
-                                _entry_chat_dir(entry),
-                                since=since,
-                                until=until,
-                                text_query=text_query,
-                            )
-                        ),
+                    records = _latest_records_across_entries(
+                        _filter_catalog_entries(business_connection_id=getattr(args, "connection", None)),
+                        since=since,
+                        until=until,
+                        text_query=text_query,
                         limit=limit,
                     )
                 else:
@@ -2426,30 +2614,26 @@ def handle_cli(args: argparse.Namespace) -> int:
                         chat_id=None if getattr(args, "chat", None) is None else str(args.chat),
                         contact=getattr(args, "contact", None),
                     )
-                    records = _tail_records(
-                        _iter_streamed_records(
+                    with _streamed_records_locked(
                             _entry_chat_dir(entry),
                             since=since,
                             until=until,
                             text_query=text_query,
-                        ),
-                        limit=limit,
-                    )
+                        ) as streamed_records:
+                        records = _tail_records(streamed_records, limit=limit)
             else:
                 entry = _resolve_history_entry(
                     business_connection_id=getattr(args, "connection", None),
                     chat_id=None if getattr(args, "chat", None) is None else str(args.chat),
                     contact=getattr(args, "contact", None),
                 )
-                records = _tail_records(
-                    _iter_streamed_records(
+                with _streamed_records_locked(
                         _entry_chat_dir(entry),
                         since=since,
                         until=until,
                         text_query=None,
-                    ),
-                    limit=limit,
-                )
+                    ) as streamed_records:
+                    records = _tail_records(streamed_records, limit=limit)
             if action == "export" and args.format == "jsonl":
                 for record in records:
                     print(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
@@ -2511,7 +2695,7 @@ def handle_cli(args: argparse.Namespace) -> int:
             for warning in result.warnings:
                 print(f"warning: {warning}")
             return 0
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         print(f"error: {exc}")
         return 1
 

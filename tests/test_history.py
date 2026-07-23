@@ -221,6 +221,10 @@ def load_catalog(plugin) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def catalog_dirty_path(plugin) -> Path:
+    return plugin._history_support.history_root() / ".contacts.json.dirty"
+
+
 def make_legacy_history_record(
     plugin,
     *,
@@ -677,7 +681,59 @@ async def test_catalog_update_failure_does_not_block_canonical_append(enabled_hi
 
     assert wrote is True
     assert load_records(plugin)[0]["text"] == "still written"
+    assert catalog_dirty_path(plugin).exists()
     assert "history contact catalog update failed" in caplog.text
+    assert "still written" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_catalog_refresh_failure_recovers_on_cli_reads_and_clears_dirty_marker(
+    enabled_history,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+):
+    plugin = enabled_history
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    calls = 0
+    original_refresh = plugin._history_support._refresh_contact_catalog
+
+    def _fail_once(records):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("catalog broke")
+        return original_refresh(records)
+
+    monkeypatch.setattr(plugin._history_support, "_refresh_contact_catalog", _fail_once)
+
+    wrote = await plugin._history_support.observe_ptb_update(
+        make_business_text_update(chat_id=994, chat_username="recovery-user", text="recover me", update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+
+    assert wrote is True
+    assert catalog_dirty_path(plugin).exists()
+
+    parser = _build_history_parser(plugin)
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "search", "--text", "recover", "--limit", "5"])
+    )
+    output = capsys.readouterr().out.strip()
+
+    assert exit_code == 0
+    assert "chat=994" in output
+    assert "recover me" in output
+    assert not catalog_dirty_path(plugin).exists()
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "show", "--chat", "994", "--limit", "1"])
+    )
+    output = capsys.readouterr().out.strip()
+
+    assert exit_code == 0
+    assert "chat=994" in output
+    assert "recover me" in output
 
 
 def test_catalog_rebuild_supports_old_jsonl_without_profile_snapshots(plugin, monkeypatch: pytest.MonkeyPatch):
@@ -706,7 +762,7 @@ def test_catalog_rebuild_supports_old_jsonl_without_profile_snapshots(plugin, mo
 
 
 @pytest.mark.asyncio
-async def test_catalog_missing_and_corrupt_can_be_rebuilt(enabled_history):
+async def test_catalog_missing_and_corrupt_can_be_rebuilt(enabled_history, capsys):
     plugin = enabled_history
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
     await plugin._history_support.observe_ptb_update(
@@ -715,17 +771,25 @@ async def test_catalog_missing_and_corrupt_can_be_rebuilt(enabled_history):
         now=base,
     )
     catalog_path = plugin._history_support.history_root() / "contacts.json"
+    parser = _build_history_parser(plugin)
     catalog_path.unlink()
 
-    status = plugin._history_support._catalog_status_line()
-    rebuilt = plugin._history_support._catalog_status_line(rebuild=True)
-    assert status.startswith("status=missing ")
+    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "catalog"]))
+    status = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert status.startswith("status=rebuilt ")
+
+    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "catalog", "--rebuild"]))
+    rebuilt = capsys.readouterr().out.strip()
+    assert exit_code == 0
     assert rebuilt.startswith("status=rebuilt ")
     assert catalog_path.exists()
 
     catalog_path.write_text("{broken", encoding="utf-8")
-    corrupt = plugin._history_support._catalog_status_line()
-    assert corrupt.startswith("status=corrupt ")
+    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "catalog"]))
+    corrupt = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert corrupt.startswith("status=rebuilt ")
 
 
 def test_catalog_concurrent_refresh_preserves_all_entries(plugin):
@@ -817,6 +881,105 @@ async def test_torn_tail_is_repaired_before_next_append_without_full_read_bytes(
     lines = history_file.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert [json.loads(line)["message_id"] for line in lines] == [77, 78]
+    assert history_file.read_bytes().endswith(b"\n")
+
+
+@pytest.mark.asyncio
+async def test_streamed_show_repairs_torn_tail_before_scanning(enabled_history, capsys):
+    plugin = enabled_history
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="one", message_id=77, update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+    history_file = load_history_file(plugin)
+    with history_file.open("ab") as handle:
+        handle.write(b"{\"event_id\":\"broken\"")
+
+    parser = _build_history_parser(plugin)
+    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "show", "--chat", "991", "--limit", "5"]))
+    output = capsys.readouterr().out.strip()
+
+    assert exit_code == 0
+    assert "text=one" in output
+    assert len(history_file.read_text(encoding="utf-8").splitlines()) == 1
+    assert history_file.read_bytes().endswith(b"\n")
+
+
+@pytest.mark.asyncio
+async def test_streamed_read_waits_for_concurrent_append_and_never_exposes_partial_json(enabled_history):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    await history.observe_ptb_update(
+        make_business_text_update(text="one", message_id=77, update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+
+    chat_dir = history._history_chat_dir("business-123", 991)
+    history_file = load_history_file(plugin)
+    appended = history._build_event(
+        event_type="message.created",
+        source="business_message",
+        observed_at=base + timedelta(seconds=1),
+        telegram_update_id=2,
+        business_connection_id="business-123",
+        chat_id=991,
+        message_id=78,
+        message_at=base + timedelta(seconds=1),
+        sender_id=2000,
+        direction="inbound",
+        reply_to_message_id=None,
+        text="two",
+    )
+    serialized = json.dumps(appended, ensure_ascii=False, separators=(",", ":")) + "\n"
+    midpoint = max(1, len(serialized) // 2)
+    writer_started = threading.Event()
+    release_writer = threading.Event()
+    reader_done = threading.Event()
+    reader_result: dict[str, Any] = {}
+
+    def _writer() -> None:
+        with history._chat_lock(chat_dir):
+            with history_file.open("a", encoding="utf-8") as handle:
+                handle.write(serialized[:midpoint])
+                handle.flush()
+                os.fsync(handle.fileno())
+                writer_started.set()
+                assert release_writer.wait(timeout=5)
+                handle.write(serialized[midpoint:])
+                handle.flush()
+                os.fsync(handle.fileno())
+
+    def _reader() -> None:
+        try:
+            with history._streamed_records_locked(chat_dir, since=None, until=None, text_query=None) as records:
+                reader_result["records"] = list(records)
+        except Exception as exc:  # noqa: BLE001 - assertion surfaces below
+            reader_result["exc"] = exc
+        finally:
+            reader_done.set()
+
+    writer_thread = threading.Thread(target=_writer)
+    reader_thread = threading.Thread(target=_reader)
+    writer_thread.start()
+    assert writer_started.wait(timeout=5)
+
+    reader_thread.start()
+    assert reader_done.wait(timeout=0.1) is False
+
+    release_writer.set()
+    writer_thread.join(timeout=5)
+    reader_thread.join(timeout=5)
+
+    assert not writer_thread.is_alive()
+    assert not reader_thread.is_alive()
+    assert "exc" not in reader_result
+    assert [record["message_id"] for record in reader_result["records"]] == [77, 78]
     assert history_file.read_bytes().endswith(b"\n")
 
 
@@ -1443,6 +1606,124 @@ async def test_retention_and_size_prune_closed_partitions_but_preserve_active(en
 
 
 @pytest.mark.asyncio
+async def test_retention_prune_rebuilds_catalog_from_remaining_canonical_history(
+    enabled_history,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    plugin = enabled_history
+    june_time = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
+    july_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            chat_id=991,
+            chat_username="alice-june",
+            chat_first_name="Alice",
+            chat_last_name="June",
+            from_user_username="alice-june",
+            text="old alias only",
+            update_id=1,
+            date=june_time,
+        ),
+        bot=FakeBot(),
+        now=june_time,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            chat_id=991,
+            chat_username="alice-july",
+            chat_first_name="Alicia",
+            chat_last_name="July",
+            from_user_username="alice-july",
+            text="current alias only",
+            update_id=2,
+            date=july_time,
+            edited=True,
+        ),
+        bot=FakeBot(),
+        now=july_time,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            chat_id=992,
+            chat_username="pruned-only",
+            chat_first_name="Pruned",
+            chat_last_name="Only",
+            from_user_username="pruned-only",
+            text="remove me",
+            update_id=3,
+            date=june_time,
+        ),
+        bot=FakeBot(),
+        now=june_time + timedelta(seconds=1),
+    )
+
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "10")
+    result = plugin._history_support.maintain_history(now=july_time)
+    catalog = load_catalog(plugin)
+    entries = {int(entry["chat_id"]): entry for entry in catalog["contacts"]}
+
+    assert result.pruned_files >= 2
+    assert 992 not in entries
+    assert 991 in entries
+    assert entries[991]["message_count"] == 0
+    assert entries[991]["edit_count"] == 1
+    assert entries[991]["record_count"] == 1
+    assert entries[991]["first_seen_at"].startswith("2026-07-19T10:00:00")
+    assert entries[991]["last_seen_at"].startswith("2026-07-19T10:00:00")
+    assert entries[991]["current_profile"]["username"] == "alice-july"
+    assert "@alice-june" not in entries[991]["aliases"]
+    assert "Alice June" not in entries[991]["aliases"]
+
+
+@pytest.mark.asyncio
+async def test_post_prune_catalog_rebuild_failure_marks_dirty_and_cli_recovers(
+    enabled_history,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+):
+    plugin = enabled_history
+    june_time = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
+    july_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="old month", message_id=77, update_id=1, date=june_time),
+        bot=FakeBot(),
+        now=june_time,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="current month", message_id=78, update_id=2, date=july_time),
+        bot=FakeBot(),
+        now=july_time,
+    )
+
+    old_file = load_history_file(plugin, month="2026-06.jsonl")
+    original_write_catalog = plugin._history_support._write_catalog_locked
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "10")
+    monkeypatch.setattr(
+        plugin._history_support,
+        "_write_catalog_locked",
+        lambda _catalog: (_ for _ in ()).throw(OSError("catalog write failed")),
+    )
+
+    result = plugin._history_support.maintain_history(now=july_time)
+
+    assert not old_file.exists()
+    assert any("post-prune contact catalog rebuild failed" in warning for warning in result.warnings)
+    assert catalog_dirty_path(plugin).exists()
+
+    monkeypatch.setattr(plugin._history_support, "_write_catalog_locked", original_write_catalog)
+    parser = _build_history_parser(plugin)
+    exit_code = plugin._history_support.handle_cli(parser.parse_args(["history", "catalog"]))
+    output = capsys.readouterr().out.strip()
+
+    assert exit_code == 0
+    assert output.startswith("status=rebuilt ")
+    assert not catalog_dirty_path(plugin).exists()
+    assert load_catalog(plugin)["contact_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_active_month_cap_failure_is_explicit(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
     current_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
@@ -1632,6 +1913,75 @@ async def test_history_cli_contacts_catalog_and_contact_resolution(plugin, monke
     assert exit_code == 0
     assert "chat=992" in output
     assert "second alice" in output
+
+
+@pytest.mark.asyncio
+async def test_history_cli_contact_lookup_normalizes_unicode_nfkc_and_casefold(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    decomposed_name = "Cafe\u0301 Customer"
+    composed_name = "Caf\u00e9 Customer"
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            chat_id=991,
+            chat_username=None,
+            chat_first_name="Cafe\u0301",
+            chat_last_name="Customer",
+            from_user_username=None,
+            from_user_first_name="Cafe\u0301",
+            from_user_last_name="Customer",
+            text="first unicode",
+            update_id=1,
+            date=base,
+        ),
+        bot=FakeBot(),
+        now=base,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            chat_id=991,
+            chat_username=None,
+            chat_first_name="Caf\u00e9",
+            chat_last_name="Customer",
+            from_user_username=None,
+            from_user_first_name="Caf\u00e9",
+            from_user_last_name="Customer",
+            text="second unicode",
+            update_id=2,
+            date=base,
+            edited=True,
+        ),
+        bot=FakeBot(),
+        now=base + timedelta(seconds=1),
+    )
+
+    parser = _build_history_parser(plugin)
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "show", "--contact", composed_name, "--limit", "1"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert "second unicode" in output
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "show", "--contact", f"  {decomposed_name}  ", "--limit", "1"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert "second unicode" in output
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "contacts", "--search", "CAFE\u0301   customer"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert composed_name in output
 
 
 @pytest.mark.asyncio
