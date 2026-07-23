@@ -64,7 +64,7 @@ Deleted messages are classified after a short correction window. Telegram-side d
 
 Classification events also store canonical `classification_reason` codes: `normalized_exact_duplicate`, `high_similarity_small_edit`, `no_strong_match`, `missing_original`, or `missing_text`.
 
-Monthly partitioning is the first storage defense. Retention is disabled by default, and the default size cap is 1 GiB. When enabled, automatic retention and max-storage pruning physically remove only whole closed monthly partitions. History v1 ships no record-level or right-to-erasure command. If the active month alone exceeds the configured cap, the plugin preserves it and surfaces the shortfall explicitly instead of pretending the cap was met. `contacts.json` is always rebuilt from the retained canonical JSONL, so identities and aliases disappear once no retained partition still contains evidence for them.
+Monthly partitioning is the first storage defense. Retention is disabled by default, and the default size cap is 1 GiB. When enabled, automatic retention and max-storage pruning physically remove only whole closed monthly partitions. History v1 ships no record-level or right-to-erasure command. If the active month alone exceeds the configured cap, the plugin preserves it and surfaces the shortfall explicitly instead of pretending the cap was met. Closed partitions for chats with still-pending unclassified deletions are also preserved until classification is durably appended, and those protected files still count toward the cap. `contacts.json` is always rebuilt from the retained canonical JSONL, so identities and aliases disappear once no retained partition still contains evidence for them.
 
 ## Requirements
 
@@ -163,7 +163,7 @@ hermes telegram-business history verify
 hermes telegram-business history maintain
 ```
 
-`show`, `search`, and `export` accept either numeric `--chat` or human-readable `--contact`. Contact resolution uses `contacts.json` first, requires disambiguation on duplicate names, and then streams only the selected chat's monthly partitions that intersect `--since`/`--until`. Global `search` without `--chat` or `--contact` remains bounded and keeps the same raw JSONL export semantics.
+`show`, `search`, and `export` accept either numeric `--chat` or human-readable `--contact`. Contact resolution uses `contacts.json` first, requires disambiguation on duplicate names, and then streams only the selected chat's monthly partitions that intersect `--since`/`--until`. `search --text` matches substrings after Unicode NFKC normalization plus casefold on both the query and stored `text`; whitespace is otherwise left untouched so substring semantics stay literal apart from compatibility folding. Global `search` without `--chat` or `--contact` remains bounded and keeps the same raw JSONL export semantics.
 
 Typical contact-first workflows:
 
@@ -230,7 +230,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - The plugin stores only an in-process duplicate key for 24 hours. Its identity is deterministic across equivalent retry delivery, but the seen set intentionally resets with the process. The voice module creates no separate transcript database.
 - The opt-in history module is the only persistent text store. It persists append-only JSONL under the active Hermes profile, repairs only a torn final line, never rewrites raw Telegram updates into history, and stores only Telegram `Message.text` in v1.
 - The derived `contacts.json` catalog is private, rebuildable, and contains only identity/range/count metadata plus aliases observed from canonical profile snapshots, plus a cheap canonical freshness signature. Catalog update failures warn without blocking canonical JSONL append.
-- Telegram-side deletion appends a tombstone and later classification; it does not remove earlier stored text. Automatic retention physically removes only whole closed monthly partitions, and the active month is preserved even when that leaves a cap shortfall.
+- Telegram-side deletion appends a tombstone and later classification; it does not remove earlier stored text. Automatic retention physically removes only whole closed monthly partitions, the active month is preserved even when that leaves a cap shortfall, and chats with pending unclassified deletions keep their closed partitions until classification is durably recorded.
 - Existing Hermes/Telegram media caches are outside this plugin's ownership and are never scanned or deleted.
 
 ## Failure behavior

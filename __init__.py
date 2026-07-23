@@ -1573,7 +1573,7 @@ def _run_startup_history_maintenance() -> None:
         return
     if result.cap_exceeded:
         logger.warning(
-            "%s: history size cap exceeded by %d bytes; active month files were preserved",
+            "%s: history size cap exceeded by %d bytes; non-prunable history files were preserved",
             _PLUGIN_NAME,
             result.cap_shortfall_bytes,
         )

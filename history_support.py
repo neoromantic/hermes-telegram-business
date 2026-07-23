@@ -190,6 +190,14 @@ class MaintenanceResult:
 
 
 @dataclass
+class PruneInventory:
+    total_bytes: int
+    active_files: tuple[Path, ...]
+    protected_closed_files: tuple[Path, ...]
+    unprotected_closed_files: tuple[Path, ...]
+
+
+@dataclass
 class VerificationResult:
     ok: bool
     chat_count: int
@@ -1910,6 +1918,56 @@ def _history_file_bytes() -> list[Path]:
     return files
 
 
+def _has_unclassified_pending_deletion(state: ChatState) -> bool:
+    return any(pending.classification is None for pending in state.pending_deletions.values())
+
+
+def _collect_prune_inventory(now: datetime) -> PruneInventory:
+    total_bytes = 0
+    active_files: list[Path] = []
+    protected_closed_files: list[Path] = []
+    unprotected_closed_files: list[Path] = []
+    for chat_dir in _iter_chat_dirs():
+        with _chat_lock(chat_dir):
+            state, _ = _load_chat_state(chat_dir)
+            chat_files = _iter_history_files(chat_dir)
+        protect_closed = _has_unclassified_pending_deletion(state)
+        for path in chat_files:
+            if not path.exists():
+                continue
+            total_bytes += path.stat().st_size
+            if _is_active_month_file(path, now):
+                active_files.append(path)
+            elif protect_closed:
+                protected_closed_files.append(path)
+            else:
+                unprotected_closed_files.append(path)
+    return PruneInventory(
+        total_bytes=total_bytes,
+        active_files=tuple(active_files),
+        protected_closed_files=tuple(protected_closed_files),
+        unprotected_closed_files=tuple(unprotected_closed_files),
+    )
+
+
+def _cap_shortfall_warning(
+    *,
+    shortfall_bytes: int,
+    active_files: Iterable[Path],
+    protected_closed_files: Iterable[Path],
+) -> str:
+    blockers: list[str] = []
+    if any(path.exists() for path in active_files):
+        blockers.append("active month files")
+    if any(path.exists() for path in protected_closed_files):
+        blockers.append("pending-deletion-protected closed partitions")
+    preserved = " and ".join(blockers) if blockers else "remaining retained history files"
+    return (
+        f"history size cap exceeded: cap_exceeded=True cap_shortfall_bytes={shortfall_bytes}; "
+        f"preserving {preserved}"
+    )
+
+
 def collect_history_stats(*, now: datetime | None = None) -> HistoryStats:
     chat_count = 0
     record_count = 0
@@ -1973,10 +2031,17 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
             result.warnings.append(f"classification failed for {chat_dir}: {exc}")
     with _root_lock():
         pruned_any = False
+        inventory = _collect_prune_inventory(current)
+        total_bytes = inventory.total_bytes
         if config.retention_days > 0:
             cutoff = current - timedelta(days=config.retention_days)
             retention_cutoff = datetime(cutoff.year, cutoff.month, 1, tzinfo=timezone.utc)
-            for path in _prunable_history_files(current):
+            for path in sorted(
+                inventory.unprotected_closed_files,
+                key=lambda candidate: (_file_month(candidate) or (9999, 99), str(candidate.parent)),
+            ):
+                if not path.exists():
+                    continue
                 month = _file_month(path)
                 if month is None:
                     continue
@@ -1985,6 +2050,7 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
                     continue
                 try:
                     size = _unlink_pruned_partition(path)
+                    total_bytes -= size
                     result.pruned_files += 1
                     result.pruned_bytes += size
                     pruned_any = True
@@ -1992,10 +2058,9 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
                     result.warnings.append(f"retention prune failed for {path}: {exc}")
 
         files = sorted(
-            _prunable_history_files(current),
+            [path for path in inventory.unprotected_closed_files if path.exists()],
             key=lambda path: (_file_month(path) or (9999, 99), str(path.parent)),
         )
-        total_bytes = sum(path.stat().st_size for path in _history_file_bytes() if path.exists())
         while total_bytes > config.max_bytes and files:
             path = files.pop(0)
             try:
@@ -2024,7 +2089,11 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
             result.cap_exceeded = True
             result.cap_shortfall_bytes = total_bytes - config.max_bytes
             result.warnings.append(
-                "history size cap cannot be met without deleting an active month file"
+                _cap_shortfall_warning(
+                    shortfall_bytes=result.cap_shortfall_bytes,
+                    active_files=inventory.active_files,
+                    protected_closed_files=inventory.protected_closed_files,
+                )
             )
     _record_maintenance_run(current)
     return result
@@ -2274,7 +2343,7 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
         maintenance = maintain_history(now=current)
         if maintenance.cap_exceeded:
             logger.warning(
-                "%s: history size cap exceeded by %d bytes; active month files were preserved",
+                "%s: history size cap exceeded by %d bytes; non-prunable history files were preserved",
                 PLUGIN_NAME,
                 maintenance.cap_shortfall_bytes,
             )
@@ -2396,10 +2465,12 @@ def _record_within_bounds(record: dict[str, Any], *, since: datetime | None, unt
     return True
 
 
-def _safe_raw_query_needle(query: str) -> str | None:
-    if any(ord(char) < 0x20 or char in {'"', "\\"} for char in query):
-        return None
-    return query.casefold()
+def _normalize_search_text(value: Any) -> str:
+    # Search uses Unicode NFKC plus casefold only. It intentionally preserves
+    # whitespace so substring semantics stay literal apart from compatibility
+    # normalization.
+    text = "" if value is None else str(value)
+    return unicodedata.normalize("NFKC", text).casefold()
 
 
 @contextmanager
@@ -2410,7 +2481,7 @@ def _streamed_records_locked(
     until: datetime | None,
     text_query: str | None = None,
 ) -> Iterator[Iterator[dict[str, Any]]]:
-    raw_query = None if text_query is None else _safe_raw_query_needle(text_query)
+    normalized_text_query = None if text_query is None else _normalize_search_text(text_query)
     with _chat_lock(chat_dir):
         selected_files = list(_iter_selected_history_files(chat_dir, since=since, until=until))
         repaired = False
@@ -2427,8 +2498,6 @@ def _streamed_records_locked(
                     for line_no, line in enumerate(handle, start=1):
                         if not line.strip():
                             continue
-                        if raw_query is not None and raw_query not in line.casefold():
-                            continue
                         try:
                             record = json.loads(line)
                         except json.JSONDecodeError as exc:
@@ -2437,7 +2506,9 @@ def _streamed_records_locked(
                             raise ValueError(f"non-object record in {path.name}:{line_no}")
                         if not _record_within_bounds(record, since=since, until=until):
                             continue
-                        if text_query is not None and text_query.casefold() not in str(record.get("text") or "").casefold():
+                        if normalized_text_query is not None and normalized_text_query not in _normalize_search_text(
+                            record.get("text")
+                        ):
                             continue
                         yield record
 

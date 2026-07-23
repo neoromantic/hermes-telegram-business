@@ -2318,6 +2318,115 @@ async def test_startup_maintenance_recovers_pending_timer_before_window(plugin, 
 
 
 @pytest.mark.asyncio
+async def test_month_boundary_pending_deletion_protects_closed_partition_until_classified(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+    june_message_at = datetime(2026, 6, 30, 23, 59, 50, tzinfo=timezone.utc)
+    deleted_at = datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
+    replacement_at = datetime(2026, 7, 1, 0, 0, 5, tzinfo=timezone.utc)
+    before_due = datetime(2026, 7, 1, 0, 0, 6, tzinfo=timezone.utc)
+    after_due = datetime(2026, 7, 1, 0, 0, 20, tzinfo=timezone.utc)
+    first_timers = TimerHarness()
+    monkeypatch.setattr(plugin._history_support.threading, "Timer", first_timers.timer)
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            text="Carry this across month boundary",
+            message_id=77,
+            update_id=1,
+            date=june_message_at,
+        ),
+        bot=FakeBot(),
+        now=june_message_at,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_deleted_update(message_ids=(77,), update_id=2),
+        bot=FakeBot(),
+        now=deleted_at,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            text="Carry this across month boundary",
+            message_id=88,
+            update_id=3,
+            date=replacement_at,
+        ),
+        bot=FakeBot(),
+        now=replacement_at,
+    )
+
+    june_file = load_history_file(plugin, month="2026-06.jsonl")
+    july_file = load_history_file(plugin, month="2026-07.jsonl")
+    total_before = june_file.stat().st_size + july_file.stat().st_size
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES", str(total_before - 1))
+
+    plugin._history_support.reset_in_memory_caches()
+    reloaded = _load_plugin_module(monkeypatch, tmp_path)
+    second_timers = TimerHarness()
+    monkeypatch.setattr(reloaded._history_support.threading, "Timer", second_timers.timer)
+
+    before_result = reloaded._history_support.run_startup_maintenance(now=before_due)
+
+    assert before_result.classified == 0
+    assert before_result.pruned_files == 0
+    assert before_result.cap_exceeded is True
+    assert before_result.cap_shortfall_bytes == 1
+    assert any("pending-deletion-protected closed partitions" in warning for warning in before_result.warnings)
+    assert june_file.exists()
+    assert july_file.exists()
+    assert len(second_timers.timers) == 1
+    assert second_timers.timers[0].interval == pytest.approx(3.0)
+    assert not any(record["event_type"] == "deletion.classified" for record in load_records(reloaded))
+
+    chat_dir = reloaded._history_support._history_chat_dir("business-123", 991)
+    with reloaded._history_support._chat_lock(chat_dir):
+        state, _ = reloaded._history_support._load_chat_state(chat_dir)
+    assert any(pending.classification is None for pending in state.pending_deletions.values())
+
+    monkeypatch.setattr(reloaded._history_support, "_utcnow", lambda: after_due)
+    second_timers.timers[0].fire()
+
+    records_before_prune = load_records(reloaded)
+    classifications_before_prune = [
+        record for record in records_before_prune if record["event_type"] == "deletion.classified"
+    ]
+    assert june_file.exists()
+    assert classifications_before_prune[-1]["classification"] == "likely_duplicate"
+    assert classifications_before_prune[-1]["classification_reason"] == "normalized_exact_duplicate"
+    assert classifications_before_prune[-1]["replacement_message_id"] == 88
+
+    after_result = reloaded._history_support.maintain_history(now=after_due)
+
+    assert after_result.classified == 0
+    assert after_result.pruned_files >= 1
+    assert after_result.cap_exceeded is False
+    assert not june_file.exists()
+    assert july_file.exists()
+
+    records_after_prune = load_records(reloaded)
+    assert [record["event_type"] for record in records_after_prune] == [
+        "message.created",
+        "deletion.classified",
+    ]
+    assert records_after_prune[-1]["classification_reason"] == "normalized_exact_duplicate"
+    assert records_after_prune[-1]["replacement_message_id"] == 88
+
+    catalog = load_catalog(reloaded)
+    assert catalog["contact_count"] == 1
+    entry = catalog["contacts"][0]
+    assert int(entry["chat_id"]) == 991
+    assert entry["message_count"] == 1
+    assert entry["deleted_count"] == 0
+    assert entry["record_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_retention_and_size_prune_closed_partitions_but_preserve_active(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
     old_time = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
@@ -2732,6 +2841,120 @@ async def test_history_cli_contact_lookup_normalizes_unicode_nfkc_and_casefold(
     output = capsys.readouterr().out.strip()
     assert exit_code == 0
     assert composed_name in output
+
+
+@pytest.mark.asyncio
+async def test_history_cli_chat_search_normalizes_unicode_nfkc_and_casefold(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    decomposed_text = "Cafe\u0301 follow-up"
+    fullwidth_text = "Ｆｕｌｌｗｉｄｔｈ invoice"
+    ascii_text = "plain ascii refund"
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text=decomposed_text, update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text=fullwidth_text, update_id=2, message_id=78, date=base + timedelta(seconds=1)),
+        bot=FakeBot(),
+        now=base + timedelta(seconds=1),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text=ascii_text, update_id=3, message_id=79, date=base + timedelta(seconds=2)),
+        bot=FakeBot(),
+        now=base + timedelta(seconds=2),
+    )
+
+    parser = _build_history_parser(plugin)
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "search", "--chat", "991", "--text", "CAF\u00c9", "--limit", "5"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert decomposed_text in output
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "search", "--chat", "991", "--text", "fullwidth invoice", "--limit", "5"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert fullwidth_text in output
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "search", "--chat", "991", "--text", "ASCII REFUND", "--limit", "5"])
+    )
+    output = capsys.readouterr().out.strip()
+    assert exit_code == 0
+    assert ascii_text in output
+
+
+@pytest.mark.asyncio
+async def test_history_cli_global_search_normalizes_unicode_nfkc_and_casefold(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    decomposed_text = "Cafe\u0301 refund"
+    fullwidth_text = "Ｆｕｌｌｗｉｄｔｈ receipt"
+    ascii_text = "plain ascii refund"
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(chat_id=991, text=decomposed_text, update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            chat_id=992,
+            chat_username="customer992",
+            from_user_username="customer992",
+            text=fullwidth_text,
+            update_id=2,
+            date=base + timedelta(seconds=1),
+        ),
+        bot=FakeBot(),
+        now=base + timedelta(seconds=1),
+    )
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(
+            chat_id=993,
+            chat_username="customer993",
+            from_user_username="customer993",
+            text=ascii_text,
+            update_id=3,
+            date=base + timedelta(seconds=2),
+        ),
+        bot=FakeBot(),
+        now=base + timedelta(seconds=2),
+    )
+
+    parser = _build_history_parser(plugin)
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "search", "--text", "caf\u00e9", "--limit", "5"])
+    )
+    output = capsys.readouterr().out.strip().splitlines()
+    assert exit_code == 0
+    assert any(decomposed_text in line for line in output)
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "search", "--text", "fullwidth receipt", "--limit", "5"])
+    )
+    output = capsys.readouterr().out.strip().splitlines()
+    assert exit_code == 0
+    assert any(fullwidth_text in line for line in output)
+
+    exit_code = plugin._history_support.handle_cli(
+        parser.parse_args(["history", "search", "--text", "ASCII REFUND", "--limit", "5"])
+    )
+    output = capsys.readouterr().out.strip().splitlines()
+    assert exit_code == 0
+    assert any(ascii_text in line for line in output)
 
 
 @pytest.mark.asyncio
