@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, TypeVar
 
 try:
     import fcntl
@@ -77,6 +77,7 @@ _CACHE_LOCK = threading.RLock()
 _CHAT_STATE_CACHE: dict[str, "ChatStateCacheEntry"] = {}
 _DELETION_TIMERS: dict[tuple[str, str], "DeletionTimerEntry"] = {}
 _LAST_MAINTENANCE_AT: datetime | None = None
+MutationResult = TypeVar("MutationResult")
 
 
 @dataclass(frozen=True)
@@ -214,6 +215,10 @@ class ChatStateCacheEntry:
 class DeletionTimerEntry:
     due_at: datetime
     timer: threading.Timer
+
+
+class CatalogRebuildChangedError(ValueError):
+    """Canonical history changed during every contact-catalog rebuild retry."""
 
 
 def _truthy_env(name: str) -> bool:
@@ -883,7 +888,7 @@ def _rebuild_catalog_locked() -> dict[str, Any]:
         catalog = _catalog_from_entries(entries, source_signature=source_signature)
         _write_catalog_locked(catalog)
         return catalog
-    raise RuntimeError("canonical history changed during catalog rebuild")
+    raise CatalogRebuildChangedError("canonical history changed during catalog rebuild")
 
 
 def rebuild_contact_catalog() -> dict[str, Any]:
@@ -916,7 +921,7 @@ def _load_contact_catalog(
         return catalog, False
 
 
-def _refresh_contact_catalog(
+def _refresh_contact_catalog_locked(
     records: Iterable[dict[str, Any]],
     *,
     base_source_signature: dict[str, Any] | None = None,
@@ -924,35 +929,60 @@ def _refresh_contact_catalog(
     materialized = [record for record in records if isinstance(record, dict)]
     if not materialized:
         return
+    try:
+        catalog = _read_catalog_locked()
+    except ValueError:
+        _rebuild_catalog_locked()
+        return
+    if catalog is None:
+        _rebuild_catalog_locked()
+        return
+    normalized_base_signature = _normalize_history_source_signature(base_source_signature)
+    if normalized_base_signature is not None and _catalog_source_signature(catalog) != normalized_base_signature:
+        _rebuild_catalog_locked()
+        return
+    entries = _catalog_contacts_map(catalog)
+    for record in materialized:
+        entry = entries.setdefault(
+            _catalog_contact_key(record.get("business_connection_id"), record.get("chat_id")),
+            _empty_catalog_entry(
+                business_connection_id=record.get("business_connection_id"),
+                chat_id=record.get("chat_id"),
+            ),
+        )
+        _apply_record_to_catalog_entry(entry, record)
+    _write_catalog_locked(_catalog_from_entries(entries, source_signature=_history_source_signature()))
+
+
+def _refresh_contact_catalog(
+    records: Iterable[dict[str, Any]],
+    *,
+    base_source_signature: dict[str, Any] | None = None,
+) -> None:
     with _root_lock():
-        try:
-            catalog = _read_catalog_locked()
-        except ValueError:
-            _rebuild_catalog_locked()
-            return
-        if catalog is None:
-            _rebuild_catalog_locked()
-            return
-        normalized_base_signature = _normalize_history_source_signature(base_source_signature)
-        if normalized_base_signature is not None and _catalog_source_signature(catalog) != normalized_base_signature:
-            _rebuild_catalog_locked()
-            return
-        entries = _catalog_contacts_map(catalog)
-        for record in materialized:
-            entry = entries.setdefault(
-                _catalog_contact_key(record.get("business_connection_id"), record.get("chat_id")),
-                _empty_catalog_entry(
-                    business_connection_id=record.get("business_connection_id"),
-                    chat_id=record.get("chat_id"),
-                ),
-            )
-            _apply_record_to_catalog_entry(entry, record)
-        _write_catalog_locked(_catalog_from_entries(entries, source_signature=_history_source_signature()))
+        _refresh_contact_catalog_locked(records, base_source_signature=base_source_signature)
 
 
 def _mark_catalog_dirty(reason: str) -> None:
     with _root_lock():
         _mark_catalog_dirty_locked(reason)
+
+
+def _refresh_contact_catalog_best_effort_locked(
+    records: Iterable[dict[str, Any]],
+    *,
+    dirty_reason: str,
+    base_source_signature: dict[str, Any] | None = None,
+) -> tuple[Exception | None, Exception | None]:
+    try:
+        _refresh_contact_catalog_locked(records, base_source_signature=base_source_signature)
+    except Exception as exc:  # noqa: BLE001 - caller decides how to surface catalog drift
+        try:
+            _mark_catalog_dirty_locked(dirty_reason)
+        except Exception as dirty_exc:  # noqa: BLE001 - surface both failures to the caller
+            return exc, dirty_exc
+        return exc, None
+    return None, None
 
 
 def _refresh_contact_catalog_best_effort(
@@ -961,15 +991,12 @@ def _refresh_contact_catalog_best_effort(
     dirty_reason: str,
     base_source_signature: dict[str, Any] | None = None,
 ) -> tuple[Exception | None, Exception | None]:
-    try:
-        _refresh_contact_catalog(records, base_source_signature=base_source_signature)
-    except Exception as exc:  # noqa: BLE001 - caller decides how to surface catalog drift
-        try:
-            _mark_catalog_dirty(dirty_reason)
-        except Exception as dirty_exc:  # noqa: BLE001 - surface both failures to the caller
-            return exc, dirty_exc
-        return exc, None
-    return None, None
+    with _root_lock():
+        return _refresh_contact_catalog_best_effort_locked(
+            records,
+            dirty_reason=dirty_reason,
+            base_source_signature=base_source_signature,
+        )
 
 
 def _known_chat_type_from_catalog(
@@ -1285,6 +1312,10 @@ def _build_event(
 
 
 def _append_record(chat_dir: Path, record: dict[str, Any]) -> bool:
+    # Low-level append primitive. Production writers go through
+    # _mutate_chat_history_transactionally() so root -> chat locking and catalog
+    # publish/dirty handling stay in one transaction. Tests and fixture/repair
+    # helpers may still call this primitive or inject raw JSONL directly.
     observed_at = _parse_datetime(record.get("observed_at")) or _utcnow()
     path = chat_dir / _month_filename(observed_at)
     _ensure_private_file(path)
@@ -1298,6 +1329,49 @@ def _append_record(chat_dir: Path, record: dict[str, Any]) -> bool:
     except OSError:
         pass
     return True
+
+
+def _append_record_to_state(
+    chat_dir: Path,
+    state: ChatState,
+    record: dict[str, Any],
+    *,
+    appended_records: list[dict[str, Any]] | None = None,
+) -> bool:
+    event_id = str(record.get("event_id") or "")
+    if event_id and event_id in state.seen_event_ids:
+        return False
+    _append_record(chat_dir, record)
+    if appended_records is not None:
+        appended_records.append(record)
+    _apply_record_to_state(state, record)
+    return True
+
+
+def _mutate_chat_history_transactionally(
+    chat_dir: Path,
+    *,
+    dirty_reason: str,
+    mutate: Callable[[ChatState, list[dict[str, Any]]], MutationResult],
+) -> tuple[MutationResult, Exception | None, Exception | None]:
+    # Production canonical writers must hold root before chat so every append and
+    # its derived catalog publish/dirty handling become one root-scoped commit.
+    with _root_lock():
+        base_source_signature = _history_source_signature()
+        catalog_records: list[dict[str, Any]] = []
+        with _chat_lock(chat_dir):
+            state, _ = _load_chat_state(chat_dir)
+            result = mutate(state, catalog_records)
+            if catalog_records:
+                _store_chat_cache(chat_dir, state)
+        if not catalog_records:
+            return result, None, None
+        refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort_locked(
+            catalog_records,
+            dirty_reason=dirty_reason,
+            base_source_signature=base_source_signature,
+        )
+        return result, refresh_exc, dirty_exc
 
 
 def _apply_record_to_state(state: ChatState, record: dict[str, Any]) -> None:
@@ -1588,22 +1662,15 @@ def _run_scheduled_deletion_timer(chat_dir_text: str, deleted_event_id: str, due
             return
         _DELETION_TIMERS.pop(key, None)
     try:
-        appended_records: list[dict[str, Any]] = []
-        _, base_source_signature = _classify_due_for_chat(
+        _classified, refresh_exc, dirty_exc = _classify_due_for_chat(
             chat_dir,
             history_config_from_env(),
             now=max(_utcnow(), due_at),
-            appended_records=appended_records,
+            dirty_reason="scheduled_classification_refresh_failed",
         )
-        if appended_records:
-            refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort(
-                appended_records,
-                dirty_reason="scheduled_classification_refresh_failed",
-                base_source_signature=base_source_signature,
-            )
-            if refresh_exc is not None:
-                detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
-                logger.warning("%s: scheduled deletion classification catalog refresh failed: %s%s", PLUGIN_NAME, refresh_exc, detail)
+        if refresh_exc is not None:
+            detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
+            logger.warning("%s: scheduled deletion classification catalog refresh failed: %s%s", PLUGIN_NAME, refresh_exc, detail)
     except Exception as exc:  # noqa: BLE001 - background classification must stay contained
         logger.warning("%s: scheduled deletion classification failed: %s", PLUGIN_NAME, exc, exc_info=True)
 
@@ -1657,16 +1724,11 @@ def _sync_pending_deletions_for_chat(
             correction_window_seconds=config.correction_window_seconds,
             nearby_before_seconds=config.nearby_before_seconds,
         )
-        if record is None or record["event_id"] in state.seen_event_ids:
+        if record is None:
             continue
-        _append_record(chat_dir, record)
-        if appended_records is not None:
-            appended_records.append(record)
-        _apply_record_to_state(state, record)
-        appended += 1
+        if _append_record_to_state(chat_dir, state, record, appended_records=appended_records):
+            appended += 1
         _cancel_deletion_timer(chat_dir, deleted_event_id)
-    if appended:
-        _store_chat_cache(chat_dir, state)
     return appended
 
 
@@ -1675,14 +1737,24 @@ def _classify_due_for_chat(
     config: HistoryConfig,
     *,
     now: datetime | None = None,
-    appended_records: list[dict[str, Any]] | None = None,
-) -> tuple[int, dict[str, Any] | None]:
+    dirty_reason: str,
+) -> tuple[int, Exception | None, Exception | None]:
     current = now or _utcnow()
-    with _chat_lock(chat_dir):
-        base_source_signature = _history_source_signature()
-        state, _ = _load_chat_state(chat_dir)
-        classified = _sync_pending_deletions_for_chat(chat_dir, state, config, now=current, appended_records=appended_records)
-    return classified, base_source_signature if classified else None
+
+    def _mutate(state: ChatState, appended_records: list[dict[str, Any]]) -> int:
+        return _sync_pending_deletions_for_chat(
+            chat_dir,
+            state,
+            config,
+            now=current,
+            appended_records=appended_records,
+        )
+
+    return _mutate_chat_history_transactionally(
+        chat_dir,
+        dirty_reason=dirty_reason,
+        mutate=_mutate,
+    )
 
 
 def _iter_chat_dirs() -> Iterator[Path]:
@@ -1784,23 +1856,16 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
     result = MaintenanceResult()
     for chat_dir in _iter_chat_dirs():
         try:
-            appended_records: list[dict[str, Any]] = []
-            classified, base_source_signature = _classify_due_for_chat(
+            classified, refresh_exc, dirty_exc = _classify_due_for_chat(
                 chat_dir,
                 config,
                 now=current,
-                appended_records=appended_records,
+                dirty_reason="maintenance_classification_refresh_failed",
             )
             result.classified += classified
-            if appended_records:
-                refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort(
-                    appended_records,
-                    dirty_reason="maintenance_classification_refresh_failed",
-                    base_source_signature=base_source_signature,
-                )
-                if refresh_exc is not None:
-                    detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
-                    result.warnings.append(f"classification catalog refresh failed for {chat_dir}: {refresh_exc}{detail}")
+            if refresh_exc is not None:
+                detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
+                result.warnings.append(f"classification catalog refresh failed for {chat_dir}: {refresh_exc}{detail}")
         except Exception as exc:  # noqa: BLE001 - maintenance is best effort
             result.warnings.append(f"classification failed for {chat_dir}: {exc}")
     with _root_lock():
@@ -2008,14 +2073,14 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
 
     chat_dir: Path | None = None
     wrote = False
-    catalog_records: list[dict[str, Any]] = []
-    base_source_signature: dict[str, Any] | None = None
+    refresh_exc: Exception | None = None
+    dirty_exc: Exception | None = None
     if event_type == "message.deleted":
         chat_dir = _history_chat_dir(business_connection_id, chat_id)
-        with _chat_lock(chat_dir):
-            base_source_signature = _history_source_signature()
-            state, _ = _load_chat_state(chat_dir)
-            message_ids = tuple(_get(payload, "message_ids") or ())
+        message_ids = tuple(_get(payload, "message_ids") or ())
+
+        def _mutate_deleted(state: ChatState, appended_records: list[dict[str, Any]]) -> bool:
+            wrote_record = False
             for message_id in message_ids:
                 original = state.messages.get(str(message_id))
                 record = _build_event(
@@ -2031,22 +2096,22 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
                     direction="unknown" if original is None else original.direction,
                     reply_to_message_id=None if original is None else original.reply_to_message_id,
                 )
-                if record["event_id"] in state.seen_event_ids:
-                    continue
-                _append_record(chat_dir, record)
-                catalog_records.append(record)
-                _apply_record_to_state(state, record)
-                wrote = True
+                if _append_record_to_state(chat_dir, state, record, appended_records=appended_records):
+                    wrote_record = True
             wrote_classifications = _sync_pending_deletions_for_chat(
                 chat_dir,
                 state,
                 config,
                 now=current,
-                appended_records=catalog_records,
+                appended_records=appended_records,
             )
-            if wrote or wrote_classifications:
-                _store_chat_cache(chat_dir, state)
-            wrote = wrote or bool(wrote_classifications)
+            return wrote_record or bool(wrote_classifications)
+
+        wrote, refresh_exc, dirty_exc = _mutate_chat_history_transactionally(
+            chat_dir,
+            dirty_reason="incremental_capture_refresh_failed",
+            mutate=_mutate_deleted,
+        )
     else:
         text = _extract_history_text(payload)
         if text is None:
@@ -2056,9 +2121,8 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
         message_date = _normalize_timestamp(_get(payload, "date"))
         chat_profile = _extract_chat_profile(payload)
         sender_profile = _extract_sender_profile(payload)
-        with _chat_lock(chat_dir):
-            base_source_signature = _history_source_signature()
-            state, _ = _load_chat_state(chat_dir)
+
+        def _mutate_message(state: ChatState, appended_records: list[dict[str, Any]]) -> bool:
             record = _build_event(
                 event_type=event_type,
                 source=source,
@@ -2075,39 +2139,33 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
                 chat_profile=chat_profile,
                 sender_profile=sender_profile,
             )
-            if record["event_id"] not in state.seen_event_ids:
-                _append_record(chat_dir, record)
-                catalog_records.append(record)
-                _apply_record_to_state(state, record)
-                wrote = True
+            wrote_record = _append_record_to_state(chat_dir, state, record, appended_records=appended_records)
             wrote_classifications = _sync_pending_deletions_for_chat(
                 chat_dir,
                 state,
                 config,
                 now=current,
-                appended_records=catalog_records,
+                appended_records=appended_records,
             )
-            if wrote or wrote_classifications:
-                _store_chat_cache(chat_dir, state)
-            wrote = wrote or bool(wrote_classifications)
+            return wrote_record or bool(wrote_classifications)
 
-    if catalog_records:
-        refresh_exc, dirty_exc = _refresh_contact_catalog_best_effort(
-            catalog_records,
+        wrote, refresh_exc, dirty_exc = _mutate_chat_history_transactionally(
+            chat_dir,
             dirty_reason="incremental_capture_refresh_failed",
-            base_source_signature=base_source_signature,
+            mutate=_mutate_message,
         )
-        if refresh_exc is not None:  # noqa: BLE001 - derived catalog failure must never block canonical history
-            detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
-            logger.warning(
-                "%s: history contact catalog update failed for connection=%s chat=%s: %s%s",
-                PLUGIN_NAME,
-                business_connection_id,
-                chat_id,
-                refresh_exc,
-                detail,
-                exc_info=(type(refresh_exc), refresh_exc, refresh_exc.__traceback__),
-            )
+
+    if refresh_exc is not None:  # noqa: BLE001 - derived catalog failure must never block canonical history
+        detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
+        logger.warning(
+            "%s: history contact catalog update failed for connection=%s chat=%s: %s%s",
+            PLUGIN_NAME,
+            business_connection_id,
+            chat_id,
+            refresh_exc,
+            detail,
+            exc_info=(type(refresh_exc), refresh_exc, refresh_exc.__traceback__),
+        )
 
     if _should_run_throttled_maintenance(current):
         maintenance = maintain_history(now=current)

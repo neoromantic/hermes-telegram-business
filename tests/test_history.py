@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import errno
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -730,7 +732,7 @@ async def test_catalog_update_failure_does_not_block_canonical_append(enabled_hi
     plugin = enabled_history
     monkeypatch.setattr(
         plugin._history_support,
-        "_refresh_contact_catalog",
+        "_refresh_contact_catalog_locked",
         lambda _records, *, base_source_signature=None: (_ for _ in ()).throw(RuntimeError("catalog broke")),
     )
 
@@ -755,7 +757,7 @@ async def test_catalog_refresh_failure_recovers_on_cli_reads_and_clears_dirty_ma
     plugin = enabled_history
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
     calls = 0
-    original_refresh = plugin._history_support._refresh_contact_catalog
+    original_refresh = plugin._history_support._refresh_contact_catalog_locked
 
     def _fail_once(records, *, base_source_signature=None):
         nonlocal calls
@@ -764,7 +766,7 @@ async def test_catalog_refresh_failure_recovers_on_cli_reads_and_clears_dirty_ma
             raise RuntimeError("catalog broke")
         return original_refresh(records, base_source_signature=base_source_signature)
 
-    monkeypatch.setattr(plugin._history_support, "_refresh_contact_catalog", _fail_once)
+    monkeypatch.setattr(plugin._history_support, "_refresh_contact_catalog_locked", _fail_once)
 
     wrote = await plugin._history_support.observe_ptb_update(
         make_business_text_update(chat_id=994, chat_username="recovery-user", text="recover me", update_id=1, date=base),
@@ -817,8 +819,8 @@ async def test_stale_readable_catalog_rebuilds_after_refresh_and_dirty_marker_fa
     def _fail_dirty(_reason: str):
         raise OSError("dirty broke")
 
-    monkeypatch.setattr(plugin._history_support, "_refresh_contact_catalog", _fail_refresh)
-    monkeypatch.setattr(plugin._history_support, "_mark_catalog_dirty", _fail_dirty)
+    monkeypatch.setattr(plugin._history_support, "_refresh_contact_catalog_locked", _fail_refresh)
+    monkeypatch.setattr(plugin._history_support, "_mark_catalog_dirty_locked", _fail_dirty)
 
     wrote = await plugin._history_support.observe_ptb_update(
         make_business_text_update(
@@ -925,6 +927,71 @@ async def test_catalog_missing_and_corrupt_can_be_rebuilt(enabled_history, capsy
     assert corrupt.startswith("status=rebuilt ")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("argv", "expected_exit", "expected_output"),
+    [
+        (["history", "catalog"], 0, "status=error "),
+        (["history", "catalog", "--rebuild"], 1, "error: canonical history changed during catalog rebuild"),
+        (["history", "contacts"], 1, "error: canonical history changed during catalog rebuild"),
+        (
+            ["history", "show", "--contact", "@customer991", "--limit", "1"],
+            1,
+            "error: canonical history changed during catalog rebuild",
+        ),
+        (
+            ["history", "search", "--contact", "@customer991", "--text", "hello", "--limit", "1"],
+            1,
+            "error: canonical history changed during catalog rebuild",
+        ),
+        (
+            ["history", "export", "--contact", "@customer991", "--format", "text", "--limit", "1"],
+            1,
+            "error: canonical history changed during catalog rebuild",
+        ),
+        (
+            ["history", "search", "--text", "hello", "--limit", "1"],
+            1,
+            "error: canonical history changed during catalog rebuild",
+        ),
+    ],
+)
+async def test_catalog_rebuild_exhaustion_returns_cli_error(
+    enabled_history,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected_exit: int,
+    expected_output: str,
+):
+    plugin = enabled_history
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(text="hello", update_id=1, date=base),
+        bot=FakeBot(),
+        now=base,
+    )
+    plugin._history_support.rebuild_contact_catalog()
+
+    calls = 0
+
+    def _changing_signature() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {
+            "sha256": f"{calls:064x}",
+            "file_count": 1,
+            "total_bytes": 1,
+        }
+
+    monkeypatch.setattr(plugin._history_support, "_history_source_signature", _changing_signature)
+
+    exit_code, output = _run_history_cli(plugin, *argv)
+
+    assert exit_code == expected_exit
+    assert output.startswith(expected_output)
+
+
 def test_catalog_concurrent_refresh_preserves_all_entries(plugin):
     history = plugin._history_support
     history.rebuild_contact_catalog()
@@ -982,6 +1049,111 @@ def test_catalog_concurrent_refresh_preserves_all_entries(plugin):
     }
 
 
+def test_capture_root_lock_serializes_canonical_append_and_catalog_publish(enabled_history, monkeypatch: pytest.MonkeyPatch):
+    plugin = enabled_history
+    history = plugin._history_support
+    history.rebuild_contact_catalog()
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    update_one = make_business_text_update(
+        business_id="business-123",
+        chat_id=991,
+        chat_username="serial-one",
+        from_user_username="serial-one",
+        text="one",
+        update_id=1,
+        date=base,
+    )
+    update_two = make_business_text_update(
+        business_id="business-456",
+        chat_id=992,
+        chat_username="serial-two",
+        from_user_username="serial-two",
+        text="two",
+        update_id=2,
+        date=base + timedelta(seconds=1),
+    )
+    original_refresh = history._refresh_contact_catalog_locked
+    original_append = history._append_record
+    first_refresh_waiting = threading.Event()
+    release_first_refresh = threading.Event()
+    second_append_started = threading.Event()
+    cli_done = threading.Event()
+    results: dict[str, Any] = {}
+    blocked_first_refresh = False
+
+    def _blocking_refresh(records, *, base_source_signature=None):
+        nonlocal blocked_first_refresh
+        if not blocked_first_refresh and {str(record.get("chat_id")) for record in records} == {"991"}:
+            blocked_first_refresh = True
+            first_refresh_waiting.set()
+            assert release_first_refresh.wait(timeout=5)
+        return original_refresh(records, base_source_signature=base_source_signature)
+
+    def _tracking_append(chat_dir: Path, record: dict[str, Any]) -> bool:
+        if str(record.get("chat_id")) == "992" and record.get("event_type") == "message.created":
+            second_append_started.set()
+        return original_append(chat_dir, record)
+
+    monkeypatch.setattr(history, "_refresh_contact_catalog_locked", _blocking_refresh)
+    monkeypatch.setattr(history, "_append_record", _tracking_append)
+
+    def _capture(label: str, update: Any, when: datetime) -> None:
+        try:
+            results[label] = asyncio.run(history.observe_ptb_update(update, bot=FakeBot(), now=when))
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results[f"{label}_exc"] = exc
+
+    def _contacts_cli() -> None:
+        try:
+            results["cli_exit"], results["cli_output"] = _run_history_cli(plugin, "history", "contacts")
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["cli_exc"] = exc
+        finally:
+            cli_done.set()
+
+    first_thread = threading.Thread(target=_capture, args=("first", update_one, base))
+    second_thread = threading.Thread(target=_capture, args=("second", update_two, base + timedelta(seconds=1)))
+    cli_thread = threading.Thread(target=_contacts_cli)
+    first_thread.start()
+    assert first_refresh_waiting.wait(timeout=5)
+
+    second_thread.start()
+    cli_thread.start()
+
+    assert second_append_started.wait(timeout=0.1) is False
+    assert cli_done.wait(timeout=0.1) is False
+
+    second_chat_dir = history._history_chat_dir_path("business-456", 992)
+    assert not second_chat_dir.exists() or not list(second_chat_dir.glob("*.jsonl"))
+
+    release_first_refresh.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+    cli_thread.join(timeout=5)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert not cli_thread.is_alive()
+    assert "first_exc" not in results
+    assert "second_exc" not in results
+    assert "cli_exc" not in results
+    assert results["first"] is True
+    assert results["second"] is True
+    assert results["cli_exit"] == 0
+
+    catalog = load_catalog(plugin)
+    assert catalog["source_signature"] == history._history_source_signature()
+    assert {(entry["business_connection_id"], entry["chat_id"]) for entry in catalog["contacts"]} == {
+        ("business-123", 991),
+        ("business-456", 992),
+    }
+
+    exit_code, output = _run_history_cli(plugin, "history", "contacts", "--limit", "5")
+    assert exit_code == 0
+    assert "chat=991" in output
+    assert "chat=992" in output
+
+
 @pytest.mark.asyncio
 async def test_numeric_chat_lookup_without_connection_checks_canonical_duplicates_when_catalog_is_stale(
     enabled_history,
@@ -1011,8 +1183,8 @@ async def test_numeric_chat_lookup_without_connection_checks_canonical_duplicate
     def _fail_dirty(_reason: str):
         raise OSError("dirty broke")
 
-    monkeypatch.setattr(plugin._history_support, "_refresh_contact_catalog", _fail_refresh)
-    monkeypatch.setattr(plugin._history_support, "_mark_catalog_dirty", _fail_dirty)
+    monkeypatch.setattr(plugin._history_support, "_refresh_contact_catalog_locked", _fail_refresh)
+    monkeypatch.setattr(plugin._history_support, "_mark_catalog_dirty_locked", _fail_dirty)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(
@@ -1260,6 +1432,88 @@ async def test_streamed_read_waits_for_concurrent_prune_and_keeps_selected_parti
     assert [record["message_id"] for record in results["records"]] == [77]
     assert results["maintenance"].pruned_files == 1
     assert not old_file.exists()
+
+
+def test_streamed_reader_holding_chat_does_not_deadlock_capture(enabled_history, monkeypatch: pytest.MonkeyPatch):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+
+    asyncio.run(
+        history.observe_ptb_update(
+            make_business_text_update(text="one", message_id=77, update_id=1, date=base),
+            bot=FakeBot(),
+            now=base,
+        )
+    )
+
+    chat_dir = history._history_chat_dir("business-123", 991)
+    history_file = load_history_file(plugin)
+    original_open = Path.open
+    reader_selected = threading.Event()
+    allow_reader_open = threading.Event()
+    reader_done = threading.Event()
+    writer_done = threading.Event()
+    results: dict[str, Any] = {}
+
+    def _blocking_open(path_obj: Path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if path_obj == history_file and "r" in mode:
+            reader_selected.set()
+            assert allow_reader_open.wait(timeout=5)
+        return original_open(path_obj, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _blocking_open)
+
+    def _reader() -> None:
+        try:
+            with history._streamed_records_locked(chat_dir, since=None, until=None, text_query=None) as records:
+                results["records"] = list(records)
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["reader_exc"] = exc
+        finally:
+            reader_done.set()
+
+    def _writer() -> None:
+        try:
+            results["writer"] = asyncio.run(
+                history.observe_ptb_update(
+                    make_business_text_update(
+                        text="two",
+                        message_id=78,
+                        update_id=2,
+                        date=base + timedelta(seconds=1),
+                    ),
+                    bot=FakeBot(),
+                    now=base + timedelta(seconds=1),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            results["writer_exc"] = exc
+        finally:
+            writer_done.set()
+
+    reader_thread = threading.Thread(target=_reader)
+    writer_thread = threading.Thread(target=_writer)
+    reader_thread.start()
+    assert reader_selected.wait(timeout=5)
+
+    writer_thread.start()
+    assert writer_done.wait(timeout=0.1) is False
+
+    allow_reader_open.set()
+    reader_thread.join(timeout=5)
+    writer_thread.join(timeout=5)
+
+    assert not reader_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert reader_done.is_set()
+    assert writer_done.is_set()
+    assert "reader_exc" not in results
+    assert "writer_exc" not in results
+    assert results["writer"] is True
+    assert [record["message_id"] for record in results["records"]] == [77]
+    assert [record["message_id"] for record in load_records(plugin)] == [77, 78]
 
 
 @pytest.mark.asyncio
@@ -2063,6 +2317,14 @@ def _build_history_parser(plugin):
     parser = argparse.ArgumentParser(prog="hermes telegram-business")
     plugin._history_support.setup_cli(parser)
     return parser
+
+
+def _run_history_cli(plugin, *argv: str) -> tuple[int, str]:
+    parser = _build_history_parser(plugin)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exit_code = plugin._history_support.handle_cli(parser.parse_args(list(argv)))
+    return exit_code, output.getvalue().strip()
 
 
 @pytest.mark.asyncio
