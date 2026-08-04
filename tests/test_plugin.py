@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import tomllib
 import types
@@ -189,10 +190,10 @@ def test_manifest_uses_current_fields():
     assert manifest == {
         "manifest_version": 1,
         "name": LEGACY_PLUGIN_ID,
-        "version": "0.6.1",
+        "version": "0.6.2",
         "description": (
             "Update-persistent Hermes Telegram Business integration with voice and video-note transcription, "
-            "conservative transcript cleanup, and Business-scoped replies."
+            "configurable transcript enrichment, and Business-scoped replies."
         ),
         "author": "neoromantic",
         "kind": "standalone",
@@ -204,7 +205,7 @@ def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "hermes-telegram-business"
-    assert metadata["version"] == "0.6.1"
+    assert metadata["version"] == "0.6.2"
     assert metadata["description"] == (
         "Update-persistent Telegram Business integration for Hermes Agent with voice and video-note "
         "transcription and Business-scoped replies."
@@ -1361,6 +1362,19 @@ def test_cleanup_prompt_is_copyediting_not_rewriting(plugin):
     assert "add_title" not in prompt
 
 
+def test_enriched_prompt_removes_fillers_and_requires_structure(plugin, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+
+    system, prompt = plugin._cleanup_prompts()
+
+    assert "not summarizing" in system
+    assert "Remove empty filler sounds" in prompt
+    assert "Separate different thoughts or topics into paragraphs" in prompt
+    assert "Markdown list" in prompt
+    assert "at least 60%" in prompt
+    assert "add_title" in prompt
+
+
 def test_conservatism_guard_accepts_punctuation_and_small_asr_fixes(plugin):
     raw = (
         "Пробные пробки поэтому я не поеду на Китай город я сейчас доеду "
@@ -1385,6 +1399,30 @@ def test_conservatism_guard_rejects_summary_and_wholesale_paraphrase(plugin):
 
     assert not plugin._cleanup_is_conservative(raw, summary)
     assert not plugin._cleanup_is_conservative(raw, same_length_rewrite)
+
+
+def test_enriched_guard_accepts_filler_removal_but_rejects_summary(plugin, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "Слушай ну я вот думаю что нам надо сначала обсудить первую задачу и потом значит "
+        "перейти ко второй задаче потому что там есть важные детали 3 варианта и срок 15 августа. "
+        "То есть первый вариант мы делаем сами второй вариант зовём команду и третий вариант "
+        "откладываем до сентября. Вот я хочу сохранить все эти варианты и отдельно обсудить риски. "
+        "Потом пожалуйста напомни что нужна встреча с Женей и демонстрация для команды."
+    )
+    cleaned = (
+        "Я думаю, что нам надо сначала обсудить первую задачу, а затем перейти ко второй: там есть "
+        "важные детали, 3 варианта и срок — 15 августа.\n\n"
+        "Варианты:\n- делаем сами\n- зовём команду\n- откладываем до сентября\n\n"
+        "Я хочу сохранить все варианты и отдельно обсудить риски. Затем нужна встреча с Женей и "
+        "демонстрация для команды."
+    )
+    summary = "Есть 3 варианта. Их надо обсудить до 15 августа."
+    missing_number = cleaned.replace("15 августа", "августа")
+
+    assert plugin._cleanup_is_acceptable(raw, cleaned)
+    assert not plugin._cleanup_is_acceptable(raw, summary)
+    assert not plugin._cleanup_is_acceptable(raw, missing_number)
 
 
 @pytest.mark.asyncio
@@ -1413,8 +1451,42 @@ async def test_structured_cleanup_uses_host_facade_and_keeps_conservative_result
     assert llm.kwargs["provider"] == "gemini"
     assert llm.kwargs["model"] == "gemini-3.5-flash"
     assert llm.kwargs["json_schema"] == plugin._CLEANUP_JSON_SCHEMA
-    assert llm.kwargs["input"] == [{"type": "text", "text": f"transcript:\n{raw}"}]
+    assert llm.kwargs["input"] == [{
+        "type": "text",
+        "text": json.dumps(
+            {"transcript": raw, "add_title": False},
+            ensure_ascii=False,
+        ),
+    }]
     assert llm.kwargs["purpose"] == "telegram_business_voice_cleanup"
+
+
+@pytest.mark.asyncio
+async def test_enriched_cleanup_uses_title_and_style_prompts(plugin, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TG_BUSINESS_VOICE_TITLE_MIN_WORDS", "1")
+    raw = (
+        "Слушай ну я вот думаю что сначала надо проверить детали проекта и потом спокойно решить "
+        "что делать дальше потому что у нас есть два варианта и сроки уже довольно близко"
+    )
+    cleaned = (
+        "Проверка деталей проекта\n\nСначала надо проверить детали проекта, а потом спокойно решить, "
+        "что делать дальше: у нас есть два варианта, и сроки уже довольно близко."
+    )
+
+    class FakeLlm:
+        async def acomplete_structured(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(parsed={"text": cleaned}, text="")
+
+    llm = FakeLlm()
+    result = await plugin._cleanup_transcript(raw, llm=llm)
+    payload = json.loads(llm.kwargs["input"][0]["text"])
+
+    assert result == cleaned
+    assert payload == {"transcript": raw, "add_title": True}
+    assert llm.kwargs["instructions"] == plugin._ENRICHED_CLEANUP_INSTRUCTIONS
+    assert llm.kwargs["system_prompt"] == plugin._ENRICHED_CLEANUP_SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio

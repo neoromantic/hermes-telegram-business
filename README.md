@@ -11,8 +11,8 @@ An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integ
 2. Requires a real Telegram Business connection and preserves its `business_connection_id`.
 3. Returns `action: skip` so the ordinary auth/agent path does not process the media.
 4. Downloads the media transiently and delegates speech recognition to Hermes's configured `transcribe_audio` backend.
-5. Optionally asks the host-owned `ctx.llm` facade to correct punctuation, capitalization, paragraphing, and obvious ASR errors.
-6. Rejects lossy cleanup or model failure and falls back to the raw transcript.
+5. Optionally asks the host-owned `ctx.llm` facade for conservative proofreading or opt-in readable enrichment with filler removal, paragraphing, lists, and long-note titles.
+6. Rejects summaries, wholesale rewrites, or model failure and falls back to the raw transcript.
 7. For a short outgoing Business message, appends the transcript to the original voice/video-note caption as an expandable blockquote, retrying the same caption as plain text when Telegram rejects the new entity type.
 8. Uses expandable Business-scoped replies for incoming, long, expired, or uneditable messages, with the equivalent plain-text retry.
 
@@ -20,7 +20,7 @@ Handled updates are identified from stable Telegram Business connection, chat, u
 
 ## Roadmap
 
-The broader product direction includes operator or CRM integration adapters and opt-in automation modules. The small event/module boundary is now implemented; those product integrations are still planned extension points, not implemented features in `0.6.1`.
+The broader product direction includes operator or CRM integration adapters and opt-in automation modules. The small event/module boundary is now implemented; those product integrations are still planned extension points, not implemented features in `0.6.2`.
 
 ## Requirements
 
@@ -86,9 +86,12 @@ All plugin variables are optional.
 | `TG_BUSINESS_VOICE_CLEANUP_DISABLE` | false | Skip LLM cleanup and post raw STT text. |
 | `TG_BUSINESS_VOICE_CLEANUP_PROVIDER` | `gemini` | Host provider requested for cleanup. |
 | `TG_BUSINESS_VOICE_CLEANUP_MODEL` | `gemini-3.5-flash` | Host model requested for cleanup. |
+| `TG_BUSINESS_VOICE_CLEANUP_STYLE` | `conservative` | Use `enriched` for filler removal, active editing, paragraph/list structure, and long-note titles. |
 | `TG_BUSINESS_VOICE_CLEANUP_TIMEOUT` | `45` | Cleanup timeout in seconds. |
 | `TG_BUSINESS_VOICE_CLEANUP_MIN_CHARS` | `81` | Minimum transcript length for cleanup. |
 | `TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS` | `1` | Minimum word count for cleanup. |
+| `TG_BUSINESS_VOICE_TITLE_MIN_CHARS` | `700` | Add an enriched-mode title at this transcript length. |
+| `TG_BUSINESS_VOICE_TITLE_MIN_WORDS` | `120` | Add an enriched-mode title at this word count. |
 
 Boolean values accept `1`, `true`, `yes`, or `on` (case-insensitive).
 
@@ -109,6 +112,8 @@ plugins:
 
 If the trust gate, provider, or model is unavailable, the plugin logs the cleanup failure and posts the raw STT transcript. To use different environment values, update the allowlists to match. To avoid any LLM call, set `TG_BUSINESS_VOICE_CLEANUP_DISABLE=1`.
 
+`conservative` preserves conversational wording and accepts almost exclusively punctuation, paragraphing, and obvious ASR fixes. `enriched` removes filler-only interjections and repeated speech junk, smooths clear grammar/ASR errors, structures topics into paragraphs or real enumerations into lists, and adds a short title to long notes. Its separate guard still requires substantial lexical overlap, retains numbers, and refuses one-paragraph long output or aggressive summaries.
+
 ## Current module architecture
 
 The plugin registers one `pre_gateway_dispatch` hook and normalizes Telegram Business updates before any module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. Direction remains `unknown` when Telegram supplies no outgoing marker; the voice module retains its existing asynchronous Business-owner lookup before editing a caption.
@@ -125,7 +130,7 @@ Telegram gateway event
   -> voice module: transient download
   -> Hermes transcribe_audio (configured host STT)
   -> optional ctx.llm structured cleanup
-  -> lexical conservatism guard / raw fallback
+  -> style-aware fidelity guard / raw fallback
   -> short outgoing message: edit_message_caption(..., caption_entities=[expandable], business_connection_id=...)
   -> otherwise: send_message(..., entities=[expandable], business_connection_id=...)
 ```
@@ -153,7 +158,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - Missing bot or Business connection data stops processing without invoking an agent.
 - STT failure sends nothing unless error replies are enabled.
 - Empty STT output sends nothing.
-- Cleanup timeout, trust denial, malformed output, excessive deletion/addition, or broad paraphrasing falls back to raw STT text.
+- Cleanup timeout, trust denial, malformed output, excessive deletion/addition, missing numbers/structure, or broad paraphrasing falls back to raw STT text.
 - Caption direction checks, length checks, edit-window checks, and definite caption-edit rejections fall back to a separate expandable transcript reply.
 - A recognized unsupported-entity response retries the selected caption or reply surface once without the new entity; PTB `BadRequest` counts as a definite caption rejection unless it is the recognized not-modified or unsupported-entity case, while `TimedOut`, other `NetworkError` failures, and unrelated exceptions suppress the reply fallback to avoid duplicates.
 - A successful caption edit never also sends a transcript reply.

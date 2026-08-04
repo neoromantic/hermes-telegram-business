@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.6.2 - 2026-08-04
+
+- Add opt-in `enriched` transcript editing with filler removal, mandatory paragraphing, list formatting, long-note titles, and a summary-rejection guard.
+- Keep conservative copy editing as the default for existing installations.
 - Normalize Telegram Business identifiers, direction, timestamps, relationships, and media before routing events through independently enabled modules.
 - Add explicit handled/pass-through results, per-module LLM opt-in, stable retry identity, and failure isolation without adding persistence or provider clients.
 - Run the existing voice/video-note transcriber as the first module on the shared non-agent pipeline while preserving its Business-scoped behavior.
