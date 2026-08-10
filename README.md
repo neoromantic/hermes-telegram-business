@@ -12,7 +12,7 @@ An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integ
 3. Returns `action: skip` so the ordinary auth/agent path does not process the media.
 4. Downloads the media transiently and delegates speech recognition to Hermes's configured `transcribe_audio` backend.
 5. Optionally asks the host-owned `ctx.llm` facade for conservative proofreading or opt-in readable enrichment with filler removal, paragraphing, lists, and long-note titles.
-6. Rejects summaries, wholesale rewrites, or model failure and falls back to the raw transcript.
+6. When an enriched candidate trips a quality signal, retries once with the exact validator feedback instead of discarding the edit; raw STT remains only the catastrophic/failure fallback.
 7. For a short outgoing Business message, appends the transcript to the original voice/video-note caption as an expandable blockquote, retrying the same caption as plain text when Telegram rejects the new entity type.
 8. Uses expandable Business-scoped replies for incoming, long, expired, or uneditable messages, with the equivalent plain-text retry.
 
@@ -112,7 +112,7 @@ plugins:
 
 If the trust gate, provider, or model is unavailable, the plugin logs the cleanup failure and posts the raw STT transcript. To use different environment values, update the allowlists to match. To avoid any LLM call, set `TG_BUSINESS_VOICE_CLEANUP_DISABLE=1`.
 
-`conservative` preserves conversational wording and accepts almost exclusively punctuation, paragraphing, and obvious ASR fixes. `enriched` removes filler-only interjections and repeated speech junk, smooths clear grammar/ASR errors, structures topics into paragraphs or real enumerations into lists, and adds a short title to long notes. Its separate guard still requires substantial lexical overlap, retains numbers, and refuses one-paragraph long output or aggressive summaries.
+`conservative` preserves conversational wording and accepts almost exclusively punctuation, paragraphing, and obvious ASR fixes. `enriched` removes filler-only interjections and repeated speech junk, smooths clear grammar/ASR errors, structures topics into paragraphs or real enumerations into lists, and adds a short title to long notes. Word-count reduction by itself is not failure—even roughly half-length output can be legitimate. Quality signals such as low lexical overlap, extreme compression, missing numbers, or missing long-text structure trigger one fresh edit of the original transcript with the exact rejection reasons. If the repair still misses only soft signals, the repaired text is used; raw STT is reserved for empty, tiny, bloated, number-dropping, unrelated, or unavailable output.
 
 ## Current module architecture
 
@@ -130,7 +130,7 @@ Telegram gateway event
   -> voice module: transient download
   -> Hermes transcribe_audio (configured host STT)
   -> optional ctx.llm structured cleanup
-  -> style-aware fidelity guard / raw fallback
+  -> style-aware quality signals / one feedback repair / catastrophic-only raw fallback
   -> short outgoing message: edit_message_caption(..., caption_entities=[expandable], business_connection_id=...)
   -> otherwise: send_message(..., entities=[expandable], business_connection_id=...)
 ```
@@ -158,7 +158,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - Missing bot or Business connection data stops processing without invoking an agent.
 - STT failure sends nothing unless error replies are enabled.
 - Empty STT output sends nothing.
-- Cleanup timeout, trust denial, malformed output, excessive deletion/addition, missing numbers/structure, or broad paraphrasing falls back to raw STT text.
+- An initial cleanup call that times out or is denied by the trust gate falls back to raw STT. In `enriched` mode, any returned candidate that trips quality signals gets one feedback repair; after that, soft misses still use an edited candidate while catastrophic output falls back to raw STT.
 - Caption direction checks, length checks, edit-window checks, and definite caption-edit rejections fall back to a separate expandable transcript reply.
 - A recognized unsupported-entity response retries the selected caption or reply surface once without the new entity; PTB `BadRequest` counts as a definite caption rejection unless it is the recognized not-modified or unsupported-entity case, while `TimedOut`, other `NetworkError` failures, and unrelated exceptions suppress the reply fallback to avoid duplicates.
 - A successful caption edit never also sends a transcript reply.

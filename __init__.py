@@ -269,7 +269,9 @@ Content fidelity:
 - Preserve the original language or language mix. Never translate.
 - Keep every substantive thought, qualification, aside, example, name, number, date, proposed option, relationship, question, and intent.
 - Never merge several proposals or details into one generic sentence. If unsure whether something is substantive, keep it.
-- The output must retain at least 60% of the input words; normally retain 65-85%. Remove words only because they are filler, duplicates, or clear recognition errors.
+- Word count alone is not a quality measure.
+- A faithful result may be around half as long when the source contains heavy filler, repetition, or recognition junk.
+  Remove freely for those reasons, but preserve every substantive detail.
 - Do not add facts or turn the transcript into a summary.
 
 Editing:
@@ -285,6 +287,16 @@ Editing:
 - If add_title is false, return only the transcript body.
 - Return strict JSON matching the schema.
 """
+
+_ENRICHED_REPAIR_INSTRUCTIONS = """This is a repair pass after an earlier edit failed quality checks.
+Re-edit the ORIGINAL transcript from beginning to end.
+The JSON input includes exact rejection_reasons from the prior attempt.
+- Fix every item in rejection_reasons instead of discarding the edit.
+- Restore omitted substantive details or source wording when overlap was too low.
+- Keep useful shortening. A much lower word count is acceptable when it comes from removing filler, repetition, or ASR junk.
+- Return the complete replacement transcript. Do not return only the restored fragment and do not comment on the repair.
+
+""" + _ENRICHED_CLEANUP_INSTRUCTIONS
 
 _DEFINITE_CAPTION_EDIT_REJECTION_CLASS_NAMES = frozenset(
     {
@@ -1158,30 +1170,112 @@ def _cleanup_is_conservative(original: str, cleaned: str) -> bool:
     return sequence_ratio >= min_sequence_ratio
 
 
+def _cleanup_enriched_rejection_reasons(original: str, cleaned: str) -> tuple[str, ...]:
+    """Explain why an enriched candidate needs a repair pass.
+
+    These are quality signals, not an automatic verdict that shortening is bad.
+    The model receives the reasons on one retry so it can repair the edit instead
+    of making the user fall all the way back to raw STT.
+    """
+    original_words = _lexical_words(original)
+    cleaned_words = _lexical_words(cleaned)
+    if not original_words:
+        return ("source transcript has no lexical words",)
+    if not cleaned_words:
+        return ("candidate is empty",)
+
+    reasons: list[str] = []
+    original_count = len(original_words)
+    cleaned_count = len(cleaned_words)
+    retention_ratio = cleaned_count / original_count
+
+    if original_count <= 12:
+        min_words = max(1, original_count - 2)
+    else:
+        # Around half the words can be a perfectly good edit when speech is
+        # repetitive. This floor only triggers a repair pass for more extreme
+        # compression; the other fidelity signals still matter independently.
+        min_words = max(1, int(original_count * 0.40 + 0.999999))
+    if cleaned_count < min_words:
+        reasons.append(
+            f"word retention {retention_ratio:.3f} is below the {min_words / original_count:.3f} repair threshold"
+        )
+
+    max_words = max(original_count + 16, int(original_count * 1.25 + 0.999999))
+    if cleaned_count > max_words:
+        reasons.append(
+            f"candidate expansion {cleaned_count / original_count:.3f} "
+            f"exceeds the {max_words / original_count:.3f} limit"
+        )
+
+    # Numbers are rarely filler and commonly carry the most actionable detail.
+    original_numbers = {word for word in original_words if any(char.isdigit() for char in word)}
+    if not original_numbers.issubset(set(cleaned_words)):
+        reasons.append("candidate omitted one or more numeric tokens")
+
+    if original_count >= 80 and "\n\n" not in cleaned:
+        reasons.append("long candidate has no blank-line paragraph breaks")
+
+    sequence_ratio = SequenceMatcher(
+        None,
+        original_words,
+        cleaned_words,
+        autojunk=False,
+    ).ratio()
+    min_sequence_ratio = 0.45 if original_count <= 12 else 0.50
+    if sequence_ratio < min_sequence_ratio:
+        reasons.append(
+            f"lexical sequence similarity {sequence_ratio:.3f} is below {min_sequence_ratio:.3f}; "
+            "restore omitted details or source wording"
+        )
+
+    return tuple(reasons)
+
+
 def _cleanup_is_enriched(original: str, cleaned: str) -> bool:
-    """Allow filler removal and restructuring, but reject summaries and rewrites."""
+    """Accept an enriched candidate when no quality signal requests repair."""
+    return not _cleanup_enriched_rejection_reasons(original, cleaned)
+
+
+def _cleanup_rejection_reasons(original: str, cleaned: str) -> tuple[str, ...]:
+    if _cleanup_style() == "enriched":
+        return _cleanup_enriched_rejection_reasons(original, cleaned)
+    if _cleanup_is_conservative(original, cleaned):
+        return ()
+    return ("candidate diverged too far from conservative copy-editing",)
+
+
+def _cleanup_is_safe_after_retry(original: str, cleaned: str) -> bool:
+    """Keep a useful enriched edit after one repair unless it is catastrophic.
+
+    Soft signals such as shortening, lexical overlap, or missing paragraph breaks
+    should cause the feedback retry, not erase the enhancement. Raw STT remains
+    the final fallback for empty/tiny, bloated, number-dropping, or unrelated
+    output.
+    """
+    if _cleanup_style() != "enriched":
+        return _cleanup_is_conservative(original, cleaned)
+
     original_words = _lexical_words(original)
     cleaned_words = _lexical_words(cleaned)
     if not original_words or not cleaned_words:
         return False
 
-    if len(original_words) <= 12:
-        min_words = max(1, len(original_words) - 2)
+    original_count = len(original_words)
+    cleaned_count = len(cleaned_words)
+    if original_count <= 12:
+        min_words = max(1, int(original_count * 0.50 + 0.999999))
     else:
-        min_words = max(1, int(len(original_words) * 0.55 + 0.999999))
-    if len(cleaned_words) < min_words:
+        min_words = max(1, int(original_count * 0.25 + 0.999999))
+    if cleaned_count < min_words:
         return False
 
-    max_words = max(len(original_words) + 16, int(len(original_words) * 1.25 + 0.999999))
-    if len(cleaned_words) > max_words:
+    max_words = max(original_count + 24, int(original_count * 1.50 + 0.999999))
+    if cleaned_count > max_words:
         return False
 
-    # Numbers are rarely filler and commonly carry the most actionable detail.
     original_numbers = {word for word in original_words if any(char.isdigit() for char in word)}
     if not original_numbers.issubset(set(cleaned_words)):
-        return False
-
-    if len(original_words) >= 80 and "\n\n" not in cleaned:
         return False
 
     sequence_ratio = SequenceMatcher(
@@ -1190,20 +1284,46 @@ def _cleanup_is_enriched(original: str, cleaned: str) -> bool:
         cleaned_words,
         autojunk=False,
     ).ratio()
-    min_sequence_ratio = 0.45 if len(original_words) <= 12 else 0.50
-    return sequence_ratio >= min_sequence_ratio
+    return sequence_ratio >= 0.20
 
 
 def _cleanup_is_acceptable(original: str, cleaned: str) -> bool:
-    if _cleanup_style() == "enriched":
-        return _cleanup_is_enriched(original, cleaned)
-    return _cleanup_is_conservative(original, cleaned)
+    return not _cleanup_rejection_reasons(original, cleaned)
 
 
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+async def _request_cleanup_candidate(
+    *,
+    llm: Any,
+    transcript: str,
+    system_prompt: str,
+    instructions: str,
+    payload: dict[str, Any],
+    purpose: str,
+) -> str:
+    result = await llm.acomplete_structured(
+        instructions=instructions,
+        input=[{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+        json_schema=_CLEANUP_JSON_SCHEMA,
+        json_mode=True,
+        schema_name="telegram_business_voice_cleanup",
+        system_prompt=system_prompt,
+        provider=_cleanup_provider(),
+        model=_cleanup_model(),
+        temperature=0,
+        max_tokens=_completion_max_tokens(transcript),
+        timeout=_cleanup_timeout(),
+        purpose=purpose,
+    )
+    parsed = getattr(result, "parsed", None)
+    if isinstance(parsed, dict):
+        return _sanitize_llm_text(str(parsed.get("text") or ""))
+    return _sanitize_llm_text(str(getattr(result, "text", "") or ""))
 
 
 async def _cleanup_transcript(
@@ -1239,35 +1359,29 @@ async def _cleanup_transcript(
         return transcript
 
     system_prompt, instructions = _cleanup_prompts()
-    user_input = json.dumps(
-        {
-            "transcript": transcript,
-            "add_title": _cleanup_add_title(transcript),
-        },
-        ensure_ascii=False,
-    )
+    add_title = _cleanup_add_title(transcript)
+    first_payload = {
+        "transcript": transcript,
+        "add_title": add_title,
+    }
     try:
-        result = await llm.acomplete_structured(
-            instructions=instructions,
-            input=[{"type": "text", "text": user_input}],
-            json_schema=_CLEANUP_JSON_SCHEMA,
-            json_mode=True,
-            schema_name="telegram_business_voice_cleanup",
+        cleaned_text = await _request_cleanup_candidate(
+            llm=llm,
+            transcript=transcript,
             system_prompt=system_prompt,
-            provider=_cleanup_provider(),
-            model=_cleanup_model(),
-            temperature=0,
-            max_tokens=_completion_max_tokens(transcript),
-            timeout=_cleanup_timeout(),
+            instructions=instructions,
+            payload=first_payload,
             purpose="telegram_business_voice_cleanup",
         )
-        parsed = getattr(result, "parsed", None)
-        if isinstance(parsed, dict):
-            cleaned_text = _sanitize_llm_text(str(parsed.get("text") or ""))
-        else:
-            cleaned_text = _sanitize_llm_text(str(getattr(result, "text", "") or ""))
-        if cleaned_text and _cleanup_is_acceptable(transcript, cleaned_text):
-            return cleaned_text
+    except Exception as exc:  # noqa: BLE001 - cleanup failure should not drop transcript
+        logger.warning("%s: LLM cleanup failed; posting raw transcript: %s", _PLUGIN_NAME, exc)
+        return transcript
+
+    rejection_reasons = _cleanup_rejection_reasons(transcript, cleaned_text)
+    if cleaned_text and not rejection_reasons:
+        return cleaned_text
+
+    if _cleanup_style() != "enriched":
         logger.warning(
             "%s: rejected lossy LLM cleanup; posting raw transcript (raw_words=%d cleaned_words=%d)",
             _PLUGIN_NAME,
@@ -1275,9 +1389,78 @@ async def _cleanup_transcript(
             len(_lexical_words(cleaned_text)),
         )
         return transcript
-    except Exception as exc:  # noqa: BLE001 - cleanup failure should not drop transcript
-        logger.warning("%s: LLM cleanup failed; posting raw transcript: %s", _PLUGIN_NAME, exc)
+
+    logger.info(
+        "%s: enriched cleanup needs repair; retrying with validator feedback "
+        "(raw_words=%d candidate_words=%d reasons=%s)",
+        _PLUGIN_NAME,
+        len(_lexical_words(transcript)),
+        len(_lexical_words(cleaned_text)),
+        "; ".join(rejection_reasons),
+    )
+    retry_payload = {
+        "transcript": transcript,
+        "add_title": add_title,
+        "rejection_reasons": list(rejection_reasons),
+    }
+    try:
+        retry_text = await _request_cleanup_candidate(
+            llm=llm,
+            transcript=transcript,
+            system_prompt=system_prompt,
+            instructions=_ENRICHED_REPAIR_INSTRUCTIONS,
+            payload=retry_payload,
+            purpose="telegram_business_voice_cleanup_repair",
+        )
+    except Exception as exc:  # noqa: BLE001 - use a safe first candidate when repair is unavailable
+        if _cleanup_is_safe_after_retry(transcript, cleaned_text):
+            logger.warning(
+                "%s: cleanup repair failed; using the non-catastrophic first candidate: %s",
+                _PLUGIN_NAME,
+                exc,
+            )
+            return cleaned_text
+        logger.warning(
+            "%s: cleanup repair failed and first candidate was unsafe; posting raw transcript: %s",
+            _PLUGIN_NAME,
+            exc,
+        )
         return transcript
+
+    retry_reasons = _cleanup_rejection_reasons(transcript, retry_text)
+    if retry_text and not retry_reasons:
+        return retry_text
+
+    if _cleanup_is_safe_after_retry(transcript, retry_text):
+        logger.warning(
+            "%s: cleanup repair still missed soft quality signals; using repaired candidate "
+            "instead of discarding enhancement (raw_words=%d retry_words=%d reasons=%s)",
+            _PLUGIN_NAME,
+            len(_lexical_words(transcript)),
+            len(_lexical_words(retry_text)),
+            "; ".join(retry_reasons),
+        )
+        return retry_text
+
+    if _cleanup_is_safe_after_retry(transcript, cleaned_text):
+        logger.warning(
+            "%s: cleanup repair was unsafe; using the non-catastrophic first candidate "
+            "(raw_words=%d candidate_words=%d)",
+            _PLUGIN_NAME,
+            len(_lexical_words(transcript)),
+            len(_lexical_words(cleaned_text)),
+        )
+        return cleaned_text
+
+    logger.warning(
+        "%s: both cleanup candidates were unsafe; posting raw transcript "
+        "(raw_words=%d first_words=%d retry_words=%d)",
+        _PLUGIN_NAME,
+        len(_lexical_words(transcript)),
+        len(_lexical_words(cleaned_text)),
+        len(_lexical_words(retry_text)),
+    )
+    return transcript
 
 
 def _notification_kwargs(adapter: Any) -> dict[str, Any]:

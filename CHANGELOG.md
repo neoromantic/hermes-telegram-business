@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Retry enriched cleanup once with exact validator feedback instead of immediately discarding the edit.
+- Treat substantial shortening, including roughly half-length output, as a quality signal rather than automatic failure; after the retry, fall back to raw STT only for catastrophic candidates.
+- Isolate cleanup environment variables in unit tests so live deployment overrides cannot corrupt default-behavior assertions.
+
 ## 0.6.2 - 2026-08-04
 
 - Add opt-in `enriched` transcript editing with filler removal, mandatory paragraphing, list formatting, long-note titles, and a summary-rejection guard.

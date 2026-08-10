@@ -50,6 +50,22 @@ def _load_plugin_module(
     return module
 
 
+@pytest.fixture(autouse=True)
+def isolate_plugin_environment(monkeypatch: pytest.MonkeyPatch):
+    for name in (
+        "TG_BUSINESS_VOICE_CLEANUP_DISABLE",
+        "TG_BUSINESS_VOICE_CLEANUP_PROVIDER",
+        "TG_BUSINESS_VOICE_CLEANUP_MODEL",
+        "TG_BUSINESS_VOICE_CLEANUP_STYLE",
+        "TG_BUSINESS_VOICE_CLEANUP_TIMEOUT",
+        "TG_BUSINESS_VOICE_CLEANUP_MIN_CHARS",
+        "TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS",
+        "TG_BUSINESS_VOICE_TITLE_MIN_CHARS",
+        "TG_BUSINESS_VOICE_TITLE_MIN_WORDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def plugin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     return _load_plugin_module(monkeypatch, tmp_path)
@@ -1371,7 +1387,7 @@ def test_enriched_prompt_removes_fillers_and_requires_structure(plugin, monkeypa
     assert "Remove empty filler sounds" in prompt
     assert "Separate different thoughts or topics into paragraphs" in prompt
     assert "Markdown list" in prompt
-    assert "at least 60%" in prompt
+    assert "Word count alone is not a quality measure" in prompt
     assert "add_title" in prompt
 
 
@@ -1423,6 +1439,116 @@ def test_enriched_guard_accepts_filler_removal_but_rejects_summary(plugin, monke
     assert plugin._cleanup_is_acceptable(raw, cleaned)
     assert not plugin._cleanup_is_acceptable(raw, summary)
     assert not plugin._cleanup_is_acceptable(raw, missing_number)
+
+
+def test_enriched_guard_allows_faithful_cleanup_at_about_half_the_words(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "Ну слушай я вот короче думаю что нам наверное нужно сначала спокойно проверить "
+        "все детали потому что там вот есть важный риск"
+    )
+    cleaned = "Нужно сначала спокойно проверить все детали, потому что там есть важный риск."
+
+    raw_words = plugin._lexical_words(raw)
+    cleaned_words = plugin._lexical_words(cleaned)
+    assert 0.45 <= len(cleaned_words) / len(raw_words) <= 0.55
+    assert plugin._cleanup_is_acceptable(raw, cleaned)
+
+
+@pytest.mark.asyncio
+async def test_rejected_enriched_cleanup_is_retried_with_validator_feedback(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "Слушай я хочу сначала обсудить автоматизацию сообщений а потом отдельно проверить "
+        "два способа подключения через клиент и через бизнес бота потому что у каждого способа "
+        "есть свои ограничения и все эти детали важно сохранить в итоговом тексте"
+    )
+    rejected = "Автоматизацию сообщений можно сделать через клиент или бизнес-бота. У способов есть ограничения."
+    repaired = (
+        "Сначала хочу обсудить автоматизацию сообщений, а затем отдельно проверить два способа подключения: "
+        "через клиент и через бизнес-бота.\n\nУ каждого способа есть свои ограничения, и все эти детали важно "
+        "сохранить в итоговом тексте."
+    )
+
+    class FakeLlm:
+        def __init__(self):
+            self.calls = []
+            self.responses = [rejected, repaired]
+
+        async def acomplete_structured(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(parsed={"text": self.responses.pop(0)}, text="")
+
+    llm = FakeLlm()
+    result = await plugin._cleanup_transcript(raw, llm=llm)
+
+    assert result == repaired
+    assert len(llm.calls) == 2
+    retry_payload = json.loads(llm.calls[1]["input"][0]["text"])
+    assert retry_payload["transcript"] == raw
+    assert retry_payload["rejection_reasons"]
+    assert "rejected_candidate" not in retry_payload
+    assert llm.calls[1]["purpose"] == "telegram_business_voice_cleanup_repair"
+
+
+@pytest.mark.asyncio
+async def test_second_enriched_candidate_is_used_after_soft_guard_miss_instead_of_raw(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "Слушай я хочу подробно объяснить как работает эта система сначала она получает сообщение "
+        "потом распознает речь после этого улучшает текст и наконец возвращает результат в тот же чат "
+        "при этом важно не потерять основную последовательность и назначение каждого этапа"
+    )
+    first = (
+        "Система получает сообщение и распознаёт речь. Затем она улучшает текст и возвращает результат "
+        "в чат, сохраняя назначение этапов."
+    )
+    retry = (
+        "После получения сообщения система распознаёт речь, редактирует текст и отправляет итог обратно "
+        "в тот же чат. Главное — оставить порядок этапов и смысл каждого из них."
+    )
+
+    class FakeLlm:
+        def __init__(self):
+            self.responses = [first, retry]
+
+        async def acomplete_structured(self, **_kwargs):
+            return SimpleNamespace(parsed={"text": self.responses.pop(0)}, text="")
+
+    result = await plugin._cleanup_transcript(raw, llm=FakeLlm())
+
+    assert result == retry
+    assert result != raw
+
+
+@pytest.mark.asyncio
+async def test_two_catastrophic_cleanup_candidates_still_fall_back_to_raw(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "Сначала нужно сохранить подробное описание первой задачи потом отдельно записать вторую задачу "
+        "и обязательно оставить дату 15 августа а также три разных варианта решения без сокращений"
+    )
+
+    class FakeLlm:
+        def __init__(self):
+            self.responses = ["Надо решить задачи.", "Надо всё сделать."]
+
+        async def acomplete_structured(self, **_kwargs):
+            return SimpleNamespace(parsed={"text": self.responses.pop(0)}, text="")
+
+    assert await plugin._cleanup_transcript(raw, llm=FakeLlm()) == raw
 
 
 @pytest.mark.asyncio
