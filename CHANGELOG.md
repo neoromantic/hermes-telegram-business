@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-08-16
+
+- Make enriched cleanup fidelity-first: preserve every clause, aside, negation, relationship observation, explanation, and awkward or secondary thought instead of inferring and compressing a main point.
+- Remove the half-length guidance and permit deletion only for isolated filler sounds, exact stutters, and exact duplicated fragments.
+- Raise the enriched retention floor to 80%, preserve negation/polarity tokens alongside numbers, and fall back to raw STT when the feedback repair is still lossy.
+- Increase cleanup completion headroom so provider reasoning cannot truncate the JSON transcript before the full edited text is returned.
+
 ## 0.7.0 - 2026-08-16
 
 - Add Telegram Business `audio` and conservatively identified audio-document transcription while leaving voice/video-note processing unchanged.

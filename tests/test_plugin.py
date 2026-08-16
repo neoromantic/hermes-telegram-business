@@ -245,7 +245,7 @@ def test_manifest_uses_current_fields():
     assert manifest == {
         "manifest_version": 1,
         "name": LEGACY_PLUGIN_ID,
-        "version": "0.7.0",
+        "version": "0.7.1",
         "description": (
             "Update-persistent Hermes Telegram Business integration with voice, video-note, and attached-audio "
             "transcription, configurable transcript enrichment, and Business-scoped replies."
@@ -260,7 +260,7 @@ def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "hermes-telegram-business"
-    assert metadata["version"] == "0.7.0"
+    assert metadata["version"] == "0.7.1"
     assert metadata["description"] == (
         "Update-persistent Telegram Business integration for Hermes Agent with voice, video-note, and "
         "attached-audio transcription and Business-scoped replies."
@@ -1404,6 +1404,11 @@ async def test_stt_error_reply_is_opt_in_and_business_scoped(plugin, monkeypatch
     assert bot.calls[0]["text"] == "🎙️ Не смог распознать голосовое/видеокружок: provider unavailable"
 
 
+def test_cleanup_completion_budget_keeps_room_for_full_fidelity_output(plugin):
+    assert plugin._completion_max_tokens("т" * 1000) >= 4096
+    assert plugin._completion_max_tokens("т" * 100_000) == 8192
+
+
 def test_cleanup_prompt_is_copyediting_not_rewriting(plugin):
     prompt = plugin._CLEANUP_INSTRUCTIONS
     system = plugin._CLEANUP_SYSTEM_PROMPT
@@ -1427,6 +1432,14 @@ def test_enriched_prompt_removes_fillers_and_requires_structure(plugin, monkeypa
     assert "Separate different thoughts or topics into paragraphs" in prompt
     assert "Markdown list" in prompt
     assert "Word count alone is not a quality measure" in prompt
+    assert "Content preservation has higher priority than readability" in prompt
+    assert "Do not delete a clause" in prompt
+    assert "secondary, awkward, repetitive, embarrassing, impolite, or tangential" in prompt
+    assert "Preserve every negation" in prompt
+    assert "Return the complete transcript from its beginning through its end" in prompt
+    assert "Never return only a changed fragment" in prompt
+    assert "around half as long" not in prompt
+    assert "Remove freely" not in prompt
     assert "add_title" in prompt
 
 
@@ -1466,11 +1479,12 @@ def test_enriched_guard_accepts_filler_removal_but_rejects_summary(plugin, monke
         "Потом пожалуйста напомни что нужна встреча с Женей и демонстрация для команды."
     )
     cleaned = (
-        "Я думаю, что нам надо сначала обсудить первую задачу, а затем перейти ко второй: там есть "
-        "важные детали, 3 варианта и срок — 15 августа.\n\n"
-        "Варианты:\n- делаем сами\n- зовём команду\n- откладываем до сентября\n\n"
-        "Я хочу сохранить все варианты и отдельно обсудить риски. Затем нужна встреча с Женей и "
-        "демонстрация для команды."
+        "Слушай, ну, я вот думаю, что нам надо сначала обсудить первую задачу, а потом перейти "
+        "ко второй задаче, потому что там есть важные детали: 3 варианта и срок — 15 августа.\n\n"
+        "То есть варианты:\n- первый вариант — мы делаем сами\n- второй вариант — зовём команду\n"
+        "- третий вариант — откладываем до сентября\n\n"
+        "Вот, я хочу сохранить все эти варианты и отдельно обсудить риски. Потом, пожалуйста, "
+        "напомни, что нужна встреча с Женей и демонстрация для команды."
     )
     summary = "Есть 3 варианта. Их надо обсудить до 15 августа."
     missing_number = cleaned.replace("15 августа", "августа")
@@ -1480,7 +1494,7 @@ def test_enriched_guard_accepts_filler_removal_but_rejects_summary(plugin, monke
     assert not plugin._cleanup_is_acceptable(raw, missing_number)
 
 
-def test_enriched_guard_allows_faithful_cleanup_at_about_half_the_words(
+def test_enriched_guard_rejects_half_length_cleanup_even_when_main_point_survives(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1494,7 +1508,29 @@ def test_enriched_guard_allows_faithful_cleanup_at_about_half_the_words(
     raw_words = plugin._lexical_words(raw)
     cleaned_words = plugin._lexical_words(cleaned)
     assert 0.45 <= len(cleaned_words) / len(raw_words) <= 0.55
-    assert plugin._cleanup_is_acceptable(raw, cleaned)
+    assert not plugin._cleanup_is_acceptable(raw, cleaned)
+
+
+def test_enriched_guard_rejects_dropped_negation_and_relationship_observation(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "Слушай хотел извиниться за ерунду которую сказал. Я вспомнил что ты не любишь "
+        "когда перед тобой извиняются. Короче хуйню ляпнул и понял что не надо было "
+        "приносить тебе это в таком состоянии и в такой форме."
+    )
+    lossy = (
+        "Слушай, хотел извиниться за ерунду, которую сказал. Короче, хуйню ляпнул и понял, "
+        "что не надо было приносить тебе это в таком состоянии и в такой форме."
+    )
+
+    reasons = plugin._cleanup_enriched_rejection_reasons(raw, lossy)
+
+    assert any("negation" in reason for reason in reasons)
+    assert not plugin._cleanup_is_acceptable(raw, lossy)
+    assert not plugin._cleanup_is_safe_after_retry(raw, lossy)
 
 
 @pytest.mark.asyncio
@@ -1537,7 +1573,7 @@ async def test_rejected_enriched_cleanup_is_retried_with_validator_feedback(
 
 
 @pytest.mark.asyncio
-async def test_second_enriched_candidate_is_used_after_soft_guard_miss_instead_of_raw(
+async def test_two_lossy_enriched_candidates_fall_back_to_raw(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1565,8 +1601,7 @@ async def test_second_enriched_candidate_is_used_after_soft_guard_miss_instead_o
 
     result = await plugin._cleanup_transcript(raw, llm=FakeLlm())
 
-    assert result == retry
-    assert result != raw
+    assert result == raw
 
 
 @pytest.mark.asyncio
