@@ -13,11 +13,14 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -88,6 +91,10 @@ _CLEANUP_MIN_WORDS_ENV = "TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS"
 _TITLE_MIN_CHARS_ENV = "TG_BUSINESS_VOICE_TITLE_MIN_CHARS"
 _TITLE_MIN_WORDS_ENV = "TG_BUSINESS_VOICE_TITLE_MIN_WORDS"
 _ADAPTER_AUTH_BYPASS_ENV = "HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH"
+_AUDIO_FILE_MAX_DURATION_ENV = "TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS"
+_AUDIO_FILE_MAX_BYTES_ENV = "TG_BUSINESS_AUDIO_FILE_MAX_BYTES"
+_AUDIO_FILE_PROBE_SECONDS_ENV = "TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS"
+_AUDIO_FILE_MIN_WORDS_ENV = "TG_BUSINESS_AUDIO_FILE_MIN_WORDS"
 
 _DEFAULT_CLEANUP_PROVIDER = "gemini"
 _DEFAULT_CLEANUP_MODEL = "gemini-3.5-flash"
@@ -96,6 +103,44 @@ _DEFAULT_CLEANUP_MIN_CHARS = 81
 _DEFAULT_CLEANUP_MIN_WORDS = 1
 _DEFAULT_TITLE_MIN_CHARS = 700
 _DEFAULT_TITLE_MIN_WORDS = 120
+_DEFAULT_AUDIO_FILE_MAX_DURATION_SECONDS = 300
+_DEFAULT_AUDIO_FILE_MAX_BYTES = 20 * 1024 * 1024
+_DEFAULT_AUDIO_FILE_PROBE_SECONDS = 10
+_DEFAULT_AUDIO_FILE_MIN_WORDS = 3
+_AUDIO_FILE_DURATION_BOUNDS = (1, 3600)
+_AUDIO_FILE_BYTES_BOUNDS = (1024, 100 * 1024 * 1024)
+_AUDIO_FILE_PROBE_BOUNDS = (1, 60)
+_AUDIO_FILE_MIN_WORDS_BOUNDS = (1, 20)
+_MEDIA_TOOL_TIMEOUT_SECONDS = 30
+_AUDIO_DOCUMENT_EXTENSIONS = frozenset(
+    {".aac", ".aif", ".aiff", ".amr", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".wma"}
+)
+_AUDIO_MIME_EXTENSIONS = {
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/mp4": ".m4a",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "audio/wav": ".wav",
+    "audio/x-m4a": ".m4a",
+    "audio/x-wav": ".wav",
+}
+_DIRECT_STT_AUDIO_EXTENSIONS = frozenset(
+    {".aac", ".caf", ".flac", ".m4a", ".mp3", ".mp4", ".mpeg", ".mpga", ".oga", ".ogg", ".opus", ".wav", ".webm"}
+)
+_AUDIO_PROBE_FALSE_SPEECH_PHRASES = (
+    "продолжение следует",
+    "спасибо за просмотр",
+    "субтитры сделал",
+    "субтитры создал",
+    "субтитры создавал",
+    "редактор субтитров",
+    "thank you for watching",
+    "thanks for watching",
+    "subtitles by",
+    "amara org community",
+)
 _MAX_CAPTION_CHARS = 1024
 _MAX_CHUNK_CHARS = 3800
 _BUSINESS_EDIT_WINDOW_SECONDS = 48 * 60 * 60
@@ -361,6 +406,7 @@ def _is_business_voice_media(message: Any) -> bool:
         and (
             getattr(message, "voice", None) is not None
             or getattr(message, "video_note", None) is not None
+            or _audio_file_payload(message) is not None
         )
     )
 
@@ -522,6 +568,40 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _bounded_env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    """Parse a bounded positive integer, falling back safely on invalid input."""
+    value = _env_int(name, default)
+    return value if minimum <= value <= maximum else default
+
+
+def _audio_file_limits() -> tuple[int, int, int, int]:
+    max_duration = _bounded_env_int(
+        _AUDIO_FILE_MAX_DURATION_ENV,
+        _DEFAULT_AUDIO_FILE_MAX_DURATION_SECONDS,
+        minimum=_AUDIO_FILE_DURATION_BOUNDS[0],
+        maximum=_AUDIO_FILE_DURATION_BOUNDS[1],
+    )
+    max_bytes = _bounded_env_int(
+        _AUDIO_FILE_MAX_BYTES_ENV,
+        _DEFAULT_AUDIO_FILE_MAX_BYTES,
+        minimum=_AUDIO_FILE_BYTES_BOUNDS[0],
+        maximum=_AUDIO_FILE_BYTES_BOUNDS[1],
+    )
+    probe_seconds = _bounded_env_int(
+        _AUDIO_FILE_PROBE_SECONDS_ENV,
+        _DEFAULT_AUDIO_FILE_PROBE_SECONDS,
+        minimum=_AUDIO_FILE_PROBE_BOUNDS[0],
+        maximum=_AUDIO_FILE_PROBE_BOUNDS[1],
+    )
+    min_words = _bounded_env_int(
+        _AUDIO_FILE_MIN_WORDS_ENV,
+        _DEFAULT_AUDIO_FILE_MIN_WORDS,
+        minimum=_AUDIO_FILE_MIN_WORDS_BOUNDS[0],
+        maximum=_AUDIO_FILE_MIN_WORDS_BOUNDS[1],
+    )
+    return max_duration, max_bytes, min(probe_seconds, max_duration), min_words
 
 
 def _cleanup_provider() -> str:
@@ -829,14 +909,72 @@ def _business_voice_message(event: Any) -> Optional[Any]:
     return message
 
 
+def _audio_file_payload(message: Any) -> tuple[Any, str] | None:
+    """Return an explicit Telegram audio or conservatively identified audio document."""
+    audio = _get(message, "audio")
+    if audio is not None:
+        return audio, "audio"
+    document = _get(message, "document")
+    if document is None:
+        return None
+    mime_type = str(_get(document, "mime_type") or "").strip().casefold()
+    suffix = Path(str(_get(document, "file_name") or "")).suffix.casefold()
+    if mime_type.startswith("audio/") or suffix in _AUDIO_DOCUMENT_EXTENSIONS:
+        return document, "audio_document"
+    return None
+
+
+def _audio_file_has_music_tags(media: Any) -> bool:
+    """Treat a fully tagged Telegram audio track as music, not an ad-hoc recording."""
+    title = str(_get(media, "title") or "").strip()
+    performer = str(_get(media, "performer") or "").strip()
+    return bool(title and performer)
+
+
+def _scriptio_continua_letter_count(text: str) -> int:
+    """Count letters from scripts that commonly do not separate every word with spaces."""
+    markers = ("CJK", "HIRAGANA", "KATAKANA", "HANGUL", "THAI", "LAO", "KHMER", "MYANMAR")
+    return sum(
+        1
+        for char in text or ""
+        if char.isalpha() and any(marker in unicodedata.name(char, "") for marker in markers)
+    )
+
+
+def _audio_probe_has_meaningful_speech(transcript: str, min_words: int) -> bool:
+    """Reject empty/degenerate probe text and common Whisper no-speech hallucinations."""
+    words = [word.casefold() for word in _lexical_words(transcript)]
+    if len(words) < min_words:
+        if _scriptio_continua_letter_count(transcript) < max(8, min_words * 2):
+            return False
+    elif len(set(words)) < 2:
+        return False
+    normalized = " ".join(words)
+    if any(phrase in normalized for phrase in _AUDIO_PROBE_FALSE_SPEECH_PHRASES):
+        return False
+    return sum(len(word) for word in words) >= 8
+
+
+def _audio_file_extension(media: Any) -> str:
+    suffix = Path(str(_get(media, "file_name") or "")).suffix.casefold()
+    if suffix in _AUDIO_DOCUMENT_EXTENSIONS:
+        return suffix
+    mime_type = str(_get(media, "mime_type") or "").split(";", 1)[0].strip().casefold()
+    return _AUDIO_MIME_EXTENSIONS.get(mime_type, ".audio")
+
+
 def _transcribable_payload(message: Any) -> Optional[tuple[Any, str, str]]:
-    """Return (telegram payload, label, extension) for voice-like Business media."""
+    """Return (Telegram payload, label, extension) for supported Business media."""
     voice = getattr(message, "voice", None)
     if voice is not None:
         return voice, "voice", ".ogg"
     video_note = getattr(message, "video_note", None)
     if video_note is not None:
         return video_note, "video_note", ".mp4"
+    audio_file = _audio_file_payload(message)
+    if audio_file is not None:
+        media, label = audio_file
+        return media, label, _audio_file_extension(media)
     return None
 
 
@@ -855,12 +993,107 @@ def _cache_path_for(message: Any) -> Path:
 async def _download_voice(message: Any, path: Path) -> Path:
     payload = _transcribable_payload(message)
     if payload is None:
-        raise ValueError("message has no voice or video_note payload")
+        raise ValueError("message has no supported media payload")
     media, _, _ = payload
     file_obj = await media.get_file()
     audio_bytes = await file_obj.download_as_bytearray()
     path.write_bytes(bytes(audio_bytes))
     return path
+
+
+def _local_audio_duration(path: Path) -> float | None:
+    """Determine media duration locally; return None on any uncertain result."""
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_MEDIA_TOOL_TIMEOUT_SECONDS,
+        )
+        duration = float(completed.stdout.strip())
+    except (FileNotFoundError, ValueError, subprocess.SubprocessError):
+        return None
+    return duration if math.isfinite(duration) and duration > 0 else None
+
+
+def _extract_audio_probe(source: Path, destination: Path, seconds: int) -> bool:
+    """Extract a bounded mono 16 kHz WAV prefix without invoking a shell."""
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(source),
+                "-t",
+                str(seconds),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                str(destination),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=_MEDIA_TOOL_TIMEOUT_SECONDS,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
+    try:
+        return destination.is_file() and destination.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _normalize_audio_for_stt(source: Path, destination: Path) -> bool:
+    """Convert an attached-audio container unsupported by host STT to mono 16 kHz WAV."""
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(source),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                str(destination),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=_MEDIA_TOOL_TIMEOUT_SECONDS,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
+    try:
+        return destination.is_file() and destination.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _telegram_text_length(text: str) -> int:
@@ -1130,10 +1363,25 @@ def _sanitize_llm_text(text: str) -> str:
 
 def _lexical_words(text: str) -> list[str]:
     """Return punctuation-free words for conservative cleanup validation."""
-    return re.findall(
-        r"[0-9A-Za-zА-Яа-яЁё]+(?:[-'][0-9A-Za-zА-Яа-яЁё]+)*",
-        (text or "").casefold(),
-    )
+    words: list[str] = []
+    current: list[str] = []
+    for char in (text or "").casefold():
+        if char.isalnum() or (current and unicodedata.category(char).startswith("M")):
+            current.append(char)
+            continue
+        if char in {"-", "'", "’"} and current:
+            current.append(char)
+            continue
+        if current:
+            token = "".join(current).strip("-'’")
+            if token:
+                words.append(token)
+            current = []
+    if current:
+        token = "".join(current).strip("-'’")
+        if token:
+            words.append(token)
+    return words
 
 
 def _cleanup_is_conservative(original: str, cleaned: str) -> bool:
@@ -1552,6 +1800,143 @@ async def _send_error_if_enabled(*, bot: Any, adapter: Any, message: Any, error:
         logger.debug("%s: failed to send STT error notice: %s", _PLUGIN_NAME, exc)
 
 
+def _resolve_transcriber(
+    transcribe_fn: Callable[[str], dict[str, Any]] | None,
+) -> Callable[[str], dict[str, Any]]:
+    if transcribe_fn is not None:
+        return transcribe_fn
+    from tools.transcription_tools import transcribe_audio
+
+    return transcribe_audio
+
+
+async def _publish_transcript(
+    *,
+    bot: Any,
+    adapter: Any,
+    message: Any,
+    transcript: str,
+    cleanup_fn: Callable[..., Any] | None,
+    llm: Any,
+) -> tuple[str, TranscriptCaptionOutcome]:
+    final_text = await _cleanup_transcript(transcript, llm=llm, cleanup_fn=cleanup_fn)
+    caption_outcome = await _try_attach_transcript_caption(bot=bot, message=message, transcript=final_text)
+    if caption_outcome is TranscriptCaptionOutcome.REPLY_FALLBACK:
+        await _send_transcript_messages(
+            bot=bot,
+            adapter=adapter,
+            message=message,
+            texts=_format_transcript_messages(final_text),
+        )
+    return final_text, caption_outcome
+
+
+async def _process_business_audio_file(
+    *,
+    message: Any,
+    adapter: Any,
+    bot: Any,
+    transcribe_fn: Callable[[str], dict[str, Any]] | None,
+    cleanup_fn: Callable[..., Any] | None,
+    llm: Any,
+) -> None:
+    """Gate and transcribe a candidate attached audio file using a speech-prefix heuristic."""
+    payload = _audio_file_payload(message)
+    if payload is None:
+        return
+    media, media_label = payload
+    if _audio_file_has_music_tags(media):
+        logger.info("%s: rejected business %s with explicit title/performer music tags", _PLUGIN_NAME, media_label)
+        return
+    max_duration, max_bytes, probe_seconds, min_words = _audio_file_limits()
+    file_size = _get(media, "file_size")
+    try:
+        file_size = int(file_size)
+    except (TypeError, ValueError):
+        file_size = 0
+    if file_size <= 0 or file_size > max_bytes:
+        logger.info("%s: rejected business %s due to unsafe file-size metadata", _PLUGIN_NAME, media_label)
+        return
+
+    duration_metadata = _get(media, "duration")
+    try:
+        duration = float(duration_metadata)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if not math.isfinite(duration) or duration < 0:
+        duration = 0.0
+    if duration > max_duration:
+        logger.info("%s: rejected business %s due to duration metadata", _PLUGIN_NAME, media_label)
+        return
+
+    path = _cache_path_for(message)
+    probe_path = path.with_name(f"{path.stem}.probe.wav")
+    normalized_path = path.with_name(f"{path.stem}.full.wav")
+    try:
+        await _download_voice(message, path)
+        if path.stat().st_size <= 0 or path.stat().st_size > max_bytes:
+            return
+        if duration <= 0:
+            duration = await asyncio.to_thread(_local_audio_duration, path)
+            if duration is None or duration > max_duration:
+                return
+
+        extracted = await asyncio.to_thread(_extract_audio_probe, path, probe_path, probe_seconds)
+        if not extracted:
+            return
+        transcriber = _resolve_transcriber(transcribe_fn)
+        probe_result = await asyncio.to_thread(transcriber, str(probe_path))
+        if not isinstance(probe_result, dict) or not probe_result.get("success"):
+            return
+        probe_transcript = str(probe_result.get("transcript") or "").strip()
+        if not _audio_probe_has_meaningful_speech(probe_transcript, min_words):
+            return
+
+        if duration <= probe_seconds:
+            transcript = probe_transcript
+        else:
+            full_stt_path = path
+            if path.suffix.casefold() not in _DIRECT_STT_AUDIO_EXTENSIONS:
+                normalized = await asyncio.to_thread(_normalize_audio_for_stt, path, normalized_path)
+                if not normalized:
+                    return
+                full_stt_path = normalized_path
+            full_result = await asyncio.to_thread(transcriber, str(full_stt_path))
+            if not isinstance(full_result, dict) or not full_result.get("success"):
+                return
+            transcript = str(full_result.get("transcript") or "").strip()
+            if not transcript:
+                return
+
+        final_text, caption_outcome = await _publish_transcript(
+            bot=bot,
+            adapter=adapter,
+            message=message,
+            transcript=transcript,
+            cleanup_fn=cleanup_fn,
+            llm=llm,
+        )
+        logger.info(
+            "%s: transcribed business %s chat=%s message=%s raw_chars=%d final_chars=%d cleaned=%s caption_outcome=%s",
+            _PLUGIN_NAME,
+            media_label,
+            _safe_part(_get(_get(message, "chat"), "id", "")),
+            _safe_part(_get(message, "message_id", "")),
+            len(transcript),
+            len(final_text),
+            final_text != transcript,
+            caption_outcome.value,
+        )
+    except Exception as exc:
+        logger.warning("%s: business attached-audio handling failed: %s", _PLUGIN_NAME, exc, exc_info=True)
+    finally:
+        for transient_path in (probe_path, normalized_path, path):
+            try:
+                transient_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("%s: failed to remove transient media: %s", _PLUGIN_NAME, exc)
+
+
 async def _process_business_voice_event(
     *,
     event: Any,
@@ -1572,14 +1957,20 @@ async def _process_business_voice_event(
 
     media_payload = _transcribable_payload(message)
     media_label = media_payload[1] if media_payload else "media"
+    if media_label in {"audio", "audio_document"}:
+        await _process_business_audio_file(
+            message=message,
+            adapter=adapter,
+            bot=bot,
+            transcribe_fn=transcribe_fn,
+            cleanup_fn=cleanup_fn,
+            llm=llm,
+        )
+        return
     path = _cache_path_for(message)
     try:
         await _download_voice(message, path)
-        transcriber = transcribe_fn
-        if transcriber is None:
-            from tools.transcription_tools import transcribe_audio
-
-            transcriber = transcribe_audio
+        transcriber = _resolve_transcriber(transcribe_fn)
         result = await asyncio.to_thread(transcriber, str(path))
         if not isinstance(result, dict) or not result.get("success"):
             error = result.get("error", "unknown STT error") if isinstance(result, dict) else "invalid STT result"
@@ -1592,11 +1983,14 @@ async def _process_business_voice_event(
             logger.info("%s: empty transcript for %s", _PLUGIN_NAME, path)
             return
 
-        final_text = await _cleanup_transcript(transcript, llm=llm, cleanup_fn=cleanup_fn)
-        caption_outcome = await _try_attach_transcript_caption(bot=bot, message=message, transcript=final_text)
-        if caption_outcome is TranscriptCaptionOutcome.REPLY_FALLBACK:
-            texts = _format_transcript_messages(final_text)
-            await _send_transcript_messages(bot=bot, adapter=adapter, message=message, texts=texts)
+        final_text, caption_outcome = await _publish_transcript(
+            bot=bot,
+            adapter=adapter,
+            message=message,
+            transcript=transcript,
+            cleanup_fn=cleanup_fn,
+            llm=llm,
+        )
         logger.info(
             "%s: transcribed business %s chat=%s message=%s raw_chars=%d final_chars=%d cleaned=%s caption_outcome=%s",
             _PLUGIN_NAME,
@@ -1624,8 +2018,22 @@ def _voice_module_enabled() -> bool:
     return not _disabled()
 
 
+def _is_audio_file_metadata(media: MediaMetadata | None) -> bool:
+    if media is None:
+        return False
+    if media.kind == "audio":
+        return True
+    if media.kind != "document":
+        return False
+    mime_type = str(media.mime_type or "").strip().casefold()
+    suffix = Path(str(media.file_name or "")).suffix.casefold()
+    return mime_type.startswith("audio/") or suffix in _AUDIO_DOCUMENT_EXTENSIONS
+
+
 def _route_voice_module(event: TelegramBusinessEvent, context: ModuleContext) -> ModuleResult:
-    if event.media is None or event.media.kind not in {"voice", "video_note"}:
+    is_voice_note = event.media is not None and event.media.kind in {"voice", "video_note"}
+    is_audio_file = _is_audio_file_metadata(event.media)
+    if not is_voice_note and not is_audio_file:
         return ModuleResult.pass_through()
     if event.update_type == "edited_message":
         return ModuleResult.handled("telegram_business_voice_media_edit_ignored")

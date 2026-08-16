@@ -62,6 +62,11 @@ def isolate_plugin_environment(monkeypatch: pytest.MonkeyPatch):
         "TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS",
         "TG_BUSINESS_VOICE_TITLE_MIN_CHARS",
         "TG_BUSINESS_VOICE_TITLE_MIN_WORDS",
+        "TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS",
+        "TG_BUSINESS_AUDIO_FILE_MAX_BYTES",
+        "TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS",
+        "TG_BUSINESS_AUDIO_FILE_MIN_WORDS",
+        "HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -201,15 +206,37 @@ def make_event(message, *, platform=None):
     )
 
 
+def make_audio_file_message(
+    *,
+    media_kind: str = "audio",
+    mime_type: str | None = "audio/mpeg",
+    file_name: str | None = "recording.m4a",
+    file_size: int | None = 1_258_906,
+    duration: int | None = 75,
+    business_id: str | None = "business-123",
+    title: str | None = None,
+    performer: str | None = None,
+):
+    message = make_message(media_kind=media_kind, business_id=business_id)
+    media = getattr(message, media_kind)
+    media.mime_type = mime_type
+    media.file_name = file_name
+    media.file_size = file_size
+    media.duration = duration
+    media.title = title
+    media.performer = performer
+    return message
+
+
 def test_manifest_uses_current_fields():
     manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text(encoding="utf-8"))
     assert manifest == {
         "manifest_version": 1,
         "name": LEGACY_PLUGIN_ID,
-        "version": "0.6.2",
+        "version": "0.7.0",
         "description": (
-            "Update-persistent Hermes Telegram Business integration with voice and video-note transcription, "
-            "configurable transcript enrichment, and Business-scoped replies."
+            "Update-persistent Hermes Telegram Business integration with voice, video-note, and attached-audio "
+            "transcription, configurable transcript enrichment, and Business-scoped replies."
         ),
         "author": "neoromantic",
         "kind": "standalone",
@@ -221,10 +248,10 @@ def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "hermes-telegram-business"
-    assert metadata["version"] == "0.6.2"
+    assert metadata["version"] == "0.7.0"
     assert metadata["description"] == (
-        "Update-persistent Telegram Business integration for Hermes Agent with voice and video-note "
-        "transcription and Business-scoped replies."
+        "Update-persistent Telegram Business integration for Hermes Agent with voice, video-note, and "
+        "attached-audio transcription and Business-scoped replies."
     )
     assert metadata["urls"] == {
         "Homepage": CANONICAL_REPOSITORY,
@@ -1683,3 +1710,312 @@ async def test_only_first_chunk_replies_to_original_message(plugin):
         ("expandable_blockquote", 0, 5),
         ("expandable_blockquote", 0, 6),
     ]
+
+@pytest.mark.parametrize(
+    ("media_kind", "mime_type", "file_name", "label", "suffix"),
+    [
+        ("audio", "application/octet-stream", None, "audio", ".audio"),
+        ("document", "audio/mpeg", "recording.m4a", "audio_document", ".m4a"),
+        ("document", "application/octet-stream", "VOICE.MP3", "audio_document", ".mp3"),
+    ],
+)
+def test_recognizes_attached_audio_candidates(plugin, media_kind, mime_type, file_name, label, suffix):
+    message = make_audio_file_message(media_kind=media_kind, mime_type=mime_type, file_name=file_name)
+
+    assert plugin._business_voice_message(make_event(message)) is message
+    payload, actual_label, actual_suffix = plugin._transcribable_payload(message)
+    assert payload is getattr(message, media_kind)
+    assert (actual_label, actual_suffix) == (label, suffix)
+    normalized = plugin._normalize_business_event(make_event(message))
+    assert normalized is not None
+    assert plugin._is_audio_file_metadata(normalized.media)
+
+
+@pytest.mark.parametrize(
+    ("media_kind", "mime_type", "file_name"),
+    [
+        ("document", "application/pdf", "notes.pdf"),
+        ("document", "video/mp4", "clip.mp4"),
+        ("video", "video/mp4", "recording.m4a"),
+    ],
+)
+def test_rejects_generic_documents_and_video_as_audio(plugin, media_kind, mime_type, file_name):
+    message = make_audio_file_message(media_kind=media_kind, mime_type=mime_type, file_name=file_name)
+
+    assert plugin._audio_file_payload(message) is None
+    assert plugin._business_voice_message(make_event(message)) is None
+    assert plugin._on_pre_gateway_dispatch(event=make_event(message), gateway=SimpleNamespace()) is None
+
+
+def test_adapter_auth_bypass_includes_only_business_audio_candidates(plugin, monkeypatch):
+    telegram_adapter, _ = _install_fake_telegram_adapter(monkeypatch)
+    plugin._install_telegram_adapter_compat()
+    adapter = telegram_adapter.TelegramAdapter()
+    audio = make_audio_file_message(media_kind="audio")
+    audio_document = make_audio_file_message(media_kind="document")
+    generic_document = make_audio_file_message(
+        media_kind="document", mime_type="application/pdf", file_name="notes.pdf"
+    )
+
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH", "1")
+    assert adapter._is_user_authorized_from_message(audio) is True
+    assert adapter._is_user_authorized_from_message(audio_document) is True
+    assert adapter._is_user_authorized_from_message(generic_document) is False
+    assert adapter._is_user_authorized_from_message(make_audio_file_message(business_id=None)) is False
+
+
+@pytest.mark.asyncio
+async def test_hook_claims_oversized_audio_candidate_and_suppresses_duplicate(plugin):
+    message = make_audio_file_message(file_size=plugin._DEFAULT_AUDIO_FILE_MAX_BYTES + 1)
+    event = make_event(message)
+    processed = asyncio.Event()
+    process = AsyncMock(side_effect=lambda **_kwargs: processed.set())
+    plugin._process_business_voice_event = process
+
+    first = plugin._on_pre_gateway_dispatch(event=event, gateway=SimpleNamespace())
+    second = plugin._on_pre_gateway_dispatch(event=event, gateway=SimpleNamespace())
+    await asyncio.wait_for(processed.wait(), timeout=1)
+
+    assert first == {"action": "skip", "reason": "telegram_business_voice_media_transcribed"}
+    assert second == {"action": "skip", "reason": "telegram_business_voice_media_duplicate"}
+    process.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("file_size", "duration"),
+    [
+        (None, 75),
+        (0, 75),
+        (20 * 1024 * 1024 + 1, 75),
+        (1_258_906, 301),
+    ],
+)
+async def test_attached_audio_known_metadata_rejects_before_download_or_stt(
+    plugin, file_size, duration
+):
+    message = make_audio_file_message(file_size=file_size, duration=duration)
+    media = message.audio
+    event = make_event(message)
+    bot = FakeBot()
+    gateway = SimpleNamespace(adapters={event.source.platform: FakeAdapter(bot)})
+    stt_calls = []
+
+    await plugin._process_business_voice_event(
+        event=event,
+        gateway=gateway,
+        transcribe_fn=lambda path: stt_calls.append(path),
+    )
+
+    assert media.get_file_calls == 0
+    assert stt_calls == []
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_missing_duration_uses_ffprobe_then_speech_probe_and_full_stt(plugin, monkeypatch):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    message = make_audio_file_message(duration=None)
+    event = make_event(message)
+    bot = FakeBot()
+    gateway = SimpleNamespace(adapters={event.source.platform: FakeAdapter(bot)})
+    observed_paths = []
+    probed = []
+
+    def determine_duration(path):
+        probed.append(path)
+        return 75.0
+
+    def extract(source, destination, seconds):
+        assert source.exists()
+        assert seconds == 10
+        destination.write_bytes(b"probe bytes")
+        return True
+
+    def transcribe(path):
+        observed_paths.append(Path(path))
+        if Path(path).suffix == ".wav":
+            return {"success": True, "transcript": "hello there friend"}
+        return {"success": True, "transcript": "Full attached audio transcript"}
+
+    monkeypatch.setattr(plugin, "_local_audio_duration", determine_duration)
+    monkeypatch.setattr(plugin, "_extract_audio_probe", extract)
+    await plugin._process_business_voice_event(event=event, gateway=gateway, transcribe_fn=transcribe)
+
+    assert len(probed) == 1
+    assert [path.suffix for path in observed_paths] == [".wav", ".m4a"]
+    assert all(not path.exists() for path in observed_paths)
+    assert message.audio.get_file_calls == 1
+    assert bot.calls[0]["text"] == "🎙️ Full attached audio transcript"
+
+
+@pytest.mark.asyncio
+async def test_unknown_duration_fails_closed_and_cleans_download(plugin, monkeypatch):
+    message = make_audio_file_message(duration=None)
+    event = make_event(message)
+    bot = FakeBot()
+    gateway = SimpleNamespace(adapters={event.source.platform: FakeAdapter(bot)})
+    download_path = None
+
+    def unknown_duration(path):
+        nonlocal download_path
+        download_path = Path(path)
+
+    monkeypatch.setattr(plugin, "_local_audio_duration", unknown_duration)
+    transcribe = AsyncMock()
+    await plugin._process_business_voice_event(event=event, gateway=gateway, transcribe_fn=transcribe)
+
+    assert download_path is not None and not download_path.exists()
+    assert message.audio.get_file_calls == 1
+    transcribe.assert_not_called()
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "probe_result",
+    [
+        {"success": True, "transcript": ""},
+        {"success": True, "transcript": "music"},
+        {"success": True, "transcript": "Продолжение следует..."},
+        {"success": False, "error": "stt unavailable"},
+    ],
+)
+async def test_no_meaningful_speech_probe_suppresses_full_stt_and_reply(
+    plugin, monkeypatch, probe_result
+):
+    message = make_audio_file_message(duration=75)
+    event = make_event(message)
+    bot = FakeBot()
+    gateway = SimpleNamespace(adapters={event.source.platform: FakeAdapter(bot)})
+    paths = []
+
+    def extract(_source, destination, _seconds):
+        destination.write_bytes(b"probe")
+        return True
+
+    def transcribe(path):
+        paths.append(Path(path))
+        return probe_result
+
+    monkeypatch.setattr(plugin, "_extract_audio_probe", extract)
+    await plugin._process_business_voice_event(event=event, gateway=gateway, transcribe_fn=transcribe)
+
+    assert len(paths) == 1 and paths[0].suffix == ".wav"
+    assert not paths[0].exists()
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_tagged_music_is_claimed_but_rejected_before_download_or_stt(plugin):
+    message = make_audio_file_message(title="A Song", performer="An Artist")
+    event = make_event(message)
+    bot = FakeBot()
+    gateway = SimpleNamespace(adapters={event.source.platform: FakeAdapter(bot)})
+    stt_calls = []
+
+    await plugin._process_business_voice_event(
+        event=event,
+        gateway=gateway,
+        transcribe_fn=lambda path: stt_calls.append(path),
+    )
+
+    assert message.audio.get_file_calls == 0
+    assert stt_calls == []
+    assert bot.calls == []
+
+
+def test_audio_probe_rejects_common_no_speech_hallucination(plugin):
+    assert not plugin._audio_probe_has_meaningful_speech("Продолжение следует...", 2)
+    assert not plugin._audio_probe_has_meaningful_speech("ла ла ла ла", 3)
+    assert plugin._audio_probe_has_meaningful_speech("Это нормальная человеческая речь", 3)
+    assert plugin._audio_probe_has_meaningful_speech("هذا تسجيل صوتي بشري طبيعي", 3)
+    assert plugin._audio_probe_has_meaningful_speech("यह सामान्य मानवीय भाषण है", 3)
+    assert plugin._audio_probe_has_meaningful_speech("これは普通の人間の音声です", 3)
+
+
+@pytest.mark.asyncio
+async def test_unknown_attached_audio_extension_is_normalized_before_full_stt(plugin, monkeypatch):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    message = make_audio_file_message(mime_type="application/octet-stream", file_name=None, duration=75)
+    event = make_event(message)
+    bot = FakeBot()
+    gateway = SimpleNamespace(adapters={event.source.platform: FakeAdapter(bot)})
+    observed_paths = []
+    normalized_paths = []
+
+    def extract(source, destination, seconds):
+        assert source.suffix == ".audio"
+        destination.write_bytes(b"probe bytes")
+        return True
+
+    def normalize(source, destination):
+        assert source.suffix == ".audio"
+        destination.write_bytes(b"normalized bytes")
+        normalized_paths.append(destination)
+        return True
+
+    def transcribe(path):
+        current = Path(path)
+        observed_paths.append(current)
+        if current.name.endswith(".probe.wav"):
+            return {"success": True, "transcript": "hello there friend"}
+        return {"success": True, "transcript": "Full normalized audio transcript"}
+
+    monkeypatch.setattr(plugin, "_extract_audio_probe", extract)
+    monkeypatch.setattr(plugin, "_normalize_audio_for_stt", normalize)
+    await plugin._process_business_voice_event(event=event, gateway=gateway, transcribe_fn=transcribe)
+
+    assert [path.name.endswith(suffix) for path, suffix in zip(observed_paths, (".probe.wav", ".full.wav"))] == [
+        True,
+        True,
+    ]
+    assert normalized_paths and all(not path.exists() for path in normalized_paths)
+    assert all(not path.exists() for path in observed_paths)
+    assert bot.calls[0]["text"] == "🎙️ Full normalized audio transcript"
+
+
+@pytest.mark.asyncio
+async def test_short_attached_audio_reuses_probe_transcript_and_cleans_both_files(plugin, monkeypatch):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    message = make_audio_file_message(duration=8)
+    event = make_event(message)
+    bot = FakeBot()
+    gateway = SimpleNamespace(adapters={event.source.platform: FakeAdapter(bot)})
+    paths = []
+    original_path = None
+
+    def extract(source, destination, seconds):
+        nonlocal original_path
+        original_path = Path(source)
+        assert seconds == 10
+        destination.write_bytes(b"complete probe")
+        return True
+
+    def transcribe(path):
+        paths.append(Path(path))
+        return {"success": True, "transcript": "short spoken transcript"}
+
+    monkeypatch.setattr(plugin, "_extract_audio_probe", extract)
+    await plugin._process_business_voice_event(event=event, gateway=gateway, transcribe_fn=transcribe)
+
+    assert len(paths) == 1 and paths[0].suffix == ".wav"
+    assert original_path is not None and not original_path.exists()
+    assert not paths[0].exists()
+    assert bot.calls[0]["text"] == "🎙️ short spoken transcript"
+
+
+def test_audio_file_env_defaults_and_bounds(plugin, monkeypatch):
+    assert plugin._audio_file_limits() == (300, 20 * 1024 * 1024, 10, 3)
+
+    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS", "not-a-number")
+    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_BYTES", "0")
+    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS", "999")
+    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MIN_WORDS", "-1")
+    assert plugin._audio_file_limits() == (300, 20 * 1024 * 1024, 10, 3)
+
+    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS", "5")
+    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_BYTES", "1048576")
+    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS", "10")
+    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MIN_WORDS", "3")
+    assert plugin._audio_file_limits() == (5, 1024 * 1024, 5, 3)

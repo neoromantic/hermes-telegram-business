@@ -3,14 +3,14 @@
 [![test](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml/badge.svg)](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integration for Telegram Business. Its first and currently shipped module turns voice messages and round video notes into text without spending a full agent turn.
+An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integration for Telegram Business. Its first and currently shipped module turns voice messages, round video notes, and conservatively recognized attached audio files into text without spending a full agent turn.
 
 ## Current module: voice transcription
 
-1. Intercepts a Telegram `voice` or `video_note` update at `pre_gateway_dispatch`.
+1. Intercepts a Telegram `voice`, `video_note`, `audio`, or conservatively identified audio `document` update at `pre_gateway_dispatch`; generic documents and video pass through.
 2. Requires a real Telegram Business connection and preserves its `business_connection_id`.
 3. Returns `action: skip` so the ordinary auth/agent path does not process the media.
-4. Downloads the media transiently and delegates speech recognition to Hermes's configured `transcribe_audio` backend.
+4. Downloads the media transiently and delegates speech recognition to Hermes's configured `transcribe_audio` backend. Attached files must have safe byte/duration metadata, are locally duration-checked when needed, and pass a short mono/16 kHz speech-presence probe before full transcription.
 5. Optionally asks the host-owned `ctx.llm` facade for conservative proofreading or opt-in readable enrichment with filler removal, paragraphing, lists, and long-note titles.
 6. When an enriched candidate trips a quality signal, retries once with the exact validator feedback instead of discarding the edit; raw STT remains only the catastrophic/failure fallback.
 7. For a short outgoing Business message, appends the transcript to the original voice/video-note caption as an expandable blockquote, retrying the same caption as plain text when Telegram rejects the new entity type.
@@ -20,7 +20,7 @@ Handled updates are identified from stable Telegram Business connection, chat, u
 
 ## Roadmap
 
-The broader product direction includes operator or CRM integration adapters and opt-in automation modules. The small event/module boundary is now implemented; those product integrations are still planned extension points, not implemented features in `0.6.2`.
+The broader product direction includes operator or CRM integration adapters and opt-in automation modules. The small event/module boundary is now implemented; those product integrations are still planned extension points, not implemented features in `0.7.0`.
 
 ## Requirements
 
@@ -28,6 +28,7 @@ The broader product direction includes operator or CRM integration adapters and 
 - Python 3.11 or newer.
 - A configured Telegram gateway with a Telegram Business connection.
 - A working Hermes STT provider. Configure it with `hermes setup` or the [`stt` settings](https://hermes-agent.nousresearch.com/docs/user-guide/configuration).
+- `ffprobe` and `ffmpeg` on `PATH` for attached-audio duration fallback and prefix extraction. Voice messages and video notes do not use these gates.
 
 Telegram Business voice/video notes can originate from users outside the ordinary DM allowlist. Enable the plugin's narrowly scoped adapter bypass so those updates can reach its hook:
 
@@ -35,9 +36,9 @@ Telegram Business voice/video notes can originate from users outside the ordinar
 HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH=1
 ```
 
-At registration time the plugin installs a small, idempotent compatibility shim around Hermes's bundled Telegram adapter. It recognizes Business `effective_message` updates, registers round video notes with the media handler, and applies the bypass only when both a real `business_connection_id` and a `voice`/`video_note` payload are present. It does not bypass auth for ordinary messages or other media. Because the shim belongs to this profile-scoped user plugin rather than the Hermes checkout, a normal `hermes update` neither removes it nor creates a core patch conflict.
+At registration time the plugin installs a small, idempotent compatibility shim around Hermes's bundled Telegram adapter. It recognizes Business `effective_message` updates, registers round video notes with the media handler, and applies the bypass only when both a real `business_connection_id` and a supported `voice`, `video_note`, explicit `audio`, or conservatively identified audio-document payload are present. It does not bypass auth for ordinary messages, generic documents, or video. Because the shim belongs to this profile-scoped user plugin rather than the Hermes checkout, a normal `hermes update` neither removes it nor creates a core patch conflict.
 
-The plugin itself intentionally handles every voice/video note delivered through the bot's Business connections; it has no separate sender allowlist.
+The plugin itself intentionally handles every supported voice/video/audio attachment delivered through the bot's Business connections; it has no separate sender allowlist. Every candidate attached audio file is claimed even when its safety gate or speech probe rejects it, so it never falls into the ordinary agent path.
 
 ## Compatibility and identity
 
@@ -92,8 +93,14 @@ All plugin variables are optional.
 | `TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS` | `1` | Minimum word count for cleanup. |
 | `TG_BUSINESS_VOICE_TITLE_MIN_CHARS` | `700` | Add an enriched-mode title at this transcript length. |
 | `TG_BUSINESS_VOICE_TITLE_MIN_WORDS` | `120` | Add an enriched-mode title at this word count. |
+| `TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS` | `300` | Maximum attached-audio duration; bounded to 1–3600 seconds. |
+| `TG_BUSINESS_AUDIO_FILE_MAX_BYTES` | `20971520` | Maximum attached-audio size; bounded to 1024–104857600 bytes. Missing or zero metadata is rejected before download. |
+| `TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS` | `10` | Prefix duration extracted locally for speech probing; bounded to 1–60 seconds and capped at the configured maximum duration. |
+| `TG_BUSINESS_AUDIO_FILE_MIN_WORDS` | `3` | Minimum lexical words in the probe transcript; bounded to 1–20. Continuous-script text uses an equivalent conservative letter threshold. |
 
 Boolean values accept `1`, `true`, `yes`, or `on` (case-insensitive).
+
+Attached-audio probing is deliberately a conservative speech-presence heuristic, not a perfect content classifier. Empty/failed STT, degenerate text, common no-speech hallucinations, or too little lexical content suppresses full transcription. Telegram audio tracks carrying both title and performer tags are treated as music and skipped. Untagged music with clearly recognized vocals can still be a false positive and proceed to full STT. Files no longer than the probe window reuse the successful probe transcript rather than making a duplicate STT call.
 
 ### LLM trust gate
 
@@ -127,8 +134,10 @@ Telegram gateway event
        -> pass_through: try next module / ordinary Hermes path
        -> handled: duplicate guard + action: skip (no agent turn)
   -> asynchronous module work
-  -> voice module: transient download
-  -> Hermes transcribe_audio (configured host STT)
+  -> voice/video note: unchanged transient download -> full STT
+  -> attached audio: metadata gate -> transient download -> ffprobe fallback -> ffmpeg prefix probe
+  -> unsupported attached-audio container: transient mono/16 kHz WAV normalization
+  -> Hermes transcribe_audio (configured host STT; probe first for attached files)
   -> optional ctx.llm structured cleanup
   -> style-aware quality signals / one feedback repair / catastrophic-only raw fallback
   -> short outgoing message: edit_message_caption(..., caption_entities=[expandable], business_connection_id=...)
@@ -141,7 +150,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 
 ## Privacy and security
 
-- Voice/video data is written only to the active Hermes profile's cache while it is processed. The newly created file is deleted in a `finally` block after success or failure.
+- Voice/video/audio data is written only to the active Hermes profile's cache while it is processed. The newly created download, attached-audio probe, and any normalized full-file WAV are deleted in a `finally` block after success or failure.
 - The configured STT backend receives the media. Depending on your Hermes configuration, that backend may be local or external.
 - When cleanup is enabled, the configured host LLM receives the transcript. The system prompt treats transcript contents as untrusted data and forbids following embedded instructions.
 - The plugin does not log transcript text. Operational logs include media type, message/chat identifiers, character counts, and errors.
@@ -151,13 +160,14 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 
 ## Failure behavior
 
-- Non-Telegram, non-Business, and non-voice/video events pass through untouched.
+- Non-Telegram, non-Business, generic-document, and video events pass through untouched.
 - Disabled and pass-through modules do not consume the event's duplicate identity.
 - A module enable/route exception is logged and contained, and later modules still receive the event.
 - Background module exceptions are contained and cannot crash the gateway.
 - Missing bot or Business connection data stops processing without invoking an agent.
 - STT failure sends nothing unless error replies are enabled.
 - Empty STT output sends nothing.
+- Attached audio with missing/zero/oversize byte metadata, excessive known duration, unknown local duration, probe extraction/STT failure, or no meaningful probe speech is silently suppressed after being claimed; it never invokes the agent path.
 - An initial cleanup call that times out or is denied by the trust gate falls back to raw STT. In `enriched` mode, any returned candidate that trips quality signals gets one feedback repair; after that, soft misses still use an edited candidate while catastrophic output falls back to raw STT.
 - Caption direction checks, length checks, edit-window checks, and definite caption-edit rejections fall back to a separate expandable transcript reply.
 - A recognized unsupported-entity response retries the selected caption or reply surface once without the new entity; PTB `BadRequest` counts as a definite caption rejection unless it is the recognized not-modified or unsupported-entity case, while `TimedOut`, other `NetworkError` failures, and unrelated exceptions suppress the reply fallback to avoid duplicates.

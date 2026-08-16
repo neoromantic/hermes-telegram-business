@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-08-16
+
+- Add Telegram Business `audio` and conservatively identified audio-document transcription while leaving voice/video-note processing unchanged.
+- Claim every candidate attached audio before the normal agent path, including files rejected by metadata, duration, local probing, or speech-presence checks.
+- Enforce bounded 300-second and 20 MiB defaults, reject unsafe byte metadata before download, and use local `ffprobe` duration fallback.
+- Extract a bounded 10-second mono/16 kHz prefix with `ffmpeg`; require conservative lexical content (three-word default with continuous-script handling); reject degenerate/common no-speech hallucinations and explicitly title/performer-tagged music before full transcription; short files reuse the probe transcript.
+- Normalize attached-audio containers unsupported by the host STT extension gate to transient mono/16 kHz WAV and recognize Unicode speech tokens beyond Latin/Cyrillic scripts.
+- Delete the transient download, probe, and any normalized full-file WAV on every path; document that recognized vocals can produce a heuristic false positive.
+- Extend the opt-in Business adapter auth bypass only to the same attached-audio candidates.
 - Retry enriched cleanup once with exact validator feedback instead of immediately discarding the edit.
 - Treat substantial shortening, including roughly half-length output, as a quality signal rather than automatic failure; after the retry, fall back to raw STT only for catastrophic candidates.
 - Isolate cleanup environment variables in unit tests so live deployment overrides cannot corrupt default-behavior assertions.
