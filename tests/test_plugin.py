@@ -245,7 +245,7 @@ def test_manifest_uses_current_fields():
     assert manifest == {
         "manifest_version": 1,
         "name": LEGACY_PLUGIN_ID,
-        "version": "0.7.1",
+        "version": "0.7.2",
         "description": (
             "Update-persistent Hermes Telegram Business integration with voice, video-note, and attached-audio "
             "transcription, configurable transcript enrichment, and Business-scoped replies."
@@ -260,7 +260,7 @@ def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "hermes-telegram-business"
-    assert metadata["version"] == "0.7.1"
+    assert metadata["version"] == "0.7.2"
     assert metadata["description"] == (
         "Update-persistent Telegram Business integration for Hermes Agent with voice, video-note, and "
         "attached-audio transcription and Business-scoped replies."
@@ -1533,6 +1533,194 @@ def test_enriched_guard_rejects_dropped_negation_and_relationship_observation(
     assert not plugin._cleanup_is_safe_after_retry(raw, lossy)
 
 
+def test_enriched_guard_rejects_positive_relationship_clause_omission(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "Слушай хотел извиниться за вчерашнюю ерунду и спокойно объяснить почему так вышло. "
+        "Ещё я вспомнил что тебя раздражают извинения. Поэтому я не хотел затягивать разговор "
+        "но всё равно считал важным признать что поступил глупо и принёс тебе это в плохой форме."
+    )
+    lossy = raw.replace("Ещё я вспомнил что тебя раздражают извинения. ", "")
+
+    assert len(plugin._lexical_words(lossy)) / len(plugin._lexical_words(raw)) > 0.80
+    reasons = plugin._cleanup_enriched_rejection_reasons(raw, lossy)
+    assert any("contiguous source span" in reason for reason in reasons)
+    assert not plugin._cleanup_is_acceptable(raw, lossy)
+
+
+def test_enriched_guard_rejects_relationship_clause_replaced_with_unrelated_words(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "Слушай хотел извиниться за вчерашнюю ерунду и спокойно объяснить почему так вышло. "
+        "Ещё я вспомнил что тебя раздражают извинения. Поэтому я не хотел затягивать разговор "
+        "но всё равно считал важным признать что поступил глупо и принёс тебе это в плохой форме."
+    )
+    unrelated = raw.replace(
+        "Ещё я вспомнил что тебя раздражают извинения.",
+        "На ужин я купил свежие овощи домой.",
+    )
+
+    reasons = plugin._cleanup_enriched_rejection_reasons(raw, unrelated)
+    assert any("contiguous source span" in reason for reason in reasons)
+    assert not plugin._cleanup_is_acceptable(raw, unrelated)
+
+
+def test_enriched_guard_rejects_complete_two_word_clause_deletion(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "We reviewed the entire project plan with the team and agreed to preserve every important detail. "
+        "Alice resigned. Then we documented the remaining deadlines dependencies risks owners and next steps "
+        "for everyone involved in the work."
+    )
+    lossy = raw.replace("Alice resigned. ", "")
+
+    assert not plugin._cleanup_is_acceptable(raw, lossy)
+
+
+def test_enriched_guard_rejects_standalone_affirmative_clause_deletion(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "Мы подробно обсудили весь план и проверили каждую важную деталь вместе с командой. "
+        "Ну да. После этого мы записали сроки риски зависимости ответственных и следующие шаги "
+        "для всех участников проекта."
+    )
+    lossy = raw.replace("Ну да. ", "")
+
+    assert not plugin._cleanup_is_acceptable(raw, lossy)
+
+
+def test_enriched_guard_rejects_truncated_prefix_at_retention_floor(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = " ".join(f"слово{i}" for i in range(100))
+    truncated = " ".join(f"слово{i}" for i in range(80)) + "\n\n"
+
+    reasons = plugin._cleanup_enriched_rejection_reasons(raw, truncated)
+    assert any("contiguous source span" in reason for reason in reasons)
+    assert not plugin._cleanup_is_acceptable(raw, truncated)
+
+
+def test_enriched_guard_canonicalizes_equivalent_english_negation_forms(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = "I can not attend the meeting tomorrow because I already have another appointment at that exact time"
+    cleaned = "I can't attend the meeting tomorrow because I already have another appointment at that exact time"
+
+    reasons = plugin._cleanup_enriched_rejection_reasons(raw, cleaned)
+    assert not any("negation" in reason for reason in reasons)
+
+    do_not = "I do not attend meetings without an agenda because I need time to prepare the exact decisions"
+    contraction = "I don't attend meetings without an agenda because I need time to prepare the exact decisions"
+    contraction_reasons = plugin._cleanup_enriched_rejection_reasons(do_not, contraction)
+    assert not any("negation" in reason for reason in contraction_reasons)
+
+
+def test_enriched_guard_allows_numeric_hyphenation(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = "Это был 15 летний план который подробно описывал все этапы сроки риски и обязанности команды"
+    cleaned = "Это был 15-летний план, который подробно описывал все этапы, сроки, риски и обязанности команды."
+
+    assert plugin._cleanup_is_acceptable(raw, cleaned)
+
+
+def test_enriched_guard_preserves_negation_identity_across_clauses(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = (
+        "I have no objection to Alice leading the project and I do not expect any serious problem "
+        "with her plan"
+    )
+    inverted = (
+        "I strongly believe Alice must never lead the project and I do not expect any serious problem "
+        "with her plan"
+    )
+
+    reasons = plugin._cleanup_enriched_rejection_reasons(raw, inverted)
+    assert any("negation" in reason for reason in reasons)
+
+
+def test_enriched_guard_allows_exact_duplicate_removal_and_moved_words(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw_duplicate = (
+        "Нам сегодня нужна важная сложная задача важная сложная задача и после неё надо спокойно "
+        "проверить каждый результат вместе с командой чтобы ничего полезного не потерять в итоговом тексте"
+    )
+    deduplicated = raw_duplicate.replace("важная сложная задача важная сложная задача", "важная сложная задача")
+    raw_move = (
+        "Сначала запишем первый красный вариант затем второй синий вариант потом третий зелёный вариант "
+        "и после этого внимательно сравним все ограничения сроки зависимости и последствия для команды"
+    )
+    moved = raw_move.replace(
+        "первый красный вариант затем второй синий вариант потом третий зелёный вариант",
+        "третий зелёный вариант затем первый красный вариант потом второй синий вариант",
+    )
+    triple = (
+        "Нужно сохранить alpha beta gamma alpha beta gamma alpha beta gamma и затем подробно "
+        "описать каждый следующий этап проекта сроки риски зависимости решения и ответственных участников"
+    )
+    triple_deduplicated = triple.replace(
+        "alpha beta gamma alpha beta gamma alpha beta gamma",
+        "alpha beta gamma",
+    )
+    quadruple = triple.replace(
+        "alpha beta gamma alpha beta gamma alpha beta gamma",
+        "alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+    )
+    quadruple_deduplicated = quadruple.replace(
+        "alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+        "alpha beta gamma",
+    )
+    long_phrase = " ".join(f"term{i}" for i in range(13))
+    long_duplicate = (
+        f"Нужно сохранить {long_phrase} {long_phrase} и затем подробно описать каждый следующий этап "
+        "проекта сроки риски зависимости решения и ответственных участников без сокращений"
+    )
+    long_deduplicated = long_duplicate.replace(f"{long_phrase} {long_phrase}", long_phrase)
+
+    assert plugin._cleanup_is_acceptable(raw_duplicate, deduplicated)
+    assert plugin._cleanup_is_acceptable(raw_move, moved)
+    assert plugin._cleanup_is_acceptable(triple, triple_deduplicated)
+    assert plugin._cleanup_is_acceptable(quadruple, quadruple_deduplicated)
+    assert plugin._cleanup_is_acceptable(long_duplicate, long_deduplicated)
+
+
+def test_enriched_guard_allows_large_moved_intact_blocks(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    first = " ".join(f"alpha{i}" for i in range(12))
+    second = " ".join(f"beta{i}" for i in range(12))
+    raw = f"{first} {second}"
+    moved = f"{second} {first}"
+
+    assert plugin._cleanup_is_acceptable(raw, moved)
+
+
 @pytest.mark.asyncio
 async def test_rejected_enriched_cleanup_is_retried_with_validator_feedback(
     plugin,
@@ -1602,6 +1790,57 @@ async def test_two_lossy_enriched_candidates_fall_back_to_raw(
     result = await plugin._cleanup_transcript(raw, llm=FakeLlm())
 
     assert result == raw
+
+
+@pytest.mark.asyncio
+async def test_structure_only_repair_miss_keeps_faithful_enriched_text(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = " ".join(f"мысль{i}" for i in range(85))
+    cleaned = raw + "."
+
+    class FakeLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def acomplete_structured(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(parsed={"text": cleaned}, text="")
+
+    llm = FakeLlm()
+    result = await plugin._cleanup_transcript(raw, llm=llm)
+
+    assert result == cleaned
+    assert llm.calls == 2
+    assert plugin._cleanup_is_safe_after_retry(raw, cleaned)
+
+
+@pytest.mark.asyncio
+async def test_structure_only_first_candidate_falls_back_to_raw_when_repair_fails(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    raw = " ".join(f"мысль{i}" for i in range(85))
+    cleaned = raw + "."
+
+    class FakeLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def acomplete_structured(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(parsed={"text": cleaned}, text="")
+            raise TimeoutError("repair timed out")
+
+    llm = FakeLlm()
+    result = await plugin._cleanup_transcript(raw, llm=llm)
+
+    assert result == raw
+    assert llm.calls == 2
 
 
 @pytest.mark.asyncio

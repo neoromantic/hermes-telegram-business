@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.2 - 2026-08-16
+
+- Reject locally omitted source clauses and truncated prefixes/suffixes even when aggregate word retention remains above the global floor.
+- Canonicalize equivalent English negation forms such as `can not` and `can't` before polarity-loss checks.
+- Treat missing paragraph breaks as a repairable structure-only signal; after the single repair pass, accept a lexically faithful candidate rather than discarding it as semantically lossy.
+
 ## 0.7.1 - 2026-08-16
 
 - Make enriched cleanup fidelity-first: preserve every clause, aside, negation, relationship observation, explanation, and awkward or secondary thought instead of inferring and compressing a main point.

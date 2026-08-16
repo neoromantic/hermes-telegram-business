@@ -20,7 +20,7 @@ Handled updates are identified from stable Telegram Business connection, chat, u
 
 ## Roadmap
 
-The broader product direction includes operator or CRM integration adapters and opt-in automation modules. The small event/module boundary is now implemented; those product integrations are still planned extension points, not implemented features in `0.7.1`.
+The broader product direction includes operator or CRM integration adapters and opt-in automation modules. The small event/module boundary is now implemented; those product integrations are still planned extension points, not implemented features in `0.7.2`.
 
 ## Requirements
 
@@ -119,7 +119,7 @@ plugins:
 
 If the trust gate, provider, or model is unavailable, the plugin logs the cleanup failure and posts the raw STT transcript. To use different environment values, update the allowlists to match. To avoid any LLM call, set `TG_BUSINESS_VOICE_CLEANUP_DISABLE=1`.
 
-`conservative` preserves conversational wording and accepts almost exclusively punctuation, paragraphing, and obvious ASR fixes. `enriched` removes only isolated filler sounds, exact stutters, and exact duplicated fragments; it smooths clear grammar/ASR errors, structures topics into paragraphs or real enumerations into lists, and adds a short title to long notes. It has no shortening target: every clause, aside, negation, qualification, relationship observation, and explanation must survive. Candidates retaining under 80% of source words, dropping numeric or negation tokens, or diverging too far trigger one feedback repair; a still-lossy repair falls back to raw STT.
+`conservative` preserves conversational wording and accepts almost exclusively punctuation, paragraphing, and obvious ASR fixes. `enriched` removes only isolated filler sounds, exact stutters, and exact duplicated fragments; it smooths clear grammar/ASR errors, structures topics into paragraphs or real enumerations into lists, and adds a short title to long notes. It has no shortening target: every clause, aside, negation, qualification, relationship observation, and explanation must survive. Aggregate retention, negation/number checks, and local source-span coverage reject shortened or truncated candidates. Candidates that lose those signals get one feedback repair; if the repair is still semantically lossy, the plugin posts raw STT. A repair that preserves content but misses only paragraph structure remains usable.
 
 ## Current module architecture
 
@@ -168,7 +168,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - STT failure sends nothing unless error replies are enabled.
 - Empty STT output sends nothing.
 - Attached audio with missing/zero/oversize byte metadata, excessive known duration, unknown local duration, probe extraction/STT failure, or no meaningful probe speech is silently suppressed after being claimed; it never invokes the agent path.
-- An initial cleanup call that times out or is denied by the trust gate falls back to raw STT. In `enriched` mode, any returned candidate that trips fidelity signals gets one feedback repair; if the repair still misses any fidelity signal, the raw STT is posted.
+- An initial cleanup call that times out or is denied by the trust gate falls back to raw STT. In `enriched` mode, any returned candidate that trips fidelity signals gets one feedback repair; if the repair still loses semantic content, the raw STT is posted. A repaired candidate whose only remaining miss is paragraph structure is retained.
 - Caption direction checks, length checks, edit-window checks, and definite caption-edit rejections fall back to a separate expandable transcript reply.
 - A recognized unsupported-entity response retries the selected caption or reply surface once without the new entity; PTB `BadRequest` counts as a definite caption rejection unless it is the recognized not-modified or unsupported-entity case, while `TimedOut`, other `NetworkError` failures, and unrelated exceptions suppress the reply fallback to avoid duplicates.
 - A successful caption edit never also sends a transcript reply.

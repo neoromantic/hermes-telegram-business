@@ -125,6 +125,43 @@ _LOSS_SENSITIVE_NEGATION_TOKENS = frozenset(
         "won't",
     }
 )
+_ENRICHED_SOFT_REJECTION_REASONS = frozenset(
+    {"long candidate has no blank-line paragraph breaks"}
+)
+_COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS = frozenset(
+    {
+        "а",
+        "бы",
+        "вот",
+        "да",
+        "же",
+        "и",
+        "как",
+        "короче",
+        "но",
+        "ну",
+        "потому",
+        "слушай",
+        "то",
+        "что",
+        "я",
+        "a",
+        "an",
+        "and",
+        "because",
+        "but",
+        "i",
+        "so",
+        "that",
+        "the",
+        "uh",
+        "um",
+        "well",
+    }
+)
+_CLAUSE_POLARITY_TOKENS = frozenset(
+    {"ага", "да", "неа", "нет", "угу", "yeah", "yep", "yes", "no", "nope"}
+)
 _DEFAULT_AUDIO_FILE_MAX_DURATION_SECONDS = 300
 _DEFAULT_AUDIO_FILE_MAX_BYTES = 20 * 1024 * 1024
 _DEFAULT_AUDIO_FILE_PROBE_SECONDS = 10
@@ -1425,11 +1462,122 @@ def _lexical_words(text: str) -> list[str]:
     return words
 
 
-def _omits_loss_sensitive_negation(original_words: list[str], cleaned_words: list[str]) -> bool:
-    """Detect dropped negation/polarity words without logging transcript content."""
-    original = Counter(word for word in original_words if word in _LOSS_SENSITIVE_NEGATION_TOKENS)
-    cleaned = Counter(word for word in cleaned_words if word in _LOSS_SENSITIVE_NEGATION_TOKENS)
-    return any(cleaned[token] < count for token, count in original.items())
+def _negation_signature(words: list[str]) -> Counter[str]:
+    """Preserve negation identity while canonicalizing common contractions."""
+    signature: Counter[str] = Counter()
+    for word in words:
+        normalized = word.replace("’", "'")
+        if normalized == "cannot" or normalized.endswith("n't"):
+            signature["not"] += 1
+        elif normalized in _LOSS_SENSITIVE_NEGATION_TOKENS:
+            signature[normalized] += 1
+    return signature
+
+
+def _changes_loss_sensitive_negation(original_words: list[str], cleaned_words: list[str]) -> bool:
+    return _negation_signature(original_words) != _negation_signature(cleaned_words)
+
+
+def _coverage_words(words: list[str]) -> list[str]:
+    """Split punctuation-preserving lexical tokens for local source coverage checks."""
+    result: list[str] = []
+    for word in words:
+        normalized = word.replace("ё", "е").replace("’", "'")
+        contraction_stem = {
+            "can't": "can",
+            "won't": "will",
+            "shan't": "shall",
+        }.get(normalized)
+        if normalized == "cannot":
+            result.extend(("can", "not"))
+        elif normalized.endswith("n't"):
+            result.extend((contraction_stem or normalized[:-3], "not"))
+        else:
+            result.extend(part for part in normalized.split("-") if part)
+    return result
+
+
+def _collapse_adjacent_duplicate_phrases(words: list[str]) -> list[str]:
+    """Remove repeated adjacent fragments that enrichment may safely deduplicate."""
+    current = list(words)
+    while True:
+        collapsed: list[str] = []
+        index = 0
+        while index < len(current):
+            duplicate_width = 0
+            max_width = min(256, (len(current) - index) // 2)
+            for width in range(max_width, 0, -1):
+                if current[index : index + width] == current[index + width : index + 2 * width]:
+                    duplicate_width = width
+                    break
+            if duplicate_width:
+                phrase = current[index : index + duplicate_width]
+                collapsed.extend(phrase)
+                index += duplicate_width
+                while current[index : index + duplicate_width] == phrase:
+                    index += duplicate_width
+                continue
+            collapsed.append(current[index])
+            index += 1
+        if len(collapsed) == len(current):
+            return collapsed
+        current = collapsed
+
+
+def _longest_omitted_source_span(original_words: list[str], cleaned_words: list[str]) -> int:
+    """Return the largest run of unmatched source content, independent of moves."""
+    original_coverage = _collapse_adjacent_duplicate_phrases(_coverage_words(original_words))
+    cleaned_coverage = _coverage_words(cleaned_words)
+    available = Counter(
+        word for word in cleaned_coverage if word not in _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS
+    )
+    longest = 0
+    current = 0
+    for word in original_coverage:
+        if word in _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS:
+            continue
+        matched_word = word if available[word] else None
+        if matched_word is None and len(word) >= 5:
+            for candidate, count in available.items():
+                if count and candidate[:4] == word[:4] and SequenceMatcher(None, word, candidate).ratio() >= 0.70:
+                    matched_word = candidate
+                    break
+        if matched_word is not None:
+            available[matched_word] -= 1
+            current = 0
+            continue
+        current += 1
+        longest = max(longest, current)
+    return longest
+
+
+def _omits_complete_source_clause(original: str, cleaned_words: list[str]) -> bool:
+    """Catch complete short-sentence loss below the local-span threshold."""
+    original_coverage = _collapse_adjacent_duplicate_phrases(_coverage_words(_lexical_words(original)))
+    cleaned_coverage = _coverage_words(cleaned_words)
+    original_counts = Counter(
+        word
+        for word in original_coverage
+        if word not in _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS or word in _CLAUSE_POLARITY_TOKENS
+    )
+    cleaned_counts = Counter(
+        word
+        for word in cleaned_coverage
+        if word not in _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS or word in _CLAUSE_POLARITY_TOKENS
+    )
+    deficits = original_counts - cleaned_counts
+    if not deficits:
+        return False
+
+    for clause in re.split(r"[.!?…;\n]+", original):
+        clause_words = [
+            word
+            for word in _coverage_words(_lexical_words(clause))
+            if word not in _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS or word in _CLAUSE_POLARITY_TOKENS
+        ]
+        if clause_words and all(deficits[word] >= count for word, count in Counter(clause_words).items()):
+            return True
+    return False
 
 
 def _cleanup_is_conservative(original: str, cleaned: str) -> bool:
@@ -1483,15 +1631,17 @@ def _cleanup_enriched_rejection_reasons(original: str, cleaned: str) -> tuple[st
     reasons: list[str] = []
     original_count = len(original_words)
     cleaned_count = len(cleaned_words)
-    retention_ratio = cleaned_count / original_count
+    retention_source_count = len(_collapse_adjacent_duplicate_phrases(original_words))
+    retention_ratio = cleaned_count / retention_source_count
 
-    if original_count <= 12:
-        min_words = max(1, original_count - 1)
+    if retention_source_count <= 12:
+        min_words = max(1, retention_source_count - 1)
     else:
-        min_words = max(1, int(original_count * 0.80 + 0.999999))
+        min_words = max(1, int(retention_source_count * 0.80 + 0.999999))
     if cleaned_count < min_words:
         reasons.append(
-            f"word retention {retention_ratio:.3f} is below the {min_words / original_count:.3f} repair threshold"
+            f"word retention {retention_ratio:.3f} is below the "
+            f"{min_words / retention_source_count:.3f} repair threshold"
         )
 
     max_words = max(original_count + 16, int(original_count * 1.25 + 0.999999))
@@ -1502,12 +1652,21 @@ def _cleanup_enriched_rejection_reasons(original: str, cleaned: str) -> tuple[st
         )
 
     # Numbers are rarely filler and commonly carry the most actionable detail.
-    original_numbers = {word for word in original_words if any(char.isdigit() for char in word)}
-    if not original_numbers.issubset(set(cleaned_words)):
+    original_number_words = _collapse_adjacent_duplicate_phrases(_coverage_words(original_words))
+    cleaned_number_words = _coverage_words(cleaned_words)
+    original_numbers = Counter(word for word in original_number_words if any(char.isdigit() for char in word))
+    cleaned_numbers = Counter(word for word in cleaned_number_words if any(char.isdigit() for char in word))
+    if original_numbers - cleaned_numbers:
         reasons.append("candidate omitted one or more numeric tokens")
 
-    if _omits_loss_sensitive_negation(original_words, cleaned_words):
-        reasons.append("candidate omitted one or more negation/polarity tokens")
+    if _changes_loss_sensitive_negation(original_words, cleaned_words):
+        reasons.append("candidate changed one or more negation/polarity tokens")
+
+    omitted_span = _longest_omitted_source_span(original_words, cleaned_words)
+    if omitted_span >= 2:
+        reasons.append(f"candidate omitted a contiguous source span of {omitted_span} content words")
+    elif _omits_complete_source_clause(original, cleaned_words):
+        reasons.append("candidate omitted a complete source clause")
 
     if original_count >= 80 and "\n\n" not in cleaned:
         reasons.append("long candidate has no blank-line paragraph breaks")
@@ -1519,7 +1678,7 @@ def _cleanup_enriched_rejection_reasons(original: str, cleaned: str) -> tuple[st
         autojunk=False,
     ).ratio()
     min_sequence_ratio = 0.55 if original_count <= 12 else 0.65
-    if sequence_ratio < min_sequence_ratio:
+    if sequence_ratio < min_sequence_ratio and omitted_span:
         reasons.append(
             f"lexical sequence similarity {sequence_ratio:.3f} is below {min_sequence_ratio:.3f}; "
             "restore omitted details or source wording"
@@ -1542,10 +1701,13 @@ def _cleanup_rejection_reasons(original: str, cleaned: str) -> tuple[str, ...]:
 
 
 def _cleanup_is_safe_after_retry(original: str, cleaned: str) -> bool:
-    """Accept a repair only when it passes the same no-loss fidelity checks."""
+    """Allow only non-semantic structure misses after the single repair pass."""
     if _cleanup_style() != "enriched":
         return _cleanup_is_conservative(original, cleaned)
-    return _cleanup_is_enriched(original, cleaned)
+    if not cleaned:
+        return False
+    reasons = _cleanup_enriched_rejection_reasons(original, cleaned)
+    return all(reason in _ENRICHED_SOFT_REJECTION_REASONS for reason in reasons)
 
 
 def _cleanup_is_acceptable(original: str, cleaned: str) -> bool:
@@ -1683,6 +1845,13 @@ async def _cleanup_transcript(
 
     retry_reasons = _cleanup_rejection_reasons(transcript, retry_text)
     if retry_text and not retry_reasons:
+        return retry_text
+
+    if _cleanup_is_safe_after_retry(transcript, retry_text):
+        logger.info(
+            "%s: cleanup repair has structure-only misses; using faithful repaired candidate",
+            _PLUGIN_NAME,
+        )
         return retry_text
 
     logger.warning(
