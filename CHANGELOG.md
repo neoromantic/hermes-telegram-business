@@ -6,7 +6,7 @@
 
 - Add Telegram Business `audio` and conservatively identified audio-document transcription while leaving voice/video-note processing unchanged.
 - Claim every candidate attached audio before the normal agent path, including files rejected by metadata, duration, local probing, or speech-presence checks.
-- Enforce bounded 300-second and 20 MiB defaults, reject unsafe byte metadata before download, and use local `ffprobe` duration fallback.
+- Enforce bounded 300-second and 20 MiB defaults, reject unsafe message and authoritative `getFile` byte metadata before download, and verify every downloaded candidate's actual duration locally with `ffprobe`.
 - Extract a bounded 10-second mono/16 kHz prefix with `ffmpeg`; require conservative lexical content (three-word default with continuous-script handling); reject degenerate/common no-speech hallucinations and explicitly title/performer-tagged music before full transcription; short files reuse the probe transcript.
 - Normalize attached-audio containers unsupported by the host STT extension gate to transient mono/16 kHz WAV and recognize Unicode speech tokens beyond Latin/Cyrillic scripts.
 - Delete the transient download, probe, and any normalized full-file WAV on every path; document that recognized vocals can produce a heuristic false positive.

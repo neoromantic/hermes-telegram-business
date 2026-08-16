@@ -28,7 +28,7 @@ The broader product direction includes operator or CRM integration adapters and 
 - Python 3.11 or newer.
 - A configured Telegram gateway with a Telegram Business connection.
 - A working Hermes STT provider. Configure it with `hermes setup` or the [`stt` settings](https://hermes-agent.nousresearch.com/docs/user-guide/configuration).
-- `ffprobe` and `ffmpeg` on `PATH` for attached-audio duration fallback and prefix extraction. Voice messages and video notes do not use these gates.
+- `ffprobe` and `ffmpeg` on `PATH` for attached-audio duration verification, prefix extraction, and normalization. Voice messages and video notes do not use these gates.
 
 Telegram Business voice/video notes can originate from users outside the ordinary DM allowlist. Enable the plugin's narrowly scoped adapter bypass so those updates can reach its hook:
 
@@ -135,7 +135,7 @@ Telegram gateway event
        -> handled: duplicate guard + action: skip (no agent turn)
   -> asynchronous module work
   -> voice/video note: unchanged transient download -> full STT
-  -> attached audio: metadata gate -> transient download -> ffprobe fallback -> ffmpeg prefix probe
+  -> attached audio: metadata gate -> authoritative getFile-size gate -> transient download -> local ffprobe verification -> ffmpeg prefix probe
   -> unsupported attached-audio container: transient mono/16 kHz WAV normalization
   -> Hermes transcribe_audio (configured host STT; probe first for attached files)
   -> optional ctx.llm structured cleanup

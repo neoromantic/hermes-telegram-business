@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import yaml
@@ -73,7 +73,9 @@ def isolate_plugin_environment(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def plugin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    return _load_plugin_module(monkeypatch, tmp_path)
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_local_audio_duration", lambda _path: 75.0)
+    return module
 
 
 class Platform:
@@ -83,19 +85,29 @@ class Platform:
 class FakeFile:
     def __init__(self, payload: bytes):
         self.payload = payload
+        self.file_size = len(payload)
+        self.download_calls = 0
 
     async def download_as_bytearray(self) -> bytearray:
+        self.download_calls += 1
         return bytearray(self.payload)
+
+    async def download_to_drive(self, custom_path: Path) -> Path:
+        self.download_calls += 1
+        destination = Path(custom_path)
+        destination.write_bytes(self.payload)
+        return destination
 
 
 class FakeMedia:
     def __init__(self, payload: bytes = b"voice bytes"):
         self.payload = payload
+        self.file = FakeFile(payload)
         self.get_file_calls = 0
 
     async def get_file(self) -> FakeFile:
         self.get_file_calls += 1
-        return FakeFile(self.payload)
+        return self.file
 
 
 class FakeBot:
@@ -1813,6 +1825,44 @@ async def test_attached_audio_known_metadata_rejects_before_download_or_stt(
 
 
 @pytest.mark.asyncio
+async def test_attached_audio_rechecks_authoritative_size_before_download(plugin, monkeypatch):
+    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_BYTES", str(1024 * 1024))
+    message = make_audio_file_message(file_size=512 * 1024, duration=30)
+    message.audio.file.file_size = 1024 * 1024 + 1
+    event = make_event(message)
+    bot = FakeBot()
+    gateway = SimpleNamespace(adapters={event.source.platform: FakeAdapter(bot)})
+    transcribe = AsyncMock()
+
+    await plugin._process_business_voice_event(event=event, gateway=gateway, transcribe_fn=transcribe)
+
+    assert message.audio.get_file_calls == 1
+    assert message.audio.file.download_calls == 0
+    transcribe.assert_not_called()
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_attached_audio_rechecks_actual_duration_even_when_declared_is_short(plugin, monkeypatch):
+    message = make_audio_file_message(duration=30)
+    event = make_event(message)
+    bot = FakeBot()
+    gateway = SimpleNamespace(adapters={event.source.platform: FakeAdapter(bot)})
+    transcribe = AsyncMock()
+    extract = Mock(return_value=True)
+    monkeypatch.setattr(plugin, "_local_audio_duration", lambda _path: 301.0)
+    monkeypatch.setattr(plugin, "_extract_audio_probe", extract)
+
+    await plugin._process_business_voice_event(event=event, gateway=gateway, transcribe_fn=transcribe)
+
+    assert message.audio.get_file_calls == 1
+    assert message.audio.file.download_calls == 1
+    extract.assert_not_called()
+    transcribe.assert_not_called()
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
 async def test_missing_duration_uses_ffprobe_then_speech_probe_and_full_stt(plugin, monkeypatch):
     monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
     message = make_audio_file_message(duration=None)
@@ -1932,6 +1982,8 @@ def test_audio_probe_rejects_common_no_speech_hallucination(plugin):
     assert plugin._audio_probe_has_meaningful_speech("هذا تسجيل صوتي بشري طبيعي", 3)
     assert plugin._audio_probe_has_meaningful_speech("यह सामान्य मानवीय भाषण है", 3)
     assert plugin._audio_probe_has_meaningful_speech("これは普通の人間の音声です", 3)
+    assert plugin._audio_probe_has_meaningful_speech("I am OK", 3)
+    assert plugin._audio_probe_has_meaningful_speech("go to bed", 3)
 
 
 @pytest.mark.asyncio
@@ -1978,6 +2030,7 @@ async def test_unknown_attached_audio_extension_is_normalized_before_full_stt(pl
 @pytest.mark.asyncio
 async def test_short_attached_audio_reuses_probe_transcript_and_cleans_both_files(plugin, monkeypatch):
     monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setattr(plugin, "_local_audio_duration", lambda _path: 8.0)
     message = make_audio_file_message(duration=8)
     event = make_event(message)
     bot = FakeBot()

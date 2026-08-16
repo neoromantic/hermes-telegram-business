@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from enum import Enum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional, cast
 
 try:
     from hermes_constants import get_hermes_home
@@ -952,7 +952,7 @@ def _audio_probe_has_meaningful_speech(transcript: str, min_words: int) -> bool:
     normalized = " ".join(words)
     if any(phrase in normalized for phrase in _AUDIO_PROBE_FALSE_SPEECH_PHRASES):
         return False
-    return sum(len(word) for word in words) >= 8
+    return True
 
 
 def _audio_file_extension(media: Any) -> str:
@@ -990,12 +990,23 @@ def _cache_path_for(message: Any) -> Path:
     return root / f"business_{business_connection_id}_{label}_{time.time_ns()}_{chat_id}_{message_id}{ext}"
 
 
-async def _download_voice(message: Any, path: Path) -> Path:
+async def _download_voice(message: Any, path: Path, *, max_bytes: int | None = None) -> Path:
     payload = _transcribable_payload(message)
     if payload is None:
         raise ValueError("message has no supported media payload")
     media, _, _ = payload
     file_obj = await media.get_file()
+    if max_bytes is not None:
+        try:
+            authoritative_size = int(_get(file_obj, "file_size"))
+        except (TypeError, ValueError):
+            authoritative_size = 0
+        if authoritative_size <= 0 or authoritative_size > max_bytes:
+            raise ValueError("unsafe authoritative Telegram file-size metadata")
+        download_to_drive = getattr(file_obj, "download_to_drive", None)
+        if callable(download_to_drive):
+            await cast(Callable[..., Awaitable[Any]], download_to_drive)(custom_path=path)
+            return path
     audio_bytes = await file_obj.download_as_bytearray()
     path.write_bytes(bytes(audio_bytes))
     return path
@@ -1873,13 +1884,12 @@ async def _process_business_audio_file(
     probe_path = path.with_name(f"{path.stem}.probe.wav")
     normalized_path = path.with_name(f"{path.stem}.full.wav")
     try:
-        await _download_voice(message, path)
+        await _download_voice(message, path, max_bytes=max_bytes)
         if path.stat().st_size <= 0 or path.stat().st_size > max_bytes:
             return
-        if duration <= 0:
-            duration = await asyncio.to_thread(_local_audio_duration, path)
-            if duration is None or duration > max_duration:
-                return
+        duration = await asyncio.to_thread(_local_audio_duration, path)
+        if duration is None or duration > max_duration:
+            return
 
         extracted = await asyncio.to_thread(_extract_audio_probe, path, probe_path, probe_seconds)
         if not extracted:
