@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Distinguish plausible aligned multi-word ASR repairs and word-boundary corrections from true source deletion, preventing faithful enriched transcripts from falling back to raw STT.
+- Replace the brittle enriched semantic-fidelity validator with a minimal structural sanity check: publish the first non-empty candidate between 20% and 200% of source length, retry only catastrophic output once, and use raw STT only as the last fallback.
 
 ## 0.7.2 - 2026-08-16
 

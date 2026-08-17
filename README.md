@@ -11,8 +11,8 @@ An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integ
 2. Requires a real Telegram Business connection and preserves its `business_connection_id`.
 3. Returns `action: skip` so the ordinary auth/agent path does not process the media.
 4. Downloads the media transiently and delegates speech recognition to Hermes's configured `transcribe_audio` backend. Attached files must have safe byte/duration metadata, are locally duration-checked when needed, and pass a short mono/16 kHz speech-presence probe before full transcription.
-5. Optionally asks the host-owned `ctx.llm` facade for conservative proofreading or opt-in no-loss enrichment with isolated-filler removal, paragraphing, lists, and long-note titles.
-6. When an enriched candidate trips a fidelity signal, retries once with the exact validator feedback; if the repair still drops content, the raw STT is posted instead.
+5. Optionally asks the host-owned `ctx.llm` facade for conservative proofreading or opt-in enrichment with ASR correction, filler cleanup, paragraphing, lists, and long-note titles.
+6. Publishes the first structurally usable enriched candidate. Empty output or a catastrophic size change gets one feedback retry; raw STT is the last fallback when neither model result is usable.
 7. For a short outgoing Business message, appends the transcript to the original voice/video-note caption as an expandable blockquote, retrying the same caption as plain text when Telegram rejects the new entity type.
 8. Uses expandable Business-scoped replies for incoming, long, expired, or uneditable messages, with the equivalent plain-text retry.
 
@@ -119,7 +119,7 @@ plugins:
 
 If the trust gate, provider, or model is unavailable, the plugin logs the cleanup failure and posts the raw STT transcript. To use different environment values, update the allowlists to match. To avoid any LLM call, set `TG_BUSINESS_VOICE_CLEANUP_DISABLE=1`.
 
-`conservative` preserves conversational wording and accepts almost exclusively punctuation, paragraphing, and obvious ASR fixes. `enriched` removes only isolated filler sounds, exact stutters, and exact duplicated fragments; it smooths clear grammar/ASR errors, structures topics into paragraphs or real enumerations into lists, and adds a short title to long notes. It has no shortening target: every clause, aside, negation, qualification, relationship observation, and explanation must survive. Aggregate retention, negation/number checks, and local source-span coverage reject shortened or truncated candidates. Candidates that lose those signals get one feedback repair; if the repair is still semantically lossy, the plugin posts raw STT. A repair that preserves content but misses only paragraph structure remains usable.
+`conservative` preserves conversational wording and accepts almost exclusively punctuation, paragraphing, and obvious ASR fixes. `enriched` actively edits ASR errors and filler, structures topics into paragraphs or real enumerations into lists, and adds a short title to long notes. Its prompt asks the model to preserve the complete meaning, but the runtime deliberately does not attempt token-level semantic proof: any non-empty result between 20% and 200% of the source word count is usable. Output outside that broad structural range gets one feedback retry; raw STT is used only when both candidates are structurally unusable or the cleanup call fails.
 
 ## Current module architecture
 
@@ -139,7 +139,7 @@ Telegram gateway event
   -> unsupported attached-audio container: transient mono/16 kHz WAV normalization
   -> Hermes transcribe_audio (configured host STT; probe first for attached files)
   -> optional ctx.llm structured cleanup
-  -> no-loss fidelity signals / one feedback repair / raw fallback for any still-lossy result
+  -> minimal structural sanity check / one feedback retry / raw last fallback
   -> short outgoing message: edit_message_caption(..., caption_entities=[expandable], business_connection_id=...)
   -> otherwise: send_message(..., entities=[expandable], business_connection_id=...)
 ```
@@ -168,7 +168,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - STT failure sends nothing unless error replies are enabled.
 - Empty STT output sends nothing.
 - Attached audio with missing/zero/oversize byte metadata, excessive known duration, unknown local duration, probe extraction/STT failure, or no meaningful probe speech is silently suppressed after being claimed; it never invokes the agent path.
-- An initial cleanup call that times out or is denied by the trust gate falls back to raw STT. In `enriched` mode, any returned candidate that trips fidelity signals gets one feedback repair; if the repair still loses semantic content, the raw STT is posted. A repaired candidate whose only remaining miss is paragraph structure is retained.
+- An initial cleanup call that times out or is denied by the trust gate falls back to raw STT. In `enriched` mode, empty output or a catastrophic size change gets one feedback retry. Ordinary shortening, semantic edits, missing numbers, changed negations, and absent paragraph breaks are not validator failures; the first structurally usable enhancement is published.
 - Caption direction checks, length checks, edit-window checks, and definite caption-edit rejections fall back to a separate expandable transcript reply.
 - A recognized unsupported-entity response retries the selected caption or reply surface once without the new entity; PTB `BadRequest` counts as a definite caption rejection unless it is the recognized not-modified or unsupported-entity case, while `TimedOut`, other `NetworkError` failures, and unrelated exceptions suppress the reply fallback to avoid duplicates.
 - A successful caption edit never also sends a transcript reply.
