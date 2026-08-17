@@ -162,7 +162,7 @@ _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS = frozenset(
 _CLAUSE_POLARITY_TOKENS = frozenset(
     {"ага", "да", "неа", "нет", "угу", "yeah", "yep", "yes", "no", "nope"}
 )
-_ASR_REPLACEMENT_MIN_CHAR_SIMILARITY = 0.35
+_ASR_REPLACEMENT_MIN_CHAR_SIMILARITY = 0.55
 _DEFAULT_AUDIO_FILE_MAX_DURATION_SECONDS = 300
 _DEFAULT_AUDIO_FILE_MAX_BYTES = 20 * 1024 * 1024
 _DEFAULT_AUDIO_FILE_PROBE_SECONDS = 10
@@ -1566,28 +1566,42 @@ def _longest_omitted_source_span(original_words: list[str], cleaned_words: list[
         else:
             missing[index] = True
 
-    longest = 0
+    uncompensated = missing.copy()
     matcher = SequenceMatcher(None, original_coverage, cleaned_coverage, autojunk=False)
     for tag, source_start, source_end, candidate_start, candidate_end in matcher.get_opcodes():
-        if tag in {"equal", "insert"}:
+        if tag != "replace":
             continue
-        missing_count = sum(missing[source_start:source_end])
-        if not missing_count:
+        missing_indices = [
+            index for index in range(source_start, source_end) if uncompensated[index]
+        ]
+        if not missing_indices:
             continue
-        if tag == "replace":
-            source_block = original_coverage[source_start:source_end]
-            candidate_block = cleaned_coverage[candidate_start:candidate_end]
-            similarity = _replacement_char_similarity(source_block, candidate_block)
-            if similarity >= _ASR_REPLACEMENT_MIN_CHAR_SIMILARITY:
-                if similarity >= 0.80:
-                    # Word-boundary repairs (``на обнимали`` -> ``наобнимали``)
-                    # can legitimately collapse several source tokens into one.
-                    missing_count = 0
-                else:
-                    # Count all aligned replacement tokens, including discourse
-                    # words: a garbled source content token may repair to one.
-                    missing_count = max(0, missing_count - len(candidate_block))
-        longest = max(longest, missing_count)
+        source_block = original_coverage[source_start:source_end]
+        candidate_block = cleaned_coverage[candidate_start:candidate_end]
+        similarity = _replacement_char_similarity(source_block, candidate_block)
+        if similarity < _ASR_REPLACEMENT_MIN_CHAR_SIMILARITY:
+            continue
+        if similarity >= 0.80:
+            # Word-boundary repairs (``на обнимали`` -> ``наобнимали``)
+            # can legitimately collapse several source tokens into one.
+            compensation = len(missing_indices)
+        else:
+            # Count all aligned replacement tokens, including discourse
+            # words: a garbled source content token may repair to one.
+            compensation = len(candidate_block)
+        for index in missing_indices[:compensation]:
+            uncompensated[index] = False
+
+    longest = 0
+    current = 0
+    for index, word in enumerate(original_coverage):
+        if word in _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS:
+            continue
+        if uncompensated[index]:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
     return longest
 
 

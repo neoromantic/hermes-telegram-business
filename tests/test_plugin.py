@@ -1587,6 +1587,22 @@ def test_enriched_guard_rejects_unrelated_replacement_in_unpunctuated_stt(
     assert not plugin._cleanup_is_acceptable(raw, unrelated)
 
 
+def test_enriched_guard_rejects_weakly_similar_semantic_rewrite(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    prefix = " ".join(f"context{i}" for i in range(45))
+    suffix = " ".join(f"detail{i}" for i in range(45))
+    raw = f"{prefix} approve the customer refund immediately {suffix}"
+    unrelated = f"{prefix}.\n\nArchive the customer record internally. {suffix}."
+
+    reasons = plugin._cleanup_enriched_rejection_reasons(raw, unrelated)
+
+    assert any("contiguous source span" in reason for reason in reasons)
+    assert not plugin._cleanup_is_acceptable(raw, unrelated)
+
+
 def test_enriched_guard_rejects_complete_two_word_clause_deletion(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
@@ -1628,6 +1644,22 @@ def test_enriched_guard_rejects_truncated_prefix_at_retention_floor(
     reasons = plugin._cleanup_enriched_rejection_reasons(raw, truncated)
     assert any("contiguous source span" in reason for reason in reasons)
     assert not plugin._cleanup_is_acceptable(raw, truncated)
+
+
+def test_enriched_guard_counts_missing_content_across_function_words(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    prefix = " ".join(f"context{i}" for i in range(45))
+    suffix = " ".join(f"detail{i}" for i in range(45))
+    raw = f"{prefix} preserve schedule and budget before delivery {suffix}"
+    lossy = f"{prefix}.\n\nPreserve and before delivery. {suffix}."
+
+    reasons = plugin._cleanup_enriched_rejection_reasons(raw, lossy)
+
+    assert any("contiguous source span" in reason for reason in reasons)
+    assert not plugin._cleanup_is_acceptable(raw, lossy)
 
 
 def test_enriched_guard_canonicalizes_equivalent_english_negation_forms(
