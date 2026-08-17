@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Distinguish plausible aligned multi-word ASR repairs and word-boundary corrections from true source deletion, preventing faithful enriched transcripts from falling back to raw STT.
+
 ## 0.7.2 - 2026-08-16
 
 - Reject locally omitted source clauses and truncated prefixes/suffixes even when aggregate word retention remains above the global floor.

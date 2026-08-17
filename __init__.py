@@ -162,6 +162,7 @@ _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS = frozenset(
 _CLAUSE_POLARITY_TOKENS = frozenset(
     {"ага", "да", "неа", "нет", "угу", "yeah", "yep", "yes", "no", "nope"}
 )
+_ASR_REPLACEMENT_MIN_CHAR_SIMILARITY = 0.35
 _DEFAULT_AUDIO_FILE_MAX_DURATION_SECONDS = 300
 _DEFAULT_AUDIO_FILE_MAX_BYTES = 20 * 1024 * 1024
 _DEFAULT_AUDIO_FILE_PROBE_SECONDS = 10
@@ -1524,16 +1525,34 @@ def _collapse_adjacent_duplicate_phrases(words: list[str]) -> list[str]:
         current = collapsed
 
 
+def _replacement_char_similarity(source_words: list[str], candidate_words: list[str]) -> float:
+    """Estimate whether an aligned replacement is a plausible ASR repair."""
+    source = "".join(char for char in " ".join(source_words).replace("ё", "е") if char.isalnum())
+    candidate = "".join(char for char in " ".join(candidate_words).replace("ё", "е") if char.isalnum())
+    if not source or not candidate:
+        return 0.0
+    return SequenceMatcher(None, source, candidate, autojunk=False).ratio()
+
+
 def _longest_omitted_source_span(original_words: list[str], cleaned_words: list[str]) -> int:
-    """Return the largest run of unmatched source content, independent of moves."""
+    """Return the largest uncompensated run of missing source content.
+
+    The transcript editor is allowed to repair multi-word ASR garbage such as
+    ``суши я чё-то папа дашу`` -> ``слушай, я что-то по Даше``. A bag-of-words
+    deficit alone misclassifies that as deletion because every repaired token is
+    new. First find source words that have no exact/fuzzy coverage anywhere in
+    the candidate, then use sequence alignment to distinguish a true deletion
+    from a same-position replacement. Replacement content compensates the local
+    deficit; delete opcodes do not. Complete-clause replacement is guarded
+    separately by ``_omits_complete_source_clause``.
+    """
     original_coverage = _collapse_adjacent_duplicate_phrases(_coverage_words(original_words))
     cleaned_coverage = _coverage_words(cleaned_words)
     available = Counter(
         word for word in cleaned_coverage if word not in _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS
     )
-    longest = 0
-    current = 0
-    for word in original_coverage:
+    missing = [False] * len(original_coverage)
+    for index, word in enumerate(original_coverage):
         if word in _COVERAGE_FUNCTION_OR_DISCOURSE_TOKENS:
             continue
         matched_word = word if available[word] else None
@@ -1544,10 +1563,31 @@ def _longest_omitted_source_span(original_words: list[str], cleaned_words: list[
                     break
         if matched_word is not None:
             available[matched_word] -= 1
-            current = 0
+        else:
+            missing[index] = True
+
+    longest = 0
+    matcher = SequenceMatcher(None, original_coverage, cleaned_coverage, autojunk=False)
+    for tag, source_start, source_end, candidate_start, candidate_end in matcher.get_opcodes():
+        if tag in {"equal", "insert"}:
             continue
-        current += 1
-        longest = max(longest, current)
+        missing_count = sum(missing[source_start:source_end])
+        if not missing_count:
+            continue
+        if tag == "replace":
+            source_block = original_coverage[source_start:source_end]
+            candidate_block = cleaned_coverage[candidate_start:candidate_end]
+            similarity = _replacement_char_similarity(source_block, candidate_block)
+            if similarity >= _ASR_REPLACEMENT_MIN_CHAR_SIMILARITY:
+                if similarity >= 0.80:
+                    # Word-boundary repairs (``на обнимали`` -> ``наобнимали``)
+                    # can legitimately collapse several source tokens into one.
+                    missing_count = 0
+                else:
+                    # Count all aligned replacement tokens, including discourse
+                    # words: a garbled source content token may repair to one.
+                    missing_count = max(0, missing_count - len(candidate_block))
+        longest = max(longest, missing_count)
     return longest
 
 

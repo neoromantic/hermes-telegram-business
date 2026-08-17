@@ -1571,6 +1571,22 @@ def test_enriched_guard_rejects_relationship_clause_replaced_with_unrelated_word
     assert not plugin._cleanup_is_acceptable(raw, unrelated)
 
 
+def test_enriched_guard_rejects_unrelated_replacement_in_unpunctuated_stt(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    prefix = " ".join(f"контекст{i}" for i in range(45))
+    suffix = " ".join(f"деталь{i}" for i in range(45))
+    raw = f"{prefix} отношения с коллегой стали особенно важны {suffix}"
+    unrelated = f"{prefix}.\n\nНа ужин я купил свежие овощи. {suffix}."
+
+    reasons = plugin._cleanup_enriched_rejection_reasons(raw, unrelated)
+
+    assert any("contiguous source span" in reason for reason in reasons)
+    assert not plugin._cleanup_is_acceptable(raw, unrelated)
+
+
 def test_enriched_guard_rejects_complete_two_word_clause_deletion(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
@@ -1719,6 +1735,41 @@ def test_enriched_guard_allows_large_moved_intact_blocks(
     moved = f"{second} {first}"
 
     assert plugin._cleanup_is_acceptable(raw, moved)
+
+
+@pytest.mark.asyncio
+async def test_multiword_asr_repair_survives_the_single_cleanup_retry(
+    plugin,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    prefix = " ".join(f"контекст{i}" for i in range(45))
+    suffix = " ".join(f"деталь{i}" for i in range(45))
+    raw = (
+        f"{prefix} я не уверен суши я чё-то папа дашу а потом меня на обнимали на любили {suffix}"
+    )
+    first = (
+        f"{prefix}.\n\nЯ уверен. Слушай, я что-то по Даше, а потом меня наобнимали, налюбили. {suffix}."
+    )
+    repaired = (
+        f"{prefix}.\n\nЯ не уверен. Слушай, я что-то по Даше, а потом меня наобнимали, налюбили. {suffix}."
+    )
+
+    class FakeLlm:
+        def __init__(self):
+            self.responses = [first, repaired]
+            self.calls = 0
+
+        async def acomplete_structured(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(parsed={"text": self.responses.pop(0)}, text="")
+
+    llm = FakeLlm()
+    result = await plugin._cleanup_transcript(raw, llm=llm)
+
+    assert result == repaired
+    assert llm.calls == 2
+    assert plugin._cleanup_is_acceptable(raw, repaired)
 
 
 @pytest.mark.asyncio
