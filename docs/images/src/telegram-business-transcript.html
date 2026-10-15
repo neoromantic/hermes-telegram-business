@@ -1,0 +1,326 @@
+<!doctype html>
+<!--
+  Usage illustration for README / project card.
+  Fictional people and content. Mirrors the plugin's real delivery shapes:
+  - incoming voice note -> Business reply to it: "🎙️ <transcript>" as one expandable_blockquote
+    (plain text, enriched paragraphs and "-" list, no parse mode);
+  - short outgoing voice note -> caption edited to "🎙️ <transcript>" as an expandable_blockquote.
+  Render: 1600x1000 viewport, deviceScaleFactor 1 (card) and 2 (README).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hermes Telegram Business — voice transcript in chat</title>
+<style>
+  :root {
+    --in-accent: #3a95e8;
+    --out-bg: #effedd;
+    --out-accent: #4aa83f;
+    --out-meta: #5aae4f;
+    --out-tint: rgba(84, 176, 70, 0.13);
+    --text: #0b0b0c;
+    --muted: #8a9099;
+    --hair: rgba(0, 0, 0, 0.09);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 1000px; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    position: relative;
+    background: #c9d6a6;
+  }
+
+  /* ---------- wallpaper ---------- */
+  .wall {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 12% 18%, #dfe3b8 0%, rgba(223,227,184,0) 46%),
+      radial-gradient(circle at 88% 12%, #a9cf95 0%, rgba(169,207,149,0) 48%),
+      radial-gradient(circle at 80% 92%, #d7dc93 0%, rgba(215,220,147,0) 50%),
+      radial-gradient(circle at 10% 88%, #8dc194 0%, rgba(141,193,148,0) 52%),
+      linear-gradient(135deg, #cfdcaa, #a8cc98);
+  }
+  .wall svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* ---------- header ---------- */
+  .header {
+    position: absolute; left: 0; right: 0; top: 0; height: 82px;
+    background: rgba(250, 250, 250, 0.96);
+    border-bottom: 1px solid var(--hair);
+    display: flex; align-items: center; padding: 0 40px 0 34px; gap: 20px;
+    z-index: 3;
+  }
+  .avatar {
+    width: 58px; height: 58px; border-radius: 50%;
+    display: grid; place-items: center;
+    color: #fff; font-weight: 600; font-size: 24px; letter-spacing: 0.3px;
+    flex: none;
+  }
+  .avatar.maya { background: linear-gradient(180deg, #ffb35a, #ff7f5c); }
+  .who { display: flex; flex-direction: column; gap: 2px; }
+  .who .name { font-size: 27px; font-weight: 600; letter-spacing: -0.2px; }
+  .who .status { font-size: 22px; color: var(--in-accent); }
+  .header .spacer { flex: 1; }
+  .header .icons { display: flex; gap: 34px; align-items: center; }
+  .header .icons svg { width: 32px; height: 32px; stroke: #8b939c; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ---------- business bot manage bar ---------- */
+  .botbar {
+    position: absolute; left: 0; right: 0; top: 82px; height: 66px;
+    background: rgba(250, 250, 250, 0.96);
+    border-bottom: 1px solid var(--hair);
+    display: flex; align-items: center; padding: 0 40px 0 38px; gap: 18px;
+    z-index: 3;
+  }
+  .avatar.bot { width: 46px; height: 46px; font-size: 22px; background: linear-gradient(180deg, #8f8cff, #6a5df0); }
+  .botbar .who .name { font-size: 23px; }
+  .botbar .who .status { font-size: 22px; color: var(--muted); }
+  .botbar .pause {
+    font-size: 22px; font-weight: 600; color: #2f8de4;
+    background: rgba(51, 144, 236, 0.11);
+    padding: 9px 22px; border-radius: 22px;
+  }
+  .botbar .more { width: 30px; height: 30px; fill: #8b939c; margin-left: 10px; }
+
+  /* ---------- messages ---------- */
+  .log {
+    position: absolute; left: 0; right: 0; top: 148px; bottom: 82px;
+    display: flex; flex-direction: column; justify-content: flex-end;
+    padding: 0 0 14px; z-index: 2;
+  }
+  .col { width: 1160px; margin: 0 auto; display: flex; flex-direction: column; gap: 11px; }
+  .row { display: flex; }
+  .row.in { justify-content: flex-start; }
+  .row.out { justify-content: flex-end; }
+
+  .bubble {
+    position: relative; border-radius: 22px;
+    padding: 12px 18px 10px;
+    font-size: 25px; line-height: 1.33; letter-spacing: -0.15px;
+    box-shadow: 0 1px 1.5px rgba(30, 50, 20, 0.16);
+  }
+  .in .bubble { background: #fff; border-bottom-left-radius: 7px; }
+  .out .bubble { background: var(--out-bg); border-bottom-right-radius: 7px; }
+  /* tails */
+  .in .bubble::before, .out .bubble::before {
+    content: ""; position: absolute; bottom: 0; width: 20px; height: 26px;
+  }
+  .in .bubble::before {
+    left: -13px; background: #fff;
+    clip-path: path("M20 0 Q20 21 4 25.5 Q2 26 0 26 L20 26 Z");
+  }
+  .out .bubble::before {
+    right: -13px; background: var(--out-bg);
+    clip-path: path("M0 0 Q0 21 16 25.5 Q18 26 20 26 L0 26 Z");
+  }
+
+  .meta {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 21px; letter-spacing: 0; white-space: nowrap;
+    float: right; margin: 12px -4px -4px 16px; line-height: 1;
+  }
+  .in .meta { color: #9aa3ad; }
+  .out .meta { color: var(--out-meta); }
+  .meta svg { width: 26px; height: 16px; fill: none; stroke: var(--out-accent); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* voice */
+  .voice { display: flex; align-items: center; gap: 16px; }
+  .play {
+    width: 60px; height: 60px; border-radius: 50%; flex: none;
+    display: grid; place-items: center;
+  }
+  .play svg { width: 26px; height: 26px; fill: #fff; margin-left: 4px; }
+  .in .play { background: var(--in-accent); }
+  .out .play { background: #5cb84f; }
+  .wave-wrap { display: flex; flex-direction: column; gap: 8px; }
+  .wave { display: flex; align-items: flex-end; gap: 2.4px; height: 30px; }
+  .wave i { display: block; width: 3.6px; border-radius: 2px; }
+  .emoji { font-size: 1.14em; line-height: 1; margin-right: 1px; }
+  .in .wave i { background: rgba(58, 149, 232, 0.5); }
+  .out .wave i { background: rgba(74, 168, 63, 0.55); }
+  .dur { font-size: 22px; display: flex; align-items: center; gap: 8px; line-height: 1; }
+  .in .dur { color: #8a96a3; }
+  .out .dur { color: var(--out-meta); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--in-accent); }
+
+  /* reply header inside a bubble */
+  .reply {
+    display: flex; gap: 0; margin: 2px -6px 10px; border-radius: 8px; overflow: hidden;
+    background: var(--out-tint);
+  }
+  .reply .bar { width: 4px; background: var(--out-accent); flex: none; }
+  .reply .txt { padding: 7px 14px 8px; display: flex; flex-direction: column; gap: 1px; }
+  .reply .rn { font-size: 22px; font-weight: 600; color: #3d9a33; line-height: 1.25; }
+  .reply .rt { font-size: 22px; color: #3c463a; line-height: 1.25; }
+
+  /* blockquote (Telegram expandable_blockquote) */
+  .quote {
+    position: relative; border-radius: 8px; overflow: hidden;
+    background: var(--out-tint);
+    padding: 8px 46px 10px 18px; margin: 0 -6px;
+    white-space: pre-wrap;
+  }
+  .quote::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--out-accent); }
+  .quote .qicon { position: absolute; top: 9px; right: 11px; width: 20px; height: 20px; fill: var(--out-accent); }
+  .quote .chev { position: absolute; bottom: 9px; right: 10px; width: 24px; height: 24px; fill: none; stroke: var(--out-accent); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  .clear::after { content: ""; display: block; clear: both; }
+
+  /* date pill */
+  .pill {
+    align-self: center; font-size: 20px; font-weight: 500; color: #fff;
+    background: rgba(70, 100, 60, 0.32); padding: 5px 16px; border-radius: 16px;
+    margin-bottom: 4px;
+  }
+
+  /* ---------- composer ---------- */
+  .composer {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 82px;
+    background: rgba(250, 250, 250, 0.97);
+    border-top: 1px solid var(--hair);
+    display: flex; align-items: center; gap: 22px; padding: 0 36px; z-index: 3;
+  }
+  .composer svg { width: 34px; height: 34px; stroke: #8b939c; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .field {
+    flex: 1; height: 58px; border-radius: 29px; background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    display: flex; align-items: center; padding: 0 24px;
+    font-size: 24px; color: #a3a9b0;
+  }
+</style>
+</head>
+<body>
+  <div class="wall">
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="doodles" width="300" height="300" patternUnits="userSpaceOnUse" patternTransform="rotate(-8)">
+          <g fill="none" stroke="#2f5a2a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.10">
+            <!-- paper plane -->
+            <path d="M24 52 L78 30 L58 80 L48 62 Z M48 62 L78 30"/>
+            <!-- heart -->
+            <path d="M160 46 c-8-12 -26-6 -22 8 c3 10 22 22 22 22 s19-12 22-22 c4-14 -14-20 -22-8 z"/>
+            <!-- star -->
+            <path d="M250 30 l7 15 16 2 -12 11 3 16 -14-8 -14 8 3-16 -12-11 16-2 z"/>
+            <!-- music note -->
+            <path d="M40 150 v-34 l26-6 v34 M40 150 a8 6 0 1 1 -1 -1 M66 144 a8 6 0 1 1 -1 -1"/>
+            <!-- microphone -->
+            <path d="M150 112 a10 10 0 0 1 20 0 v20 a10 10 0 0 1 -20 0 z M142 132 a18 18 0 0 0 36 0 M160 150 v12"/>
+            <!-- chat bubble -->
+            <path d="M228 118 h44 a10 10 0 0 1 10 10 v20 a10 10 0 0 1 -10 10 h-28 l-14 10 v-10 h-2 a10 10 0 0 1 -10 -10 v-20 a10 10 0 0 1 10 -10 z"/>
+            <!-- cloud -->
+            <path d="M30 238 a14 14 0 0 1 4 -27 a18 18 0 0 1 34 4 a12 12 0 0 1 2 23 z"/>
+            <!-- coffee cup -->
+            <path d="M128 214 h40 v20 a16 16 0 0 1 -16 16 h-8 a16 16 0 0 1 -16 -16 z M168 220 a8 8 0 0 1 0 16 M140 200 c-4 -6 4 -8 0 -14 M154 200 c-4 -6 4 -8 0 -14"/>
+            <!-- sparkle -->
+            <path d="M246 210 v26 M233 223 h26 M262 248 v12 M256 254 h12"/>
+            <!-- circles -->
+            <circle cx="106" cy="92" r="6"/>
+            <circle cx="210" cy="276" r="8"/>
+            <circle cx="92" cy="270" r="4"/>
+          </g>
+        </pattern>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#doodles)"/>
+    </svg>
+  </div>
+
+  <header class="header">
+    <div class="avatar maya">MC</div>
+    <div class="who">
+      <div class="name">Maya Chen</div>
+      <div class="status">online</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="icons">
+      <svg viewBox="0 0 32 32"><circle cx="14" cy="14" r="9"/><path d="M21 21 L28 28"/></svg>
+      <svg viewBox="0 0 32 32"><path d="M8 4 h5 l2.5 6.5 -3.2 2.2 a15 15 0 0 0 7 7 l2.2 -3.2 L28 19 v5 a3 3 0 0 1 -3 3 C14.5 27 5 17.5 5 7 a3 3 0 0 1 3 -3 z"/></svg>
+      <svg viewBox="0 0 32 32"><rect x="4" y="6" width="24" height="20" rx="4"/><path d="M19 6 v20"/></svg>
+    </div>
+  </header>
+
+  <div class="botbar">
+    <div class="avatar bot">H</div>
+    <div class="who">
+      <div class="name">Hermes</div>
+      <div class="status">bot manages this chat</div>
+    </div>
+    <div class="spacer" style="flex:1"></div>
+    <div class="pause">Pause</div>
+    <svg class="more" viewBox="0 0 30 30"><circle cx="6" cy="15" r="2.6"/><circle cx="15" cy="15" r="2.6"/><circle cx="24" cy="15" r="2.6"/></svg>
+  </div>
+
+  <main class="log">
+    <div class="col">
+      <!-- incoming voice note from the client -->
+      <div class="row in">
+        <div class="bubble clear" style="padding: 14px 18px 12px 14px;">
+          <div class="voice">
+            <div class="play"><svg viewBox="0 0 26 26"><path d="M5 2.8 L23 13 L5 23.2 Z"/></svg></div>
+            <div class="wave-wrap">
+              <div class="wave" data-bars="52" data-seed="7"></div>
+              <div class="dur">0:34 <span class="dot"></span></div>
+            </div>
+            <span class="meta" style="align-self:flex-end; margin: 0 0 -2px 18px;">11:02</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Business-scoped reply: one expandable_blockquote covering "🎙️ <enriched transcript>" -->
+      <div class="row out">
+        <div class="bubble clear" style="max-width: 1060px;">
+          <div class="reply"><div class="bar"></div><div class="txt"><div class="rn">Maya Chen</div><div class="rt">Voice message</div></div></div>
+          <div class="quote"><svg class="qicon" viewBox="0 0 20 20"><path d="M2 11.5 C2 7 4.6 4 8.4 3.4 L8.9 5.2 C6.8 5.9 5.8 7.3 5.7 9 H8.6 V16 H2 Z M11.2 11.5 C11.2 7 13.8 4 17.6 3.4 L18.1 5.2 C16 5.9 15 7.3 14.9 9 H17.8 V16 H11.2 Z"/></svg><svg class="chev" viewBox="0 0 24 24"><path d="M6 15 L12 9 L18 15"/></svg><span class="emoji">🎙️</span> Hi Alex! Quick update after the team call. Everyone loved the new homepage direction, so let’s keep the warm palette and the big product photos.
+
+Before the launch we still need:
+- a mobile version of the menu page
+- the order button above the fold
+- the new opening hours in the footer
+
+Oh, and the launch moved to April 14. Could you send the updated estimate by Thursday?</div>
+          <span class="meta">11:02 <svg viewBox="0 0 26 16"><path d="M1.5 8.5 L6 13 L14.5 3.2 M9.6 11.6 L11 13 L19.5 3.2"/></svg></span>
+        </div>
+      </div>
+
+      <!-- short outgoing voice note: transcript appended to its caption as an expandable_blockquote -->
+      <div class="row out">
+        <div class="bubble clear" style="max-width: 900px; padding: 14px 18px 10px 14px;">
+          <div class="voice" style="margin-bottom: 12px;">
+            <div class="play"><svg viewBox="0 0 26 26"><path d="M5 2.8 L23 13 L5 23.2 Z"/></svg></div>
+            <div class="wave-wrap">
+              <div class="wave" data-bars="26" data-seed="41"></div>
+              <div class="dur">0:05</div>
+            </div>
+          </div>
+          <div class="quote" style="margin: 0 -2px 0 2px;"><svg class="qicon" viewBox="0 0 20 20"><path d="M2 11.5 C2 7 4.6 4 8.4 3.4 L8.9 5.2 C6.8 5.9 5.8 7.3 5.7 9 H8.6 V16 H2 Z M11.2 11.5 C11.2 7 13.8 4 17.6 3.4 L18.1 5.2 C16 5.9 15 7.3 14.9 9 H17.8 V16 H11.2 Z"/></svg><span class="emoji">🎙️</span> Got it! Estimate on Thursday, mobile menu mockup by Friday.</div>
+          <span class="meta">edited 11:05 <svg viewBox="0 0 26 16"><path d="M1.5 8.5 L6 13 L14.5 3.2 M9.6 11.6 L11 13 L19.5 3.2"/></svg></span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="composer">
+    <svg viewBox="0 0 34 34"><path d="M23 11 L13.5 20.5 a3 3 0 0 0 4.2 4.2 L27 15.4 a6 6 0 0 0 -8.5 -8.5 L9 16.4 a9 9 0 0 0 12.7 12.7 L28 22.8"/></svg>
+    <div class="field">Write a message…</div>
+    <svg viewBox="0 0 34 34"><circle cx="17" cy="17" r="13"/><path d="M11.5 20 a7 7 0 0 0 11 0"/><circle cx="12.5" cy="13.5" r="0.6" fill="#8b939c"/><circle cx="21.5" cy="13.5" r="0.6" fill="#8b939c"/></svg>
+    <svg viewBox="0 0 34 34"><rect x="12" y="4" width="10" height="17" rx="5"/><path d="M7 16 a10 10 0 0 0 20 0 M17 26 v4"/></svg>
+  </footer>
+
+  <script>
+    // Deterministic waveform bars.
+    for (const wave of document.querySelectorAll('.wave')) {
+      let s = Number(wave.dataset.seed);
+      const rnd = () => ((s = (s * 9301 + 49297) % 233280) / 233280);
+      const n = Number(wave.dataset.bars);
+      for (let i = 0; i < n; i++) {
+        const env = 0.55 + 0.45 * Math.sin(Math.PI * (i + 0.5) / n) ** 0.5;
+        const h = Math.max(5, Math.round((7 + rnd() * 23) * env));
+        const bar = document.createElement('i');
+        bar.style.height = h + 'px';
+        wave.appendChild(bar);
+      }
+    }
+  </script>
+</body>
+</html>
