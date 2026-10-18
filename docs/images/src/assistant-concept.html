@@ -1,0 +1,91 @@
+<!doctype html>
+<!-- Fictional content. Future assistant design, not a shipped Telegram screenshot. Render at 1440x1020. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hermes Telegram Business — planned reply assistant</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; width: 1440px; height: 1020px; overflow: hidden; background: #f1eee7; color: #242d2c; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+main { padding: 52px 60px 38px; }
+.eyebrow { color: #4a625c; font-size: 17px; font-weight: 650; letter-spacing: 2px; text-transform: uppercase; }
+header { display: flex; justify-content: space-between; align-items: center; }
+.planned { border: 1px solid #bfb8a9; border-radius: 20px; padding: 9px 16px; font-size: 16px; color: #665e50; }
+h1 { font-size: 49px; line-height: 1.12; letter-spacing: -1.8px; margin: 20px 0 13px; font-weight: 620; }
+.intro { font-size: 22px; color: #626a65; margin: 0 0 34px; }
+.grid { display: grid; grid-template-columns: 415px 1fr; gap: 26px; align-items: start; }
+.card { background: #fffefa; border: 1px solid #ddd9cf; border-radius: 23px; overflow: hidden; }
+.context { padding: 26px; }
+.label { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: #7b8075; }
+h2 { font-size: 25px; font-weight: 650; margin: 9px 0 20px; letter-spacing: -.5px; }
+.avatar { width: 44px; height: 44px; border-radius: 14px; background: #f4dfc4; color: #7e5235; display: grid; place-items: center; font-size: 17px; font-weight: 700; flex: none; }
+.person { display: flex; gap: 13px; align-items: center; margin-bottom: 24px; }
+.name { font-weight: 650; font-size: 19px; }
+.sub { font-size: 15px; color: #7c817a; margin-top: 4px; }
+.fact { margin: 15px 0; font-size: 18px; line-height: 1.45; }
+.source { display: inline-block; font-size: 13px; color: #49675b; background: #eaf0e6; border-radius: 5px; padding: 3px 7px; margin-top: 7px; }
+hr { border: 0; border-top: 1px solid #e4e0d6; margin: 23px 0; }
+.rule { border-left: 3px solid #d6a162; padding-left: 13px; font-size: 17px; line-height: 1.45; margin-top: 14px; }
+.rule span { display: block; color: #9a723f; font-size: 13px; font-weight: 650; margin-bottom: 4px; }
+.context-foot { display: flex; justify-content: space-between; color: #49675b; font-weight: 600; font-size: 15px; margin-top: 24px; }
+.chat-head { display: flex; align-items: center; justify-content: space-between; padding: 22px 27px; border-bottom: 1px solid #e4e0d6; }
+.chat-head .name { font-size: 20px; }
+.mode { background: #e7eee5; color: #45664f; font-size: 14px; font-weight: 600; border-radius: 20px; padding: 9px 13px; }
+.chat { padding: 25px; background: #e9eee3; }
+.incoming { background: #fffefa; border-radius: 15px 15px 15px 4px; max-width: 590px; padding: 16px 20px; font-size: 20px; line-height: 1.45; box-shadow: 0 1px 2px #35402a13; }
+.incoming .sub { text-align: right; font-size: 12px; }
+.draft { background: #fffefa; border: 1px solid #d2dccb; border-radius: 16px; margin-top: 22px; padding: 22px; }
+.draft-title { display: flex; align-items: center; justify-content: space-between; color: #47684f; font-size: 17px; font-weight: 650; }
+.draft-title span { font-size: 13px; color: #8a9083; font-weight: 400; }
+.draft p { font-size: 22px; line-height: 1.48; letter-spacing: -.2px; margin: 18px 0; }
+.why { font-size: 14px; color: #737c6c; padding-top: 14px; border-top: 1px solid #e6e9df; }
+.actions { display: flex; gap: 9px; margin-top: 20px; }
+button { font: inherit; font-size: 16px; font-weight: 600; border-radius: 9px; border: 1px solid #d9ddd0; background: #f6f7f0; color: #59624f; padding: 12px 17px; }
+button.send { background: #45684f; color: white; border-color: #45684f; padding-left: 24px; padding-right: 24px; }
+.owner { color: #69755f; font-size: 14px; text-align: center; margin: 18px 0 1px; }
+.auto { padding: 18px 27px; display: flex; align-items: center; justify-content: space-between; font-size: 16px; color: #646a5f; }
+.auto strong { display: block; font-size: 16px; color: #344332; margin-bottom: 4px; }
+.toggle { width: 41px; height: 25px; border-radius: 20px; background: #d5d7d0; position: relative; }
+.toggle::before { content: ""; position: absolute; width: 19px; height: 19px; border-radius: 50%; top: 3px; left: 3px; background: white; }
+footer { display: flex; justify-content: space-between; color: #7d7d70; font-size: 15px; margin-top: 29px; }
+</style>
+</head>
+<body>
+<main>
+  <header><div class="eyebrow">Hermes Telegram Business</div><div class="planned">Planned · Design concept</div></header>
+  <h1>Replies that remember the conversation.</h1>
+  <p class="intro">Your voice, relevant history, and a clear choice about who sends.</p>
+  <div class="grid">
+    <aside class="card context">
+      <div class="label">Editable context</div>
+      <h2>What informs this reply</h2>
+      <div class="person"><div class="avatar">MC</div><div><div class="name">Maya Chen</div><div class="sub">Website redesign · client</div></div></div>
+      <div class="label">Owner voice</div>
+      <div class="fact">Warm, brief, and direct.<br>Use English with Maya.<br><span class="source">Owner-confirmed preference</span></div>
+      <hr>
+      <div class="label">Conversation evidence</div>
+      <div class="fact">Revised estimate is due Thursday.<br><span class="source">Your message · Oct 16</span></div>
+      <div class="fact">Delivery date is still unconfirmed.<br><span class="source">Conversation · Oct 16</span></div>
+      <div class="rule"><span>PINNED OWNER RULE</span>Confirm scope before promising a delivery date.</div>
+      <div class="context-foot"><span>View sources</span><span>Edit context ↗</span></div>
+    </aside>
+    <section class="card">
+      <div class="chat-head"><div><div class="name">Hermes · Owner inbox</div><div class="sub">Suggested reply to Maya Chen</div></div><div class="mode">Draft mode</div></div>
+      <div class="chat">
+        <div class="incoming">Hi! Can you send the revised estimate on Thursday? And when could we launch?<div class="sub">Maya · 11:02</div></div>
+        <div class="draft">
+          <div class="draft-title">Suggested reply <span>Only visible to you</span></div>
+          <p>Yes, I’ll send the revised estimate on Thursday. I’ll confirm the launch date once we’ve agreed on the scope.</p>
+          <div class="why">Uses 2 conversation sources and your pinned delivery rule.</div>
+          <div class="actions"><button class="send">Send</button><button>Edit</button><button>Discard</button><button>Regenerate</button></div>
+        </div>
+        <p class="owner">Nothing is sent until you approve it.</p>
+      </div>
+      <div class="auto"><div><strong>Automatic replies for Maya</strong>Off · requires explicit setup and a reply policy</div><div class="toggle" aria-label="Automatic replies off"></div></div>
+    </section>
+  </div>
+  <footer><span>Fictional messages · planned assistant interface</span><span>History → Persona → Draft → Your choice</span></footer>
+</main>
+</body>
+</html>

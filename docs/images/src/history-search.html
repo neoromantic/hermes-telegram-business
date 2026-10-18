@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- Real CLI output from synthetic Business events; no real contacts or credentials. Render at1440x740. -->
+<html lang="en"><head><meta charset="utf-8"><title>Hermes Telegram Business — history search</title>
+<style>
+* { box-sizing: border-box; }
+body { margin:0; width:1440px; height:740px; background:#f1eee7; color:#242d2c; font-family:-apple-system,BlinkMacSystemFont,sans-serif; padding:55px 60px; }
+header { display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; }
+.brand { font-size:17px; font-weight:650; letter-spacing:2px; color:#4a625c; text-transform:uppercase; }
+.badge { border:1px solid #bfb8a9; border-radius:20px; padding:9px 16px; font-size:16px; color:#665e50; }
+h1 { font-size:46px; letter-spacing:-1.6px; font-weight:620; margin:0 0 12px; }
+p { font-size:21px; color:#626a65; margin:0 0 32px; }
+.terminal { background:#24312c; color:#e7ede0; border-radius:20px; overflow:hidden; box-shadow:0 12px 35px #25322415; }
+.bar { padding:18px 24px; font-size:14px; border-bottom:1px solid #405044; color:#a6b7a5; display:flex; gap:7px; align-items:center; }
+.dot { height:10px; width:10px; border-radius:50%; background:#8b9a85; }
+.title { margin-left:16px; }
+pre { padding:26px 30px 30px; margin:0; font:17px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+footer { display:flex; justify-content:space-between; font-size:15px; color:#7d7d70; margin-top:26px; }
+</style></head><body>
+<header><div class="brand">Hermes Telegram Business</div><div class="badge">Implemented · Synthetic CLI capture</div></header>
+<h1>Find the conversation. Keep the evidence.</h1>
+<p>Contact lookup and bounded text search from the canonical history log. No LLM required.</p>
+<section class="terminal"><div class="bar"><i class="dot"></i><i class="dot"></i><i class="dot"></i><span class="title">hermes telegram-business history</span></div><pre>$ hermes telegram-business history contacts --search maya --limit 5
+@mayachen username=@mayachen connection=demo-business chat=2000 type=private messages=2 edits=0 deleted=0 unexplained=0 range=2026-10-18T16:57:25.317827Z..2026-10-18T16:57:25.322353Z
+
+$ hermes telegram-business history search --contact @mayachen --text estimate --since 7d --limit 10
+2026-10-18T16:57:25.317827Z message.created source=business_message connection=demo-business chat=2000 message=1 direction=inbound sender=2000 text=Could you send the revised estimate on Thursday?
+2026-10-18T16:57:25.322353Z message.created source=business_message connection=demo-business chat=2000 message=2 direction=outbound sender=1000 text=Yes, I will send the estimate on Thursday. Launch date is still unconfirmed.
+
+</pre></section>
+<footer><span>Actual CLI output · fictional Maya/Alex conversation</span><span>Contact names · Dates · Direction · Source message IDs</span></footer>
+</body></html>

@@ -245,10 +245,9 @@ def test_manifest_uses_current_fields():
     assert manifest == {
         "manifest_version": 1,
         "name": LEGACY_PLUGIN_ID,
-        "version": "0.7.2",
+        "version": "0.8.0",
         "description": (
-            "Update-persistent Hermes Telegram Business integration with voice, video-note, and attached-audio "
-            "transcription, configurable transcript enrichment, and Business-scoped replies."
+            "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
         ),
         "author": "neoromantic",
         "kind": "standalone",
@@ -260,10 +259,9 @@ def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "hermes-telegram-business"
-    assert metadata["version"] == "0.7.2"
+    assert metadata["version"] == "0.8.0"
     assert metadata["description"] == (
-        "Update-persistent Telegram Business integration for Hermes Agent with voice, video-note, and "
-        "attached-audio transcription and Business-scoped replies."
+        "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
     )
     assert metadata["urls"] == {
         "Homepage": CANONICAL_REPOSITORY,
@@ -276,11 +274,37 @@ def test_package_metadata_uses_public_product_identity():
 def test_readme_uses_public_name_and_canonical_install_source():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert readme.startswith("# Hermes Telegram Business\n")
+    assert readme.startswith("# Telegram Business for Hermes\n")
     assert f"{CANONICAL_REPOSITORY}/actions/workflows/test.yml" in readme
     assert "hermes plugins install neoromantic/hermes-telegram-business --enable" in readme
     assert "legacy-stable" in readme
-    assert "not implemented" in readme
+    assert "HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE" in readme
+    assert "gemini-3.8-flash" in readme
+    assert "PTB 22.8" in readme
+    assert "ctx.register_telegram_handler" in readme
+    assert "docs/HISTORY.md" in readme
+    assert "docs/ASSISTANT.md" in readme
+    assert "docs/ROADMAP.md" in readme
+
+
+def test_history_skill_documents_runtime_scheduler_and_defaults():
+    skill = (ROOT / "skills" / "history" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert skill.startswith("---\nname: history\n")
+    assert "description:" in skill
+    assert "Message.text" in skill
+    assert "Update.ALL_TYPES" in skill
+    assert "`source`" in skill
+    assert "`classification_reason`" in skill
+    assert "HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES" in skill
+    assert "private Business chats only" in skill
+    assert "contacts.json" in skill
+    assert "HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS" in skill
+    assert "default `0`" in skill
+    assert "1073741824" in skill
+    assert "does not depend on `maintain`" in skill
+    assert "No record-level or right-to-erasure command ships in v1." in skill
+    assert "active month is preserved" in skill
 
 
 def test_ci_runs_on_main_and_version_tags():
@@ -331,153 +355,41 @@ def test_optional_telegram_error_names_are_import_safe(monkeypatch: pytest.Monke
     ) is compat_plugin.CaptionEditAttemptOutcome.UNCERTAIN_REMOTE_STATE
 
 
-def test_registers_only_pre_gateway_dispatch_hook(plugin):
+def test_register_registers_hook_cli_and_skill_when_supported(plugin):
     llm = object()
     registrations = []
+    cli_registrations = []
+    skill_registrations = []
+    telegram_registrations = []
     ctx = SimpleNamespace(
         llm=llm,
+        register_telegram_handler=telegram_registrations.append,
         register_hook=lambda name, callback: registrations.append((name, callback)),
+        register_cli_command=lambda **kwargs: cli_registrations.append(kwargs),
+        register_skill=lambda name, path, description="": skill_registrations.append((name, path, description)),
     )
 
     plugin.register(ctx)
 
     assert plugin._llm_facade is llm
+    assert telegram_registrations == [plugin._register_telegram_handlers]
     assert registrations == [("pre_gateway_dispatch", plugin._on_pre_gateway_dispatch)]
-
-
-def _install_fake_telegram_adapter(monkeypatch: pytest.MonkeyPatch):
-    class FakeAdapter:
-        def _is_user_authorized_from_message(self, _message):
-            return False
-
-        async def _handle_media_message(self, update, _context):
-            self.handled_message = update.message
-            self.handled_update_id = update.update_id
-            return "handled"
-
-    handler_calls = []
-
-    def message_handler(handler_filter, callback, *args, **kwargs):
-        call = (handler_filter, callback, args, kwargs)
-        handler_calls.append(call)
-        return call
-
-    telegram_adapter = types.ModuleType("plugins.platforms.telegram.adapter")
-    telegram_adapter.TelegramAdapter = FakeAdapter
-    telegram_adapter.TelegramMessageHandler = message_handler
-    telegram_adapter.filters = SimpleNamespace(VIDEO_NOTE=16)
-
-    plugins = types.ModuleType("plugins")
-    platforms = types.ModuleType("plugins.platforms")
-    telegram = types.ModuleType("plugins.platforms.telegram")
-    telegram.adapter = telegram_adapter
-    plugins.platforms = platforms
-    platforms.telegram = telegram
-
-    monkeypatch.setitem(sys.modules, "plugins", plugins)
-    monkeypatch.setitem(sys.modules, "plugins.platforms", platforms)
-    monkeypatch.setitem(sys.modules, "plugins.platforms.telegram", telegram)
-    monkeypatch.setitem(sys.modules, "plugins.platforms.telegram.adapter", telegram_adapter)
-
-    gateway = types.ModuleType("gateway")
-    platform_registry_module = types.ModuleType("gateway.platform_registry")
-    platform_registry_module.platform_registry = SimpleNamespace(get=lambda _name: None)
-    gateway.platform_registry = platform_registry_module
-    monkeypatch.setitem(sys.modules, "gateway", gateway)
-    monkeypatch.setitem(sys.modules, "gateway.platform_registry", platform_registry_module)
-    return telegram_adapter, handler_calls
-
-
-def test_adapter_compat_adds_video_note_filter_and_is_idempotent(plugin, monkeypatch):
-    telegram_adapter, handler_calls = _install_fake_telegram_adapter(monkeypatch)
-
-    assert plugin._install_telegram_adapter_compat() is True
-    first_handler = telegram_adapter.TelegramMessageHandler
-    assert plugin._install_telegram_adapter_compat() is True
-    assert telegram_adapter.TelegramMessageHandler is first_handler
-
-    callback = SimpleNamespace(__name__="_handle_media_message")
-    result = telegram_adapter.TelegramMessageHandler(3, callback, 7, block=False)
-
-    assert result == (19, callback, (7,), {"block": False})
-    assert handler_calls == [result]
-
-
-def test_adapter_compat_patches_registered_isolated_module(plugin, monkeypatch):
-    legacy_adapter, _ = _install_fake_telegram_adapter(monkeypatch)
-
-    class RegisteredAdapter(legacy_adapter.TelegramAdapter):
-        pass
-
-    RegisteredAdapter.__module__ = "hermes_plugins.telegram_platform.adapter"
-    factory_namespace = {"TelegramAdapter": RegisteredAdapter}
-    exec(
-        "def build_adapter(config):\n    return TelegramAdapter(config)",
-        factory_namespace,
-    )
-    build_adapter = factory_namespace["build_adapter"]
-
-    isolated_adapter = types.ModuleType("hermes_plugins.telegram_platform.adapter")
-    isolated_adapter.TelegramAdapter = RegisteredAdapter
-    isolated_adapter.TelegramMessageHandler = legacy_adapter.TelegramMessageHandler
-    isolated_adapter.filters = SimpleNamespace(VIDEO_NOTE=16)
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_plugins.telegram_platform.adapter",
-        isolated_adapter,
-    )
-    sys.modules["gateway.platform_registry"].platform_registry = SimpleNamespace(
-        get=lambda name: SimpleNamespace(adapter_factory=build_adapter) if name == "telegram" else None
-    )
-
-    assert plugin._install_telegram_adapter_compat() is True
-
-    assert getattr(RegisteredAdapter._handle_media_message, "_hermes_business_compat", False)
-    assert getattr(RegisteredAdapter._is_user_authorized_from_message, "_hermes_business_compat", False)
-    assert getattr(isolated_adapter.TelegramMessageHandler, "_hermes_business_compat", False)
-    assert not getattr(
-        legacy_adapter.TelegramAdapter._handle_media_message,
-        "_hermes_business_compat",
-        False,
-    )
-
-
-@pytest.mark.asyncio
-async def test_adapter_compat_exposes_effective_business_message(plugin, monkeypatch):
-    telegram_adapter, _ = _install_fake_telegram_adapter(monkeypatch)
-    plugin._install_telegram_adapter_compat()
-    adapter = telegram_adapter.TelegramAdapter()
-    message = make_message()
-    update = SimpleNamespace(
-        update_id=42,
-        message=None,
-        effective_message=message,
-        business_message=message,
-    )
-
-    result = await adapter._handle_media_message(update, SimpleNamespace())
-
-    assert result == "handled"
-    assert adapter.handled_message is message
-    assert adapter.handled_update_id == 42
-
-
-def test_adapter_auth_bypass_is_opt_in_and_voice_only(plugin, monkeypatch):
-    telegram_adapter, _ = _install_fake_telegram_adapter(monkeypatch)
-    plugin._install_telegram_adapter_compat()
-    adapter = telegram_adapter.TelegramAdapter()
-    voice = make_message(media_kind="voice")
-    document = make_message(media_kind="voice")
-    document.voice = None
-    document.document = object()
-
-    monkeypatch.delenv("HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH", raising=False)
-    assert adapter._is_user_authorized_from_message(voice) is False
-
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH", "1")
-    assert adapter._is_user_authorized_from_message(voice) is True
-    assert adapter._is_user_authorized_from_message(document) is False
-    assert adapter._is_user_authorized_from_message(make_message(business_id=None)) is False
+    assert cli_registrations == [
+        {
+            "name": "telegram-business",
+            "help": "Read and maintain Telegram Business history",
+            "setup_fn": plugin._history_support.setup_cli,
+            "handler_fn": plugin._history_support.handle_cli,
+            "description": "Telegram Business history, verification, and maintenance",
+        }
+    ]
+    assert skill_registrations == [
+        (
+            "history",
+            plugin._history_support.skill_path(),
+            "Telegram Business history schema, safe read recipes, and maintenance guidance.",
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1636,7 +1548,8 @@ async def test_structured_cleanup_uses_host_facade_and_keeps_conservative_result
 
     assert result == cleaned
     assert llm.kwargs["provider"] == "gemini"
-    assert llm.kwargs["model"] == "gemini-3.5-flash"
+    assert llm.kwargs["model"] == "gemini-3.8-flash"
+    assert "temperature" not in llm.kwargs
     assert llm.kwargs["json_schema"] == plugin._CLEANUP_JSON_SCHEMA
     assert llm.kwargs["input"] == [{
         "type": "text",
@@ -1779,23 +1692,6 @@ def test_rejects_generic_documents_and_video_as_audio(plugin, media_kind, mime_t
     assert plugin._audio_file_payload(message) is None
     assert plugin._business_voice_message(make_event(message)) is None
     assert plugin._on_pre_gateway_dispatch(event=make_event(message), gateway=SimpleNamespace()) is None
-
-
-def test_adapter_auth_bypass_includes_only_business_audio_candidates(plugin, monkeypatch):
-    telegram_adapter, _ = _install_fake_telegram_adapter(monkeypatch)
-    plugin._install_telegram_adapter_compat()
-    adapter = telegram_adapter.TelegramAdapter()
-    audio = make_audio_file_message(media_kind="audio")
-    audio_document = make_audio_file_message(media_kind="document")
-    generic_document = make_audio_file_message(
-        media_kind="document", mime_type="application/pdf", file_name="notes.pdf"
-    )
-
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH", "1")
-    assert adapter._is_user_authorized_from_message(audio) is True
-    assert adapter._is_user_authorized_from_message(audio_document) is True
-    assert adapter._is_user_authorized_from_message(generic_document) is False
-    assert adapter._is_user_authorized_from_message(make_audio_file_message(business_id=None)) is False
 
 
 @pytest.mark.asyncio
