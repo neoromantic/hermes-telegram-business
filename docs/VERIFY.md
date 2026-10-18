@@ -6,11 +6,29 @@
 uv run --no-project --python 3.14 --with pytest --with pytest-asyncio --with pyyaml --with python-telegram-bot==22.8 python -m pytest -q
 ```
 
+Run correctness lint with `ruff check` (the repository explicitly selects
+`E4`, `E7`, `E9`, and `F` to keep checks stable across Ruff default changes).
+Set `TMPDIR` to an isolated scratch directory when running tests on a host.
+
 CI runs the suite on Python 3.11–3.14. Telegram, STT, and LLM network calls are simulated. Real PTB objects and request serialization are exercised separately from the lightweight unit fixtures.
 
 History checks must cover one-time opt-in, private-chat defaults, explicit scope overrides, create/edit/delete capture, correction classification, restart/retry behavior, partial final writes, contact renames and ambiguity, bounded date/text queries, retention, catalog rebuilds, and CLI failure exits.
 
 Native-handler checks must demonstrate that Business voice/audio is consumed before the ordinary media handler, unrelated messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
+
+## Dossier fixture verification
+
+`tests/test_dossiers.py` uses fictional canonical histories and mock host structured
+LLMs. It covers off-default gating, all-private scope/group exclusion, exact
+preview, 90-day/500-message backfill and chunk limits, quote/reference checks,
+contradictions, incremental same-timestamp edits, source deletion/classification/
+pruning, persona cadence and qualified references, the persisted rolling rate
+limit, gateway-only startup/reconnect/cancellation, no-content logs, all owner CLI
+controls, private temporary/snapshot permissions, non-mutating inspection,
+process-safe cycle locking, concurrent correction/removal/note rebasing, reset
+epochs, and interrupted snapshot/log publication. Message statistics and dossiers
+exercise the same canonicalization function. No dossier test calls Telegram or a
+real model. A live gateway/provider smoke remains a separate authorized operation.
 
 ## Current-core smoke: 2026-10-18
 

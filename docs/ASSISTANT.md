@@ -1,6 +1,8 @@
 # Persona-aware reply assistant
 
-Status: planned. History capture and transcription are implemented; dossiers, reply drafting, and automatic replies are not runtime features in 0.8.0. The linked [roadmap](ROADMAP.md) tracks their requirements.
+Status: reply drafting and automatic replies are planned. This branch implements
+history, transcription, and separately opt-in [dossiers/persona](DOSSIERS.md). The
+linked [roadmap](ROADMAP.md) tracks the remaining requirements.
 
 ## Experience
 
@@ -14,12 +16,16 @@ The illustration is a design concept, not a screenshot of a shipped feature. It 
 
 Keep two distinct views:
 
-- **Owner persona:** preferred language, tone, brevity, formatting, typical greetings, and explicitly supplied rules. Derive writing style from the owner's messages in selected chats.
+- **Owner persona:** preferred language, tone, brevity, formatting, typical greetings, and explicitly supplied rules. Derive writing style from the owner's sent messages across all private chats in history.
 - **Contact context:** observed names, relationship context, communication preferences, open questions, and explicit commitments relevant to that particular conversation.
 
 Every derived fact needs inspectable source references and freshness information. Distinguish quoted evidence, model inference, and owner-authored instructions. Uncertainty stays visible; unsupported traits, motives, and psychological diagnoses do not belong in a dossier.
 
-Owners can inspect, correct, pin, refresh, reset, and forget a dossier. Corrections remain authoritative on later refreshes. History capture alone does not consent to model processing: select the chats and provider when enabling dossier generation. Keep one contact's private facts out of another contact's draft. Learning a general owner writing style across selected chats must not expose their contents.
+Owners can inspect, correct, pin, refresh, reset, and forget a dossier. Corrections remain authoritative on later refreshes. History capture alone does not enable model processing: dossier generation has
+its own off-default switch and uses all private chats automatically. Keep each
+contact dossier isolated. The owner explicitly chose no extra cross-contact
+persona leakage filters for this slice. Draft delivery boundaries remain a separate
+requirement for #18.
 
 Use the canonical history store and its contact resolution. Add only the small derived state needed for these features. A second conversation archive, CRM platform, embedding service, or database migration is not a prerequisite.
 

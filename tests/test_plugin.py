@@ -377,10 +377,10 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
     assert cli_registrations == [
         {
             "name": "telegram-business",
-            "help": "Read and maintain Telegram Business history",
+            "help": "Read and maintain Telegram Business history and dossiers",
             "setup_fn": plugin._history_support.setup_cli,
-            "handler_fn": plugin._history_support.handle_cli,
-            "description": "Telegram Business history, verification, and maintenance",
+            "handler_fn": plugin._handle_business_cli,
+            "description": "Telegram Business history, dossiers, verification, and maintenance",
         }
     ]
     assert skill_registrations == [
@@ -388,7 +388,12 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
             "history",
             plugin._history_support.skill_path(),
             "Telegram Business history schema, safe read recipes, and maintenance guidance.",
-        )
+        ),
+        (
+            "dossiers",
+            ROOT / "skills" / "dossiers" / "SKILL.md",
+            "Private dossier inspection, evidence and owner correction recipes.",
+        ),
     ]
 
 

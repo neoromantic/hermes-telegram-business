@@ -100,3 +100,12 @@ No record-level erasure command ships in this version. To remove an entire local
 The native Telegram observer records eligible Business text before ordinary Hermes handlers. It also receives deleted-message updates, which have no effective message. Capture does not change the ordinary Hermes authorization or agent routing of text messages. Disable history to stop capturing new messages; use Hermes's normal configuration to control agent replies.
 
 The separate voice module still deletes transient audio after processing. This version does not insert voice transcripts into the text archive automatically.
+
+## Canonical message counts
+
+`hermes telegram-business history stats --messages [--contact @alice | --chat 991] [--connection ID]`
+counts latest text messages using the same canonical view as [dossiers](DOSSIERS.md):
+event deduplication, latest edits, send-time ordering, retained deletion labels,
+and omission of deletions classified as duplicate/correction replacements.
+It reports inbound/outbound/unknown and deleted counts without an LLM call.
+Plain `history stats` continues to report physical archive and maintenance counts.

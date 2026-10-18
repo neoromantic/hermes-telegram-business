@@ -7,3 +7,6 @@ htmlcov/
 venv/
 .env
 .DS_Store
+
+.scratch/
+.ruff_cache/

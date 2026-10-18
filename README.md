@@ -43,9 +43,30 @@ History captures new text messages, edits, and deletions as Telegram delivers th
 
 Canonical storage is profile-local JSONL with a rebuildable contact catalog. Capture and search require no LLM. Media and captions are excluded from history in this version. [History configuration, retention, and CLI](docs/HISTORY.md).
 
+## Contact dossiers and owner persona
+
+Optional background processing builds evidence-backed dossiers for every private
+Business chat with sent and received text, plus an owner communication persona.
+It is separately off by default: `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1`.
+The gateway worker uses the host-owned structured LLM; history capture remains
+LLM-free. Inspect exact input, follow sources and preserve owner corrections:
+
+```bash
+hermes telegram-business dossier preview --contact @alice
+hermes telegram-business dossier run
+hermes telegram-business dossier show --contact @alice --fact f3 --format json
+hermes telegram-business dossier correct --contact @alice --fact f3 --text 'Owner correction'
+hermes telegram-business dossier show --persona
+```
+
+[Configuration, all owner controls, evidence rules and synthetic example](docs/DOSSIERS.md).
+This is branch implementation, not a statement that processing is enabled on any host.
+
 ## Planned assistant
 
-The next layer uses opted-in history to build an editable, evidence-backed owner persona and per-contact context. It will support contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover. These features are requirements, not runtime capabilities in 0.8.0.
+Contextual reply drafts with **Send / Edit / Discard**, and separately enabled
+per-chat automatic replies with pause and human handover, remain planned in
+#18/#19. This slice builds context only.
 
 See the [roadmap](docs/ROADMAP.md) and [assistant design](docs/ASSISTANT.md). This project complements Nous Research's [official reply-drafting plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/telegram-business); it is a separate community integration.
 
@@ -208,8 +229,9 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 Tests cover the history CLI and disk recovery, transcript behavior, and real PTB handler/HTTP contracts with simulated Telegram responses. They need no Telegram token, provider credential, network call, or running gateway.
 
 ```bash
-python -m pip install pytest pytest-asyncio pyyaml python-telegram-bot==22.8
+python -m pip install pytest pytest-asyncio pyyaml python-telegram-bot==22.8 ruff
 python -m pytest -q
+python -m ruff check
 ```
 
 Live Telegram client rendering and provider cleanup quality require a separate configured smoke test. The [verification guide](docs/VERIFY.md) records the boundary.

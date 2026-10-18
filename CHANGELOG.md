@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — issue #17
+
+- Add separately opt-in private-chat dossiers and an owner communication persona,
+  using the host structured LLM with bounded incremental canonical history input.
+- Add gateway-only delayed processing, shared process-safe cycle/rate locks,
+  deterministic evidence checks, source reconciliation and private atomic storage.
+- Add all dossier CLI owner controls, exact input previews, durable corrections,
+  pins/removals/notes, revision reasons, exports and reset semantics.
+- Bundle safe dossier recipes and a synthetic usage example; add fixture/mocked
+  regressions for worker, privacy, concurrency, evidence and CLI workflows.
+
 ## 0.8.0 - Unreleased
 
 - Finish opt-in Business text history with contact/date/text search, aliases, edits, preserved deletions, and correction classification in canonical JSONL.

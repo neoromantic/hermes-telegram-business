@@ -3099,6 +3099,87 @@ def _resolve_history_entry(
     raise ValueError("pass --chat or --contact")
 
 
+def canonical_text_messages(entry: dict[str, Any]) -> tuple[list[dict[str, Any]], datetime | None]:
+    """Shared semantic input for derived stats/dossiers, under canonical read locks.
+
+    Latest replayed edit per identity, send-time order, first-observation fallback,
+    and the deletion replacement policy. No mutation or LLM work occurs here.
+    """
+    chat_dir = _entry_chat_dir(entry)
+    if not history_root().exists():
+        return [], None
+    state = ChatState()
+    first_seen: dict[str, str] = {}
+    send_times: dict[str, str] = {}
+    edited: set[str] = set()
+    deletions: dict[str, str] = {}
+    replaced: set[str] = set()
+    latest = None
+
+    def consume(record: dict[str, Any]) -> None:
+        nonlocal latest
+        event_id = str(record.get("event_id") or "")
+        if event_id and event_id in state.seen_event_ids:
+            return
+        observed = _parse_datetime(record.get("observed_at"))
+        if observed and (latest is None or observed > latest):
+            latest = observed
+        event_type = record.get("event_type")
+        key = str(record.get("message_id"))
+        if event_type == "message.deleted":
+            deletions[key] = event_id
+        elif event_type == "deletion.classified" and record.get("classification") in {"likely_duplicate", "likely_correction"}:
+            replaced.add(key)
+        if event_type in {"message.created", "message.edited"}:
+            key = str(record.get("message_id"))
+            first_seen.setdefault(key, record.get("observed_at"))
+            if record.get("message_at"):
+                send_times.setdefault(key, record["message_at"])
+            if event_type == "message.created" and key in edited:
+                state.seen_event_ids.add(event_id)
+                return
+            if event_type == "message.edited":
+                edited.add(key)
+        _apply_record_to_state(state, record)
+
+    with _root_read_lock():
+        if not chat_dir.exists():
+            return [], None
+        with _chat_read_lock(chat_dir):
+            _scan_records(chat_dir, repair_tails=False, on_record=consume)
+    result = []
+    for key, message in state.messages.items():
+        if not isinstance(message.text, str) or not message.text.strip():
+            continue
+        # Telegram cannot undelete an ID. A delayed create/edit must not erase
+        # an earlier tombstone, and repeated deletions cannot undo replacement
+        # classification for that identity.
+        if key in replaced:
+            continue
+        if key in deletions:
+            message.deleted = True
+            message.deleted_event_id = deletions[key]
+        result.append({"ref": "m" + key, "text": message.text,
+                       "date": _isoformat_utc(_parse_datetime(message.message_at or send_times.get(key) or first_seen[key])),
+                       "direction": message.direction if message.direction in {"inbound", "outbound"} else "unknown",
+                       "deleted": message.deleted})
+    result.sort(key=lambda m: (m["date"], m["ref"]))
+    return result, latest
+
+
+def canonical_message_stats(entries: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """Message counts use exactly the dossier canonicalization/deletion policy."""
+    counts = {"chats": 0, "text_messages": 0, "inbound": 0, "outbound": 0, "unknown": 0, "deleted": 0}
+    for entry in entries:
+        messages, _ = canonical_text_messages(entry)
+        counts["chats"] += 1
+        counts["text_messages"] += len(messages)
+        for message in messages:
+            counts[message["direction"]] += 1
+            counts["deleted"] += int(message["deleted"])
+    return counts
+
+
 def _entry_chat_dir(entry: dict[str, Any]) -> Path:
     return _history_chat_dir_path(entry.get("business_connection_id"), entry.get("chat_id"))
 
@@ -3329,6 +3410,9 @@ def _chat_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def setup_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="telegram_business_command")
+    from . import dossier_support
+
+    dossier_support.setup_cli(subs)
     history = subs.add_parser("history", help="Read and maintain Telegram Business history")
     history_subs = history.add_subparsers(dest="telegram_business_history_command")
 
@@ -3348,6 +3432,10 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     catalog.set_defaults(_history_action="catalog")
 
     stats = history_subs.add_parser("stats", help="Show aggregate history stats")
+    stats.add_argument("--messages", action="store_true", help="Count canonical latest text using the dossier policy")
+    stats.add_argument("--connection")
+    stats.add_argument("--chat")
+    stats.add_argument("--contact")
     stats.set_defaults(_history_action="stats")
 
     show = history_subs.add_parser("show", help="Show a bounded history timeline")
@@ -3448,6 +3536,13 @@ def handle_cli(args: argparse.Namespace) -> int:
             return 0
 
         if action == "stats":
+            if getattr(args, "messages", False):
+                if getattr(args, "chat", None) or getattr(args, "contact", None):
+                    entries = [_resolve_history_entry(business_connection_id=args.connection, chat_id=args.chat, contact=args.contact)]
+                else:
+                    entries = _filter_catalog_entries(business_connection_id=args.connection)
+                print(json.dumps(canonical_message_stats(entries), sort_keys=True))
+                return 0
             config = history_config_from_env()
             stats = collect_history_stats()
             print(

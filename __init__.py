@@ -28,6 +28,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Iterable, Optional, cast
 
+from . import dossier_support as _dossier_support
+from . import history_support as _history_support
+
 try:
     from hermes_constants import get_hermes_home
 except ModuleNotFoundError as exc:
@@ -74,7 +77,6 @@ else:
     )
 
 
-from . import history_support as _history_support
 
 
 logger = logging.getLogger(__name__)
@@ -155,6 +157,7 @@ _seen_lock = threading.Lock()
 _seen_messages: dict[tuple[str, ...], float] = {}
 _pending_tasks: set[asyncio.Task[Any]] = set()
 _llm_facade: Any = None
+_dossier_spawn_task: Any = None
 _RAW_HISTORY_HANDLER_GROUP = -100
 
 
@@ -407,6 +410,8 @@ def _is_business_voice_media(message: Any) -> bool:
 
 def _register_telegram_handlers(app: Any, adapter: Any) -> None:
     from telegram.ext import ApplicationHandlerStop, BaseHandler
+
+    _dossier_support.start_worker(app, _llm_facade, spawn_task=_dossier_spawn_task)
 
     async def on_business_update(update: Any, context: Any) -> None:
         try:
@@ -1983,22 +1988,34 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
     return {"action": "skip", "reason": result.reason or "telegram_business_event_handled"}
 
 
+def _handle_business_cli(args: Any) -> int:
+    if getattr(args, "_dossier_action", None):
+        return _dossier_support.handle_cli(args, _llm_facade)
+    return _history_support.handle_cli(args)
+
+
 def register(ctx: Any) -> None:
-    global _llm_facade
+    global _llm_facade, _dossier_spawn_task
     _llm_facade = ctx.llm
+    _dossier_spawn_task = getattr(ctx, "spawn_task", None)
     ctx.register_telegram_handler(_register_telegram_handlers)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
     ctx.register_cli_command(
         name="telegram-business",
-        help="Read and maintain Telegram Business history",
+        help="Read and maintain Telegram Business history and dossiers",
         setup_fn=_history_support.setup_cli,
-        handler_fn=_history_support.handle_cli,
-        description="Telegram Business history, verification, and maintenance",
+        handler_fn=_handle_business_cli,
+        description="Telegram Business history, dossiers, verification, and maintenance",
     )
     ctx.register_skill(
         "history",
         _history_support.skill_path(),
         "Telegram Business history schema, safe read recipes, and maintenance guidance.",
+    )
+    ctx.register_skill(
+        "dossiers",
+        Path(__file__).resolve().parent / "skills" / "dossiers" / "SKILL.md",
+        "Private dossier inspection, evidence and owner correction recipes.",
     )
     try:
         result = _history_support.run_startup_maintenance()

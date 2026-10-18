@@ -8,6 +8,9 @@ The product connects readable Telegram voice messages with useful personal corre
 - Opt-in text history with contact names, aliases, edits, preserved deletions, and correction classification.
 - Bounded contact/date/text search, export, verification, retention, and a rebuildable contact catalog.
 - Supported native Telegram handler registration in place of adapter monkeypatches.
+- Separately opt-in automatic private-chat dossiers and an outbound owner persona,
+  with evidence checks, incremental gateway processing and durable owner controls.
+  [Dossier usage and synthetic example](DOSSIERS.md).
 - Gemini 3.8 Flash cleanup through Hermes's host-owned LLM interface, plus Python 3.11–3.14 and real PTB contract coverage.
 
 This is branch implementation status, not a claim that 0.8.0 has been published or installed in a running gateway. [Verification boundaries](VERIFY.md).
@@ -17,7 +20,7 @@ This is branch implementation status, not a claim that 0.8.0 has been published 
 | Order | Work | Result |
 |---|---|---|
 | 1 | [History #2](https://github.com/neoromantic/hermes-telegram-business/issues/2) | Finish integration review and prove new capture, restart, search, and deletion behavior. |
-| 2 | [Owner/contact dossiers #17](https://github.com/neoromantic/hermes-telegram-business/issues/17) | Inspectable context from selected history, with evidence, corrections, freshness, and forgetting. |
+| 2 | [Owner/contact dossiers #17](https://github.com/neoromantic/hermes-telegram-business/issues/17) | Implemented in this branch: automatic private-chat context/persona, evidence, corrections, freshness, and reset. |
 | 3 | [Contextual drafts #18](https://github.com/neoromantic/hermes-telegram-business/issues/18) | Private suggestions using conversation context and approved dossiers; owner Send / Edit / Discard. |
 | 4 | [Automatic replies #19](https://github.com/neoromantic/hermes-telegram-business/issues/19) | Explicit per-chat activation, reply limits, pause, and owner handover. |
 
