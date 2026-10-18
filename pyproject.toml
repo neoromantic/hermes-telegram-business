@@ -1,7 +1,7 @@
 [project]
 name = "hermes-telegram-business"
 version = "0.8.0"
-description = "Telegram Business voice transcription and searchable opt-in correspondence history for Hermes Agent."
+description = "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

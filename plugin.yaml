@@ -3,7 +3,7 @@ manifest_version: 1
 # install directories, config keys, and update/remove commands.
 name: telegram-business-voice-transcriber
 version: 0.8.0
-description: "Telegram Business voice transcription and searchable opt-in correspondence history for Hermes Agent."
+description: "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
 author: neoromantic
 kind: standalone
 provides_hooks:

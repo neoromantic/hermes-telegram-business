@@ -247,7 +247,7 @@ def test_manifest_uses_current_fields():
         "name": LEGACY_PLUGIN_ID,
         "version": "0.8.0",
         "description": (
-            "Telegram Business voice transcription and searchable opt-in correspondence history for Hermes Agent."
+            "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
         ),
         "author": "neoromantic",
         "kind": "standalone",
@@ -261,7 +261,7 @@ def test_package_metadata_uses_public_product_identity():
     assert metadata["name"] == "hermes-telegram-business"
     assert metadata["version"] == "0.8.0"
     assert metadata["description"] == (
-        "Telegram Business voice transcription and searchable opt-in correspondence history for Hermes Agent."
+        "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
     )
     assert metadata["urls"] == {
         "Homepage": CANONICAL_REPOSITORY,
@@ -274,7 +274,7 @@ def test_package_metadata_uses_public_product_identity():
 def test_readme_uses_public_name_and_canonical_install_source():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert readme.startswith("# Hermes Telegram Business\n")
+    assert readme.startswith("# Telegram Business for Hermes\n")
     assert f"{CANONICAL_REPOSITORY}/actions/workflows/test.yml" in readme
     assert "hermes plugins install neoromantic/hermes-telegram-business --enable" in readme
     assert "legacy-stable" in readme

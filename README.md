@@ -1,9 +1,9 @@
-# Hermes Telegram Business
+# Telegram Business for Hermes
 
 [![test](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml/badge.svg)](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integration for Telegram Business. Voice messages, round video notes, and conservatively recognized attached audio files become readable text without a full agent turn. Optional correspondence history preserves text, edits, and deletions for contact-based search.
+A Telegram Business integration for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Voice messages, round video notes, and conservatively recognized attached audio files become readable text without a full agent turn. Optional correspondence history preserves text, edits, and deletions for contact-based search.
 
 [Product demonstration and setup](https://hermes.sergeybaus.com)
 
@@ -69,7 +69,7 @@ History has its own explicit enable switch and records eligible Business text up
 
 ## Compatibility and identity
 
-- The public product and repository are **Hermes Telegram Business** / `hermes-telegram-business`.
+- The public product and repository are **Telegram Business for Hermes** / `hermes-telegram-business`.
 - The Hermes runtime plugin ID remains `telegram-business-voice-transcriber`. It is a legacy-stable internal ID used by existing install directories, enablement/config keys, update/remove commands, and cache paths.
 - Existing environment-variable namespaces remain unchanged.
 - Existing Git installations that retain the [old repository URL](https://github.com/neoromantic/hermes-telegram-business-voice-transcriber) continue to update through GitHub's redirect. No reinstall or config migration is required for this rebrand.
