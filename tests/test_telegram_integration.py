@@ -80,8 +80,9 @@ async def test_native_business_media_dispatch(plugin, telegram_app, monkeypatch,
     ctx = SimpleNamespace(llm=None, register_telegram_handler=Mock(), register_hook=Mock(),
                           register_cli_command=Mock(), register_skill=Mock())
     plugin.register(ctx)
-    factory, = ctx.register_telegram_handler.call_args.args
-    factory(app, adapter)
+    for registration in ctx.register_telegram_handler.call_args_list:
+        factory, = registration.args
+        factory(app, adapter)
     core = AsyncMock()
     app.add_handler(TypeHandler(Update, core))
     update = Update.de_json({"update_id": 42, "business_message": {

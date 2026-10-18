@@ -20,6 +20,7 @@ import subprocess
 import threading
 import time
 import unicodedata
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -1999,6 +2000,15 @@ def register(ctx: Any) -> None:
     _llm_facade = ctx.llm
     _dossier_spawn_task = getattr(ctx, "spawn_task", None)
     ctx.register_telegram_handler(_register_telegram_handlers)
+    # The host dedupes native handler factories by qualname on the same app,
+    # even after unload cancelled supervised tasks. A generation-specific,
+    # worker-only factory participates in supported gateway rewire on reload.
+    # register() itself never starts tasks (CLI registration is safe).
+    def restart_dossiers(app: Any, adapter: Any) -> None:
+        _dossier_support.start_worker(app, ctx.llm, spawn_task=getattr(ctx, "spawn_task", None))
+
+    restart_dossiers.__qualname__ = "_dossier_gateway_generation_" + uuid.uuid4().hex
+    ctx.register_telegram_handler(restart_dossiers)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
     ctx.register_cli_command(
         name="telegram-business",

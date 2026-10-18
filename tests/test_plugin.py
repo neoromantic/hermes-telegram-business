@@ -372,7 +372,9 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
     plugin.register(ctx)
 
     assert plugin._llm_facade is llm
-    assert telegram_registrations == [plugin._register_telegram_handlers]
+    assert telegram_registrations[0] is plugin._register_telegram_handlers
+    assert len(telegram_registrations) == 2
+    assert telegram_registrations[1].__qualname__.startswith("_dossier_gateway_generation_")
     assert registrations == [("pre_gateway_dispatch", plugin._on_pre_gateway_dispatch)]
     assert cli_registrations == [
         {

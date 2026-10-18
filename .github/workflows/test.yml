@@ -23,7 +23,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install test dependencies
-        run: python -m pip install --upgrade pytest pytest-asyncio pyyaml python-telegram-bot==22.8 ruff
+        run: python -m pip install --upgrade pytest pytest-asyncio pyyaml python-telegram-bot==22.8 ruff jsonschema
       - name: Run unit tests
         run: python -m pytest -q
       - name: Run lint

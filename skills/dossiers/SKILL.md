@@ -30,6 +30,10 @@ Read coverage, last refresh, confidence and stale/unsupported/source-gone status
 before relying on a fact. `show --fact` follows canonical sources; absent sources
 are not proof. Deleted sources remain labelled. Quotes are short exact substrings,
 not independent confirmation that a speaker's claim is true. Check contradictions.
+Facts with `owner review` status are unresolved candidates tied to a correction;
+they must not override owner facts. Inspect their sources and ask the owner to
+resolve them when needed. Model attribution may be unknown, mixed across calls,
+or legacy/unverified; requested settings are not proof of which model ran.
 
 When the owner asks to change a dossier:
 
@@ -44,8 +48,8 @@ hermes telegram-business dossier export --contact @alice --format markdown
 ```
 
 Owner corrections and notes are read-only to the model; pins protect generated
-facts. Removal also blocks similar text from returning. Do not silently rewrite
-an owner's correction to agree with a model. Do not infer personality, motives or
+facts. Removal blocks its ID and similar current/prior corrected wording from
+returning. Do not silently rewrite an owner's correction to agree with a model. Do not infer personality, motives or
 diagnoses. Keep uncertainty visible.
 
 `dossier run [--contact @alice | --persona]` runs a manual cycle and may send
@@ -55,6 +59,8 @@ opt-in enabled. Preview shows the exact next JSON data payload without a call;
 
 `forget --contact @alice`, `forget --persona`, or `forget --all` deletes derived
 facts, owner edits, tombstones and revision logs, preserving canonical history.
+`forget --all` reports partial failures and continues with the remaining targets;
+check its exit code and `failed_targets` before claiming everything was erased.
 It is a reset: an enabled worker rebuilds on its next cycle. To stop processing,
 disable `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE` and then forget all. Do not
 enable processing or erase owner feedback merely to answer an inspection request.

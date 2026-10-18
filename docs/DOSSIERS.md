@@ -27,7 +27,27 @@ falling back to first observation; directions are `inbound`, `outbound`, or
 
 A contact's first refresh includes the last 90 days and at most 500 messages.
 Inputs split at 50 messages or 24,000 serialized message characters per call.
-Telegram text fits this bound; an oversized malformed history message fails the
+The **whole structured request** also has a 512 KiB UTF-8 ceiling, including
+facts, owner instructions, catalog data, schema, system prompt and envelope
+allowance. All current fact text (at most 100 × 800 characters) appears once;
+read-only IDs identify protected facts without repeating their text. Current
+facts include up to three source references in the prompt; full sources remain
+local. Catalog display projects 160 name characters and ten 128-character
+aliases. Auxiliary removal guidance shares a 12,000-byte budget: newest
+tombstones first, then removed-source references, with complete counts. It is a
+projection, never the authority: every tombstone ID, removed wording and prior
+corrected wording is checked against the complete local state, also on rebase.
+Source pruning/invalidation is likewise local and cannot be bypassed by omission
+from the prompt. Thousands of old removals do not increase the request ceiling.
+
+The maximum legal owner fact set is retained without truncating owner text.
+The safe failure boundary is a single oversized canonical message, corrupt or
+noncanonical fact/identifier data, or configuration/schema context exceeding the
+whole-request budget: no provider call or cursor commit occurs. Overrides must
+select a model with enough context for this ceiling plus the 12,000-token output
+allowance; the plugin cannot discover arbitrary provider token windows through
+the host facade. Provider errors leave the cursor unchanged. Telegram text fits
+the message bound; an oversized malformed history message fails the
 contact safely without advancing its cursor. Later calls contain only new or
 changed messages, current facts, read-only owner feedback, removal tombstones,
 and removed source references. Content digests detect edits and new IDs even
@@ -51,10 +71,14 @@ Names and aliases come exclusively from the history contact catalog.
 
 ## Worker and configuration
 
-The worker starts only from Hermes's supported native Telegram handler factory,
-which runs at gateway adapter connection. `register()` merely registers callbacks
-and CLI/skills; CLI processes never start a worker. No incoming update or media is
-needed. The first cycle starts after 180 seconds and application readiness; subsequent cycles wait 30
+The worker starts only through Hermes's supported gateway-native factory API,
+at adapter connection or a late-plugin rewire. A worker-only factory has a fresh
+identity per plugin registration: the host deduplicates the persistent message
+handler's qualname on the same application, even after unload cancels its task.
+Reload therefore restarts the worker without reinstalling message handlers or
+waiting for a message/reconnect. A cancellation still pending at rewire time also
+permits a replacement. `register()` merely registers callbacks and CLI/skills;
+CLI processes never start a worker. No incoming update or media is needed. The first cycle starts after 180 seconds and application readiness; subsequent cycles wait 30
 minutes after completion. The task exits when the PTB application stops or the
 flag is disabled; gateway loop shutdown cancels it. Where available, the verified
 `ctx.spawn_task` API supervises it so plugin unload/force reload cancels it too. A reconnect replaces the old
@@ -88,7 +112,13 @@ Provider/model inherit `TG_BUSINESS_VOICE_CLEANUP_PROVIDER` and
 `gemini-3.8-flash`. Every request uses `ctx.llm.acomplete_structured`, the verified
 async facade of Hermes `complete_structured`, with JSON schema/mode, timeout and
 purpose. There is no independent provider client, HTTP path, or credential store.
-The host's configured trust gate remains authoritative.
+The host's configured trust gate remains authoritative. Stored `model` reports
+host-returned provider/model, with `model_calls` recording each chunk in order.
+Mixed calls display `model: mixed` and their actual per-call attribution. Omitted
+host attribution remains null/unknown; `requested_model` records settings
+separately. Older snapshots without observed attribution are labelled
+`legacy_unverified` when displayed. `status` provider/model fields are requested
+configuration, not evidence that a provider was called.
 
 ## Facts, evidence and owner controls
 
@@ -142,7 +172,23 @@ history or the dossier.
 Corrections become owner facts. Owner notes and corrections cannot be changed or
 retired by the model, and pins protect generated facts. Removals create persistent
 "do not re-add" tombstones, checked by normalized text similarity (SequenceMatcher
-ratio >= 0.8) as well as provided in the prompt. Similarity is lexical, not semantic.
+ratio >= 0.8); IDs are rejected outright and never allocated again. Tombstones
+also retain wording superseded by owner corrections, so correcting then removing
+a fact cannot reopen its original wording. Prompt guidance is bounded, but local
+checks always use the full history. Similarity is lexical, not semantic.
+
+Corrections retain the old claim and its canonical text digests/short quotes.
+A new generated fact echoing that claim on unchanged old evidence is rejected;
+a distinct or paraphrased candidate using exactly that same quoted evidence is
+kept visibly in `contradictions` with `owner review` status and the correction ID.
+An exact quote establishes provenance, not semantic equality, so this path does
+not delete potentially different evidence or treat it as established knowledge.
+This deliberately does not claim to decide arbitrary semantic equivalence.
+Different quoted evidence or a genuine edit is admissible; a lexical match to a superseded claim is placed in
+`contradictions` alongside the preserved owner correction. Unrelated supported
+claims are retained. Fact identity uses explicit IDs for updates; no-ID patches
+only deduplicate exact text/kind/section with identical checked evidence. Numbers,
+negation, participants and different sources never merge by fuzzy similarity.
 `changes` records additions, changes, retirements and invalidations with reasons,
 plus owner corrections/pins/removals/notes. Refresh rebases over owner changes made
 during a model call, rather than overwriting them. Forgetting invalidates an
@@ -170,6 +216,11 @@ Deleting text preserves the source with its deletion flag. Later duplicate or
 correction classification drops it. Pruning drops removed sources. A generated
 fact with no sources becomes unsupported and is removed on refresh. Pins and
 owner corrections survive as `source gone`; they are never silently rewritten.
+If a later canonical `message.edited` event restores the same reference after
+retention pruning, missing references reconnect, metadata/status refresh, and
+owner text stays intact. Matching restored content becomes active; changed or
+unknown old content remains stale for owner review rather than being relabelled
+as evidence for unchanged protected text.
 Stored targets whose entire catalog row was pruned are still reconciled.
 
 ```bash
@@ -179,7 +230,12 @@ hermes telegram-business dossier forget --all
 ```
 
 Forget deletes the target snapshot, feedback/tombstones and revision log, leaving
-canonical history untouched. While enabled, the next worker cycle rebuilds it;
+canonical history untouched. Under the same target lock it also deletes abandoned
+internal `.dossier-*` regular files from interrupted atomic writes, including
+residue remaining after a later successful write. Cleanup never follows symlinks
+or recursively deletes unknown files. `forget --all` attempts every target,
+reports `forgotten`, `failed` and hashed `failed_targets`, and exits nonzero for
+partial failure. While enabled, the next worker cycle rebuilds it;
 forget is a reset. To stop processing, turn the dossier flag off, then forget all.
 
 Storage is `${HERMES_HOME}/data/telegram-business/dossiers/`, with one hashed
@@ -212,6 +268,10 @@ A later refresh preserves that owner correction even if the model attempts to
 retire `f1`. Removing it adds a tombstone; forgetting the dossier clears the
 correction and tombstone and permits a fresh backfill.
 
-Validation uses only synthetic histories and mocked host LLMs. Telegram delivery,
-provider trust/availability and actual model summary quality require separate
+Validation uses only synthetic histories and fake provider calls. Where the host
+source is installed, checked-in integration tests execute its real factory
+wiring, supervised spawn/unload/cancellation methods, and both synchronous
+`complete_structured` and async facade output-schema validation with `jsonschema`
+installed. CI without Hermes skips only the host-source integration cases.
+Telegram delivery, provider trust/availability and actual model summary quality require separate
 operator-authorized runtime verification. This slice does not implement #18/#19.
