@@ -17,7 +17,6 @@ import math
 import os
 import re
 import subprocess
-import sys
 import threading
 import time
 import unicodedata
@@ -26,6 +25,7 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Iterable, Optional, cast
 
 try:
@@ -74,6 +74,9 @@ else:
     )
 
 
+from . import history_support as _history_support
+
+
 logger = logging.getLogger(__name__)
 
 # Legacy-stable Hermes runtime ID. Keep aligned with plugin.yaml so existing
@@ -97,7 +100,7 @@ _AUDIO_FILE_PROBE_SECONDS_ENV = "TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS"
 _AUDIO_FILE_MIN_WORDS_ENV = "TG_BUSINESS_AUDIO_FILE_MIN_WORDS"
 
 _DEFAULT_CLEANUP_PROVIDER = "gemini"
-_DEFAULT_CLEANUP_MODEL = "gemini-3.5-flash"
+_DEFAULT_CLEANUP_MODEL = "gemini-3.8-flash"
 _DEFAULT_CLEANUP_TIMEOUT_SECONDS = 45.0
 _DEFAULT_CLEANUP_MIN_CHARS = 81
 _DEFAULT_CLEANUP_MIN_WORDS = 1
@@ -152,7 +155,7 @@ _seen_lock = threading.Lock()
 _seen_messages: dict[tuple[str, ...], float] = {}
 _pending_tasks: set[asyncio.Task[Any]] = set()
 _llm_facade: Any = None
-_adapter_compat_installed = False
+_RAW_HISTORY_HANDLER_GROUP = -100
 
 
 @dataclass(frozen=True)
@@ -390,24 +393,6 @@ def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-class _UpdateMessageProxy:
-    """Expose a Business update's effective message as ``update.message``.
-
-    python-telegram-bot's Update objects are immutable enough that mutating the
-    original object is not a reliable compatibility strategy. Hermes's media
-    handler only needs the ordinary update interface, so a tiny forwarding
-    proxy keeps this shim local and preserves every other update attribute.
-    """
-
-    def __init__(self, update: Any, message: Any) -> None:
-        self._update = update
-        self.message = message
-        self.effective_message = message
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._update, name)
-
-
 def _is_business_voice_media(message: Any) -> bool:
     return bool(
         message is not None
@@ -420,101 +405,36 @@ def _is_business_voice_media(message: Any) -> bool:
     )
 
 
-def _resolve_telegram_adapter_module() -> Any:
-    """Return the module that owns Hermes's registered Telegram adapter.
+def _register_telegram_handlers(app: Any, adapter: Any) -> None:
+    from telegram.ext import ApplicationHandlerStop, BaseHandler
 
-    Hermes 0.18.2 loads bundled platforms in an isolated
-    ``hermes_plugins.<slug>`` namespace. Older releases used the source-tree
-    ``plugins.platforms`` import path. Resolve through the platform registry
-    first so the shim always patches the class the gateway will instantiate,
-    then retain the legacy import as a compatibility fallback.
-    """
+    async def on_business_update(update: Any, context: Any) -> None:
+        try:
+            await _history_support.observe_ptb_update(update, bot=context.bot)
+        except Exception as exc:  # noqa: BLE001 - capture failures must not break dispatch
+            logger.warning("%s: business history observation failed: %s", _PLUGIN_NAME, exc, exc_info=True)
+        message = update.effective_message
+        if not _is_business_voice_media(message):
+            return
+        if not _truthy_env(_ADAPTER_AUTH_BYPASS_ENV) and not adapter._is_user_authorized_from_message(message):
+            return
+        event = SimpleNamespace(
+            source=SimpleNamespace(platform=adapter.platform),
+            raw_message=message,
+            raw_update=update,
+        )
+        gateway = SimpleNamespace(adapters={adapter.platform: adapter})
+        if _on_pre_gateway_dispatch(event, gateway) is not None:
+            raise ApplicationHandlerStop
 
-    try:
-        from gateway.platform_registry import platform_registry
-
-        entry = platform_registry.get("telegram")
-        factory_globals = getattr(getattr(entry, "adapter_factory", None), "__globals__", {})
-        adapter_cls = factory_globals.get("TelegramAdapter")
-        adapter_module = sys.modules.get(getattr(adapter_cls, "__module__", ""))
-        if adapter_module is not None:
-            return adapter_module
-    except Exception:
-        logger.debug("%s: registered Telegram adapter resolution failed", _PLUGIN_NAME, exc_info=True)
-
-    from plugins.platforms.telegram import adapter as telegram_adapter
-
-    return telegram_adapter
-
-
-def _install_telegram_adapter_compat() -> bool:
-    """Install the narrow adapter compatibility required by this plugin.
-
-    Hermes user plugins live outside the core checkout and survive normal
-    updates. Keeping the compatibility layer here avoids a dirty Hermes tree
-    while retaining three required behaviors: Business ``effective_message``
-    delivery, round-video handler registration, and the opt-in auth exception
-    for Business voice-like media only.
-    """
-
-    global _adapter_compat_installed
-    if _adapter_compat_installed:
-        return True
-
-    try:
-        telegram_adapter = _resolve_telegram_adapter_module()
-    except Exception as exc:  # noqa: BLE001 - gateway startup must remain available
-        logger.warning("%s: Telegram adapter compatibility unavailable: %s", _PLUGIN_NAME, exc)
-        return False
-
-    adapter_cls = telegram_adapter.TelegramAdapter
-
-    original_auth = adapter_cls._is_user_authorized_from_message
-    if not getattr(original_auth, "_hermes_business_compat", False):
-
-        def _compat_authorized(self: Any, message: Any) -> bool:
-            if original_auth(self, message):
-                return True
-            return bool(
-                _truthy_env(_ADAPTER_AUTH_BYPASS_ENV)
-                and _is_business_voice_media(message)
+    class BusinessHandler(BaseHandler):
+        def check_update(self, update: Any) -> bool:
+            return any(
+                getattr(update, attribute, None) is not None
+                for attribute in ("business_message", "edited_business_message", "deleted_business_messages")
             )
 
-        _compat_authorized._hermes_business_compat = True  # type: ignore[attr-defined]
-        adapter_cls._is_user_authorized_from_message = _compat_authorized
-
-    original_media = adapter_cls._handle_media_message
-    if not getattr(original_media, "_hermes_business_compat", False):
-
-        async def _compat_media(self: Any, update: Any, context: Any) -> Any:
-            message = (
-                getattr(update, "effective_message", None)
-                or getattr(update, "business_message", None)
-                or getattr(update, "message", None)
-            )
-            if message is not None and getattr(update, "message", None) is None:
-                update = _UpdateMessageProxy(update, message)
-            return await original_media(self, update, context)
-
-        _compat_media._hermes_business_compat = True  # type: ignore[attr-defined]
-        adapter_cls._handle_media_message = _compat_media
-
-    original_handler = telegram_adapter.TelegramMessageHandler
-    if not getattr(original_handler, "_hermes_business_compat", False):
-
-        def _compat_message_handler(handler_filter: Any, callback: Any, *args: Any, **kwargs: Any) -> Any:
-            if getattr(callback, "__name__", "") == "_handle_media_message":
-                video_note_filter = getattr(telegram_adapter.filters, "VIDEO_NOTE", None)
-                if video_note_filter is not None:
-                    handler_filter = handler_filter | video_note_filter
-            return original_handler(handler_filter, callback, *args, **kwargs)
-
-        _compat_message_handler._hermes_business_compat = True  # type: ignore[attr-defined]
-        telegram_adapter.TelegramMessageHandler = _compat_message_handler
-
-    _adapter_compat_installed = True
-    logger.info("%s: installed update-persistent Telegram Business adapter compatibility", _PLUGIN_NAME)
-    return True
+    app.add_handler(BusinessHandler(on_business_update, block=True), group=_RAW_HISTORY_HANDLER_GROUP)
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -1508,7 +1428,6 @@ async def _request_cleanup_candidate(
         system_prompt=system_prompt,
         provider=_cleanup_provider(),
         model=_cleanup_model(),
-        temperature=0,
         max_tokens=_completion_max_tokens(transcript),
         timeout=_cleanup_timeout(),
         purpose=purpose,
@@ -2066,6 +1985,31 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
 
 def register(ctx: Any) -> None:
     global _llm_facade
-    _llm_facade = getattr(ctx, "llm", None)
-    _install_telegram_adapter_compat()
+    _llm_facade = ctx.llm
+    ctx.register_telegram_handler(_register_telegram_handlers)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
+    ctx.register_cli_command(
+        name="telegram-business",
+        help="Read and maintain Telegram Business history",
+        setup_fn=_history_support.setup_cli,
+        handler_fn=_history_support.handle_cli,
+        description="Telegram Business history, verification, and maintenance",
+    )
+    ctx.register_skill(
+        "history",
+        _history_support.skill_path(),
+        "Telegram Business history schema, safe read recipes, and maintenance guidance.",
+    )
+    try:
+        result = _history_support.run_startup_maintenance()
+    except Exception as exc:  # noqa: BLE001 - plugin load must stay available
+        logger.warning("%s: startup history maintenance failed: %s", _PLUGIN_NAME, exc, exc_info=True)
+        return
+    if result.cap_exceeded:
+        logger.warning(
+            "%s: history size cap exceeded by %d bytes; non-prunable history files were preserved",
+            _PLUGIN_NAME,
+            result.cap_shortfall_bytes,
+        )
+    for warning in result.warnings:
+        logger.warning("%s: %s", _PLUGIN_NAME, warning)

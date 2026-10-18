@@ -3,13 +3,13 @@
 [![test](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml/badge.svg)](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integration for Telegram Business. Its first and currently shipped module turns voice messages, round video notes, and conservatively recognized attached audio files into text without spending a full agent turn.
+An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integration for Telegram Business. Voice messages, round video notes, and conservatively recognized attached audio files become readable text without a full agent turn. Optional correspondence history preserves text, edits, and deletions for contact-based search.
 
 ![A Telegram Business chat: a client's 0:34 voice message gets a reply with its transcript as an expandable quote, split into paragraphs and a dash list; the owner's own 5-second voice message gets its transcript appended to its caption as a quote and is marked edited.](docs/images/hermes-telegram-business@2x.png)
 
 ## Current module: voice transcription
 
-1. Intercepts a Telegram `voice`, `video_note`, `audio`, or conservatively identified audio `document` update at `pre_gateway_dispatch`; generic documents and video pass through.
+1. A native Telegram handler intercepts Business `voice`, `video_note`, `audio`, and conservatively identified audio `document` updates before ordinary media processing; generic documents and video pass through.
 2. Requires a real Telegram Business connection and preserves its `business_connection_id`.
 3. Returns `action: skip` so the ordinary auth/agent path does not process the media.
 4. Downloads the media transiently and delegates speech recognition to Hermes's configured `transcribe_audio` backend. Attached files must have safe byte/duration metadata, are locally duration-checked when needed, and pass a short mono/16 kHz speech-presence probe before full transcription.
@@ -20,27 +20,50 @@ An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integ
 
 Handled updates are identified from stable Telegram Business connection, chat, update/message, and relationship data, then suppressed in memory for 24 hours. A successful caption edit suppresses the separate transcript reply, so the chat never receives both forms. PTB `BadRequest` is treated as a definite Telegram-side rejection unless it is the recognized `message is not modified` or unsupported-entity case. Failed entity requests are not treated as delivered before their targeted plain-text retry, and ambiguous post-send transport/backend failures suppress the reply fallback unless remote state is verified. The plugin never runs a separate model provider client and never needs its own credentials.
 
-## Roadmap
+## Correspondence history
 
-The broader product direction includes operator or CRM integration adapters and opt-in automation modules. The small event/module boundary is now implemented; those product integrations are still planned extension points, not implemented features in `0.7.2`.
+Add this to the active Hermes profile's `.env`, then restart the gateway to enable text history for private Business chats:
+
+```bash
+HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1
+```
+
+Restart the gateway, then search by contact:
+
+```bash
+hermes telegram-business history contacts --search alice --limit 20
+hermes telegram-business history show --contact @alice --since 7d --limit 100
+hermes telegram-business history search --contact @alice --text estimate --since 30d --limit 100
+hermes telegram-business history deletions --status unexplained --limit 20
+```
+
+History captures new text messages, edits, and deletions as Telegram delivers them. It preserves deleted text and distinguishes likely corrections, duplicates, unexplained deletions, and missing originals. It does not import old conversations. Contact names and observed aliases are searchable; ambiguous names require an explicit choice.
+
+Canonical storage is profile-local JSONL with a rebuildable contact catalog. Capture and search require no LLM. Media and captions are excluded from history in this version. [History configuration, retention, and CLI](docs/HISTORY.md).
+
+## Planned assistant
+
+The next layer uses opted-in history to build an editable, evidence-backed owner persona and per-contact context. It will support contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover. These features are requirements, not runtime capabilities in 0.8.0.
+
+See the [roadmap](docs/ROADMAP.md) and [assistant design](docs/ASSISTANT.md). This project complements Nous Research's [official reply-drafting plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/telegram-business); it is a separate community integration.
 
 ## Requirements
 
-- Hermes Agent with plugin hooks, `pre_gateway_dispatch`, and `ctx.llm` support (current Hermes releases).
+- Hermes Agent with `ctx.register_telegram_handler`, CLI/skill registration, `pre_gateway_dispatch`, and `ctx.llm` support. Integration targets Hermes 0.22.2 and PTB 22.8.
 - Python 3.11 or newer.
 - A configured Telegram gateway with a Telegram Business connection.
 - A working Hermes STT provider. Configure it with `hermes setup` or the [`stt` settings](https://hermes-agent.nousresearch.com/docs/user-guide/configuration).
 - `ffprobe` and `ffmpeg` on `PATH` for attached-audio duration verification, prefix extraction, and normalization. Voice messages and video notes do not use these gates.
 
-Telegram Business voice/video notes can originate from users outside the ordinary DM allowlist. Enable the plugin's narrowly scoped adapter bypass so those updates can reach its hook:
+Telegram Business voice/video notes can originate from users outside the ordinary DM allowlist. Enable the plugin's narrowly scoped Business-media authorization bypass in the active profile's `.env` so its native handler can transcribe them:
 
 ```bash
 HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH=1
 ```
 
-At registration time the plugin installs a small, idempotent compatibility shim around Hermes's bundled Telegram adapter. It recognizes Business `effective_message` updates, registers round video notes with the media handler, and applies the bypass only when both a real `business_connection_id` and a supported `voice`, `video_note`, explicit `audio`, or conservatively identified audio-document payload are present. It does not bypass auth for ordinary messages, generic documents, or video. Because the shim belongs to this profile-scoped user plugin rather than the Hermes checkout, a normal `hermes update` neither removes it nor creates a core patch conflict.
+The plugin registers native Telegram handlers before the ordinary Hermes media handler. Only Business voice/video/audio candidates are claimed, including attachments rejected by the audio limits or speech probe. Unrelated messages continue through Hermes normally. The bypass above applies only to those Business media candidates; it does not authorize ordinary bot messages.
 
-The plugin itself intentionally handles every supported voice/video/audio attachment delivered through the bot's Business connections; it has no separate sender allowlist. Every candidate attached audio file is claimed even when its safety gate or speech probe rejects it, so it never falls into the ordinary agent path.
+History has its own explicit enable switch and records eligible Business text updates independently of the ordinary DM allowlist. Telegram's selected Business-chat scope and the optional history filters determine what is captured.
 
 ## Compatibility and identity
 
@@ -84,11 +107,11 @@ All plugin variables are optional.
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` | false | Disable interception entirely. |
+| `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` | false | Disable voice/audio transcription. |
 | `TG_BUSINESS_VOICE_TRANSCRIBER_SEND_ERRORS` | false | Reply with a short STT error notice. |
 | `TG_BUSINESS_VOICE_CLEANUP_DISABLE` | false | Skip LLM cleanup and post raw STT text. |
 | `TG_BUSINESS_VOICE_CLEANUP_PROVIDER` | `gemini` | Host provider requested for cleanup. |
-| `TG_BUSINESS_VOICE_CLEANUP_MODEL` | `gemini-3.5-flash` | Host model requested for cleanup. |
+| `TG_BUSINESS_VOICE_CLEANUP_MODEL` | `gemini-3.8-flash` | Host model requested for cleanup. |
 | `TG_BUSINESS_VOICE_CLEANUP_STYLE` | `conservative` | Use `enriched` for filler removal, active editing, paragraph/list structure, and long-note titles. |
 | `TG_BUSINESS_VOICE_CLEANUP_TIMEOUT` | `45` | Cleanup timeout in seconds. |
 | `TG_BUSINESS_VOICE_CLEANUP_MIN_CHARS` | `81` | Minimum transcript length for cleanup. |
@@ -116,8 +139,10 @@ plugins:
         allow_provider_override: true
         allowed_providers: [gemini]
         allow_model_override: true
-        allowed_models: [gemini-3.5-flash]
+        allowed_models: [gemini-3.8-flash]
 ```
+
+The default is [Gemini 3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash). Cleanup does not pass sampling parameters, following [current Gemini guidance](https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.8). Select another model through `TG_BUSINESS_VOICE_CLEANUP_MODEL` and update the allowlist to match; there is no automatic provider/model switch.
 
 If the trust gate, provider, or model is unavailable, the plugin logs the cleanup failure and posts the raw STT transcript. To use different environment values, update the allowlists to match. To avoid any LLM call, set `TG_BUSINESS_VOICE_CLEANUP_DISABLE=1`.
 
@@ -125,7 +150,7 @@ If the trust gate, provider, or model is unavailable, the plugin logs the cleanu
 
 ## Current module architecture
 
-The plugin registers one `pre_gateway_dispatch` hook and normalizes Telegram Business updates before any module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. Direction remains `unknown` when Telegram supplies no outgoing marker; the voice module retains its existing asynchronous Business-owner lookup before editing a caption.
+The plugin registers native Telegram handlers, a `pre_gateway_dispatch` hook, and a history CLI/skill. Business text observations are persisted before normal dispatch; supported media is consumed directly before Hermes downloads it. The voice pipeline normalizes Telegram Business updates before its module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. Direction remains `unknown` when Telegram supplies no outgoing marker; the voice module retains its existing asynchronous Business-owner lookup before editing a caption.
 
 Modules are a small ordered tuple. Each module has its own enable check, declares whether it may receive the host-owned LLM facade, and explicitly returns `handled` or `pass_through`. A pass-through result leaves the ordinary Hermes path untouched. A handled result returns `action: skip` immediately and schedules any slow work outside gateway dispatch:
 
@@ -157,7 +182,8 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - When cleanup is enabled, the configured host LLM receives the transcript. The system prompt treats transcript contents as untrusted data and forbids following embedded instructions.
 - The plugin does not log transcript text. Operational logs include media type, message/chat identifiers, character counts, and errors.
 - Error replies are disabled by default. When enabled, the first line of an exception may be sent to the Business chat.
-- The plugin stores only an in-process duplicate key for 24 hours. Its identity is deterministic across equivalent retry delivery, but the seen set intentionally resets with the process; no transcript/history database is created.
+- Voice transcription uses an in-process duplicate key for 24 hours; it resets with the gateway. History uses durable event identities in its JSONL log.
+- History is disabled until explicitly enabled. Once enabled, retained text includes earlier edits and deleted messages. Telegram deletion is not erasure of the local archive; [retention and removal](docs/HISTORY.md#retention-and-removal) are separate controls.
 - Existing Hermes/Telegram media caches are outside this plugin's ownership and are never scanned or deleted.
 
 ## Failure behavior
@@ -177,14 +203,14 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 
 ## Testing
 
-The unit suite uses fake Telegram objects and fake STT/LLM implementations. It needs no Telegram token, provider credential, network call, or running gateway.
+Tests cover the history CLI and disk recovery, transcript behavior, and real PTB handler/HTTP contracts with simulated Telegram responses. They need no Telegram token, provider credential, network call, or running gateway.
 
 ```bash
-python -m pip install pytest pytest-asyncio pyyaml
+python -m pip install pytest pytest-asyncio pyyaml python-telegram-bot==22.8
 python -m pytest -q
 ```
 
-Real Telegram Business chats are deliberately not contacted by the test suite.
+Live Telegram client rendering and provider cleanup quality require a separate configured smoke test. The [verification guide](docs/VERIFY.md) records the boundary.
 
 ## License
 

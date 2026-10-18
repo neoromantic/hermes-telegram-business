@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 - Unreleased
 
+- Finish opt-in Business text history with contact/date/text search, aliases, edits, preserved deletions, and correction classification in canonical JSONL.
+- Add the history CLI/skill, bounded verification/export, retention, and rebuildable contact catalog.
+- Replace adapter monkeypatches and compatibility loaders with supported native Telegram handlers and standard package imports; avoid duplicate media downloads.
+- Keep retry identities stable across owner-lookup recovery and pruning; move history I/O off the gateway event loop and preserve profile scope for delayed classification.
+- Use Gemini 3.8 Flash cleanup without deprecated sampling parameters; extend CI to Python 3.14 and real PTB contracts.
+- Add history guidance, assistant requirements/roadmap, and clearly labelled synthetic visual examples.
 - Replace the brittle enriched semantic-fidelity validator with a minimal structural sanity check: publish the first non-empty candidate between 20% and 200% of source length, retry only catastrophic output once, and use raw STT only as the last fallback.
 
 ## 0.7.2 - 2026-08-16

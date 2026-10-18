@@ -1,7 +1,7 @@
 [project]
 name = "hermes-telegram-business"
-version = "0.7.2"
-description = "Update-persistent Telegram Business integration for Hermes Agent with voice, video-note, and attached-audio transcription and Business-scoped replies."
+version = "0.8.0"
+description = "Telegram Business voice transcription and searchable opt-in correspondence history for Hermes Agent."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -15,7 +15,7 @@ Changelog = "https://github.com/neoromantic/hermes-telegram-business/blob/main/C
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra --confcutdir=tests"
 
 [tool.ruff]
 target-version = "py311"
