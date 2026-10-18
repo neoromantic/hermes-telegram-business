@@ -3514,7 +3514,7 @@ def _stats_chat(
         messages.append((send_at, key, message.direction))
         edit_only += not originals
         fallback += uses_fallback
-    messages.sort(key=lambda item: (item[0], item[1]))
+    messages.sort(key=lambda item: (item[0], int(item[1])))
     labels = {"inbound": "received", "outbound": "sent", "unknown": "unknown"}
     counts = {label: sum(direction == key for _, _, direction in messages) for key, label in labels.items()}
     days = {

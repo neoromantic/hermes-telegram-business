@@ -204,6 +204,39 @@ def test_sessions_strict_gap_unknown_days_and_last_message(plugin):
     assert chat(plugin, "--session-gap", "90m")["sessions"]["total"] == 6
 
 
+@pytest.mark.parametrize(("first_id", "last_id"), [(9, 10), (99, 100)])
+@pytest.mark.parametrize("first_direction", ["inbound", "outbound"])
+def test_same_second_messages_follow_numeric_id_order(plugin, first_id, last_id, first_direction):
+    last_direction = "outbound" if first_direction == "inbound" else "inbound"
+    # Reverse observation/file order to require the message ID tie-break.
+    seed(
+        plugin,
+        record(plugin, last_id, direction=last_direction),
+        record(plugin, first_id, direction=first_direction),
+    )
+    before = snapshot_history_state(plugin)
+    result = chat(plugin, "--since", "2026-10-01", "--until", "2026-10-01")
+    ends_received = last_direction == "inbound"
+    assert result["latest_activity"] == {
+        "any": "2026-10-01T00:00:00Z",
+        "received": "2026-10-01T00:00:00Z",
+        "sent": "2026-10-01T00:00:00Z",
+        "unknown": None,
+        "direction": "received" if ends_received else "sent",
+    }
+    assert result["last_message_no_observed_reply"] is ends_received
+    assert result["sessions"] == {
+        "total": 1,
+        "started_by": {
+            "contact": int(first_direction == "inbound"),
+            "owner": int(first_direction == "outbound"),
+            "unknown": 0,
+        },
+        "ended_without_observed_reply": int(ends_received),
+    }
+    assert snapshot_history_state(plugin) == before
+
+
 @pytest.mark.parametrize(
     ("day", "start", "end"),
     [
@@ -422,7 +455,7 @@ def test_root_lock_missing_does_not_initialize_it(plugin):
     assert snapshot_history_state(plugin) == before
 
 
-def test_synthetic_example_runs_registered_cli_and_cleans_fixture():
+def test_synthetic_example_runs_registered_cli_and_cleans_fixture(tmp_path):
     import os
     import subprocess
     import sys
@@ -433,6 +466,16 @@ def test_synthetic_example_runs_registered_cli_and_cleans_fixture():
     result = subprocess.run(
         [
             sys.executable,
+            "-c",
+            (
+                "import os, pathlib, runpy, sys\n"
+                "def check_scratch(event, args):\n"
+                "    if event == 'tempfile.mkdtemp':\n"
+                "        assert pathlib.Path(args[0]).parent == pathlib.Path(os.environ['TMPDIR'])\n"
+                "sys.addaudithook(check_scratch)\n"
+                "sys.argv = sys.argv[1:]\n"
+                "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+            ),
             str(examples / "correspondence_stats.py"),
             "stats",
             "--contact",
@@ -444,7 +487,7 @@ def test_synthetic_example_runs_registered_cli_and_cleans_fixture():
             "--tz",
             "Europe/Moscow",
         ],
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": str(tmp_path)},
         capture_output=True,
         text=True,
         check=True,
@@ -454,6 +497,7 @@ def test_synthetic_example_runs_registered_cli_and_cleans_fixture():
     assert "edit-only messages counted 1" in result.stdout
     assert "Fictional fixture text" not in result.stdout
     assert set(examples.iterdir()) == before
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_equal_observation_edits_and_classifications_use_canonical_file_order(plugin):

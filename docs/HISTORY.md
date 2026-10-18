@@ -58,7 +58,7 @@ Only archived text messages count. Voice, video notes, media, captions, service 
 - Deletion counts use **delete observation time**, never classification time. The latest classification replaces earlier classifications of the same tombstone. Classification-only evidence surviving a pruned tombstone uses `deleted_observed_at`; missing delete timestamps are reported separately and cannot be assigned to a range.
 - Unexplained deletions are counts only; `history deletions` supplies details. The archive cannot prove who actually deleted a message. Message direction does **not** identify the deleter. JSON therefore reports all unexplained deletions under actor `unknown` (contact/owner are zero known attributions), and text states this uncertainty.
 - Active days are distinct local dates with counted activity, also split into received and sent. Latest activity and “no observed reply after it” refer only to counted messages in the selected range; they do not imply intent or an overdue response.
-- Sessions use send-time order. A new session starts only when the gap is **strictly greater** than `--session-gap` (default `6h`). Unknown-direction messages participate. Sessions are cut at the range edges. Reports count starters by contact/owner/unknown and sessions ending on received activity without an observed reply. Equal send timestamps use message ID string order to resolve ties; this deterministic order cannot establish the real order of simultaneous messages.
+- Sessions use send-time order. A new session starts only when the gap is **strictly greater** than `--session-gap` (default `6h`). Unknown-direction messages participate. Sessions are cut at the range edges. Reports count starters by contact/owner/unknown and sessions ending on received activity without an observed reply. Equal send timestamps use numeric message ID order to preserve the chat message sequence within Telegram's second-precision send times.
 
 ### Missing history and JSON
 
@@ -79,7 +79,7 @@ python docs/examples/correspondence_stats.py stats --contact @alice_example --si
 python docs/examples/correspondence_stats.py stats --format json
 ```
 
-Fixture setup explicitly creates the canonical JSONL/catalog under a temporary directory beside the example and removes it afterward. The stats read itself writes nothing. The first command reports, among its timing/coverage lines:
+Fixture setup explicitly creates the canonical JSONL/catalog under a directory in Python's default temporary location (honoring `TMPDIR`) and removes it afterward. The checkout and example directory can be read-only. The stats read itself writes nothing. The first command reports, among its timing/coverage lines:
 
 ```text
 @alice_example connection=business-123 chat=991

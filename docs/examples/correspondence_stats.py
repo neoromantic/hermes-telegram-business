@@ -18,7 +18,7 @@ import history_support as history  # noqa: E402 -- import this checkout, never a
 
 
 def main(argv: list[str]) -> int:
-    with tempfile.TemporaryDirectory(prefix="synthetic-stats-", dir=Path(__file__).parent) as directory:
+    with tempfile.TemporaryDirectory(prefix="synthetic-stats-") as directory:
         history.get_hermes_home = lambda: Path(directory)
         chat_dir = history._history_chat_dir_path("business-123", 991)
         history._ensure_history_chat_dir(chat_dir)
