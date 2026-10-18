@@ -5,6 +5,8 @@
 
 An extensible [Hermes Agent](https://github.com/NousResearch/hermes-agent) integration for Telegram Business. Voice messages, round video notes, and conservatively recognized attached audio files become readable text without a full agent turn. Optional correspondence history preserves text, edits, and deletions for contact-based search.
 
+[Product demonstration and setup](https://hermes.sergeybaus.com)
+
 ![A Telegram Business chat: a client's 0:34 voice message gets a reply with its transcript as an expandable quote, split into paragraphs and a dash list; the owner's own 5-second voice message gets its transcript appended to its caption as a quote and is marked edited.](docs/images/hermes-telegram-business@2x.png)
 
 ## Current module: voice transcription
