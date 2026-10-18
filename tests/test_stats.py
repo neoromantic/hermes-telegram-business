@@ -9,6 +9,8 @@ import pytest
 
 from test_history import (
     _run_history_cli,
+    FakeBot,
+    make_business_text_update,
     append_raw_history_records,
     make_history_record,
     _load_plugin_module,
@@ -517,3 +519,90 @@ def test_out_of_order_classification_and_deleted_observation_join(plugin):
     seed(plugin, classified, record(plugin, 1), tomb)
     assert chat(plugin)["deletions"]["unexplained"] == 1
     assert chat(plugin)["deletions"]["pending"] == 0
+
+
+def test_regressed_clock_latest_edit_matches_canonical_state(plugin):
+    seed(
+        plugin,
+        record(plugin, 1),
+        record(plugin, 1, at=BASE + timedelta(hours=3), event="message.edited", direction="outbound"),
+        record(plugin, 1, at=BASE + timedelta(hours=2), event="message.edited", direction="unknown"),
+    )
+    history = plugin._history_support
+    state, _ = history._load_chat_state_from_disk(
+        history._history_chat_dir_path("business-123", 991), repair_tails=False
+    )
+    assert state.messages["1"].direction == "unknown"
+    before = snapshot_history_state(plugin)
+    result = chat(plugin)
+    assert result["messages"] == {"total": 1, "received": 0, "sent": 0, "unknown": 1}
+    assert result["latest_activity"]["direction"] == "unknown"
+    assert result["sessions"]["started_by"]["unknown"] == 1
+    assert snapshot_history_state(plugin) == before
+
+
+@pytest.mark.asyncio
+async def test_fake_capture_regressed_clock_latest_edit(plugin, monkeypatch):
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    history = plugin._history_support
+    bot = FakeBot()
+    for update_id, (hour, sender) in enumerate([(0, 2000), (3, 1000), (2, None)], 1):
+        assert await history.observe_ptb_update(
+            make_business_text_update(
+                message_id=1,
+                update_id=update_id,
+                date=BASE,
+                edited=update_id > 1,
+                from_user_id=sender,
+            ),
+            bot=bot,
+            now=BASE + timedelta(hours=hour),
+        )
+    state, _ = history._load_chat_state_from_disk(
+        history._history_chat_dir_path("business-123", 991), repair_tails=False
+    )
+    assert state.messages["1"].direction == "unknown"
+    before = snapshot_history_state(plugin)
+    assert chat(plugin)["messages"] == {"total": 1, "received": 0, "sent": 0, "unknown": 1}
+    assert snapshot_history_state(plugin) == before
+
+
+@pytest.mark.parametrize("first_event", ["message.created", "message.edited"])
+def test_regressed_clock_fallback_uses_first_source_observation(plugin, first_event):
+    seed(
+        plugin,
+        record(plugin, 1, at=BASE + timedelta(hours=3), sent=None, event=first_event),
+        record(plugin, 1, at=BASE + timedelta(hours=2), sent=None, event="message.edited", direction="outbound"),
+    )
+    result = chat(plugin, "--since", "2026-10-01T02:30:00Z")
+    assert result["messages"] == {"total": 1, "received": 0, "sent": 1, "unknown": 0}
+    assert result["latest_activity"]["any"] == "2026-10-01T03:00:00Z"
+    assert result["missing_history"]["send_time_fallback_messages"] == 1
+    assert result["missing_history"]["retained_from"] == "2026-10-01T02:00:00Z"
+    assert result["missing_history"]["completeness"] == "unknown"
+    assert chat(plugin, "--until", "2026-10-01T02:30:00Z")["messages"]["total"] == 0
+
+
+@pytest.mark.parametrize("classification_first", [False, True])
+def test_regressed_clock_last_superseding_classification(plugin, classification_first):
+    tomb, first = deletion(
+        plugin, 1, at=BASE + timedelta(hours=1),
+        classified_at=BASE + timedelta(hours=3), status="likely_correction",
+    )
+    last = record(
+        plugin,
+        1,
+        event="deletion.classified",
+        at=BASE + timedelta(hours=2),
+        deleted_event_id=tomb["event_id"],
+        deleted_observed_at=BASE + timedelta(hours=1),
+        classification="unexplained",
+    )
+    rows = [first, last, tomb] if classification_first else [tomb, first, last]
+    seed(plugin, record(plugin, 1), *rows)
+    result = chat(plugin, "--until", "2026-10-01T01:30:00Z")
+    assert result["messages"]["total"] == 1
+    assert result["deletions"]["total"] == 1
+    assert result["deletions"]["unexplained"] == 1
+    assert result["deletions"]["likely_correction"] == 0
+    assert result["deletions"]["pending"] == 0

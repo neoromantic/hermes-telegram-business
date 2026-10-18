@@ -3439,8 +3439,8 @@ def _stats_metadata(entry: dict[str, Any]) -> list[dict[str, Any]]:
                 "cannot read canonical history for stats; run 'hermes telegram-business history verify'; "
                 "torn tails require 'hermes telegram-business history verify --repair-tails'"
             ) from None
-    # Stable sorting preserves canonical file order for equal observation times.
-    records.sort(key=lambda record: _parse_datetime(record["observed_at"]))
+    # Preserve canonical partition/file order even when the observation clock
+    # regresses. Timestamps do not establish which evidence supersedes which.
     return records
 
 
@@ -3462,7 +3462,8 @@ def _stats_chat(
             classified[record["deleted_event_id"]] = record
 
     # An edit's latest direction wins even if a delayed original observation
-    # was appended afterward. Canonical file order breaks equal-observation ties.
+    # was appended afterward. Latest means last in canonical source order,
+    # regardless of observation timestamps.
     latest_messages = []
     for items in evidence.values():
         edits = [item for item in items if item["event_type"] == "message.edited"]
@@ -3535,7 +3536,7 @@ def _stats_chat(
             sessions.append([])
             starts[{"inbound": "contact", "outbound": "owner", "unknown": "unknown"}[item[2]]] += 1
         sessions[-1].append(item)
-    retained_at = _parse_datetime(records[0]["observed_at"]) if records else None
+    retained_at = min((_parse_datetime(record["observed_at"]) for record in records), default=None)
     return {
         "business_connection_id": entry.get("business_connection_id"),
         "chat_id": entry.get("chat_id"),
