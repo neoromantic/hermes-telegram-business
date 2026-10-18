@@ -2,15 +2,17 @@
 
 The product connects readable Telegram voice messages with useful personal correspondence history. Planned assistance builds on that history and gives the owner explicit control over what gets sent.
 
-## Implemented in the 0.8.0 branch
+## Implemented in the 0.9.0 branch
 
 - Voice, round-video, and attached-audio transcription with optional cleanup and expandable caption/reply output.
+- Manual per-chat `both` (default), `own`, `peer`, and `off` modes through owner-only `/transcribe` commands and the secondary CLI, with reconnect-stable owner keys and private reloadable JSON storage.
+- Policy skips before download/STT/cleanup and command/status exclusion from history. Live owner-gateway off/both smoke remains pending; no deployment is claimed.
 - Opt-in text history with contact names, aliases, edits, preserved deletions, and correction classification.
 - Bounded contact/date/text search, export, verification, retention, and a rebuildable contact catalog.
 - Supported native Telegram handler registration in place of adapter monkeypatches.
 - Gemini 3.8 Flash cleanup through Hermes's host-owned LLM interface, plus Python 3.11–3.14 and real PTB contract coverage.
 
-This is branch implementation status, not a claim that 0.8.0 has been published or installed in a running gateway. [Verification boundaries](VERIFY.md).
+This is branch implementation status, not a claim that 0.9.0 has been published or installed in a running gateway. [Verification boundaries](VERIFY.md).
 
 ## Priorities and requirements
 
@@ -28,7 +30,7 @@ The [assistant design](ASSISTANT.md) explains the owner experience, modes, conte
 | Issue | First useful slice |
 |---|---|
 | [Raw-first transcripts #8](https://github.com/neoromantic/hermes-telegram-business/issues/8) | Show raw STT immediately, then edit the same caption/reply after cleanup; start with one output target. |
-| [Transcription controls #7](https://github.com/neoromantic/hermes-telegram-business/issues/7) | Manual per-chat `both`, `own-only`, and `off`; investigate automatic peer detection separately. |
+| [Transcription controls #7](https://github.com/neoromantic/hermes-telegram-business/issues/7) | Manual `both`, `own`, `peer`, and `off` implemented in 0.9.0; owner-gateway smoke pending. Automatic detection is outside this slice. |
 | [Scheduled sending #3](https://github.com/neoromantic/hermes-telegram-business/issues/3) | Recover the existing static-text send CLI; Hermes cron owns timing, with explicit targets and no ledger. |
 | [Correspondence insights #4](https://github.com/neoromantic/hermes-telegram-business/issues/4) | Inspectable counts/unanswered conversations and opt-in owner notifications for unexplained deletions. |
 | [Voice bursts #9](https://github.com/neoromantic/hermes-telegram-business/issues/9) | Opt-in same-sender grouping with ordering and explicit boundaries; avoid delaying every single note. |

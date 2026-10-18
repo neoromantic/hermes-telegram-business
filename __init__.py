@@ -75,6 +75,8 @@ else:
 
 
 from . import history_support as _history_support
+from . import business_identity as _business_identity
+from . import transcription_modes as _transcription_modes
 
 
 logger = logging.getLogger(__name__)
@@ -409,6 +411,22 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
     from telegram.ext import ApplicationHandlerStop, BaseHandler
 
     async def on_business_update(update: Any, context: Any) -> None:
+        message = update.effective_message
+        # Authorize commands before every capture path, including raw PTB edits.
+        if message is not None and _business_identity.command_text(message):
+            await _business_identity.resolve_owner(message, bot=context.bot)
+            if (_business_identity.owner_command(message, _business_identity.cached_owner(message))
+                    or _business_identity.confirmation(message)):
+                event = SimpleNamespace(source=SimpleNamespace(platform=adapter.platform),
+                                        raw_message=message, raw_update=update)
+                gateway = SimpleNamespace(adapters={adapter.platform: adapter})
+                normalized = _normalize_business_event(event)
+                if normalized is not None and _mark_identity_seen(normalized.identity):
+                    if normalized.update_type != "edited_message" and not _business_identity.confirmation(message):
+                        # Finish the update before PTB accepts the next note so
+                        # /transcribe off takes effect immediately in this chat.
+                        await _confirm_transcription_command(normalized, ModuleContext(gateway=gateway))
+                raise ApplicationHandlerStop
         try:
             await _history_support.observe_ptb_update(update, bot=context.bot)
         except Exception as exc:  # noqa: BLE001 - capture failures must not break dispatch
@@ -695,9 +713,8 @@ def _event_direction(event: Any, message: Any) -> str:
             return "incoming"
         if value in {"outgoing", "outbound", "sent"}:
             return "outgoing"
-    if _get(message, "sender_business_bot") is not None:
-        return "outgoing"
-    return "unknown"
+    return {"outbound": "outgoing", "inbound": "incoming"}.get(
+        _business_identity.direction(message, _business_identity.cached_owner(message)), "unknown")
 
 
 def _media_metadata(message: Any) -> Optional[MediaMetadata]:
@@ -1149,23 +1166,7 @@ def _within_business_edit_window(message: Any, *, now: Optional[datetime] = None
 
 async def _is_outgoing_business_message(*, bot: Any, message: Any) -> bool:
     """Identify messages sent by the connected Business owner or their bot."""
-    if _get(message, "sender_business_bot") is not None:
-        return True
-
-    business_connection_id = _business_connection_id(message)
-    from_user = _get(message, "from_user")
-    from_user_id = _get(from_user, "id")
-    get_connection = getattr(bot, "get_business_connection", None)
-    if not business_connection_id or from_user_id is None or not callable(get_connection):
-        return False
-
-    try:
-        connection = await _maybe_await(get_connection(business_connection_id))
-    except Exception as exc:  # noqa: BLE001 - direction uncertainty must use the safe reply path
-        logger.debug("%s: Business owner lookup failed; using transcript reply: %s", _PLUGIN_NAME, exc)
-        return False
-    owner_id = _get(_get(connection, "user"), "id")
-    return owner_id is not None and str(owner_id) == str(from_user_id)
+    return await _business_identity.resolve_direction(message, bot=bot) == "outbound"
 
 
 def _caption_edit_error_detail(exc: Exception) -> str:
@@ -1792,6 +1793,9 @@ async def _process_business_voice_event(
         logger.warning("%s: Telegram bot object unavailable", _PLUGIN_NAME)
         return
 
+    if not await _transcription_modes.should_transcribe(message, bot=bot):
+        return
+
     media_payload = _transcribable_payload(message)
     media_label = media_payload[1] if media_payload else "media"
     if media_label in {"audio", "audio_document"}:
@@ -1889,7 +1893,47 @@ def _route_voice_module(event: TelegramBusinessEvent, context: ModuleContext) ->
     )
 
 
+async def _confirm_transcription_command(event: TelegramBusinessEvent, context: ModuleContext, *, status: str | None = None) -> None:
+    message = event.raw_message
+    owner = _business_identity.cached_owner(message)
+    if not _business_identity.owner_command(message, owner):
+        return
+    adapter, bot = _get_adapter_and_bot(event.gateway_event, context.gateway)
+    if bot is None:
+        return
+    if status is None:
+        status = await _transcription_modes.command_status(message, owner=owner)
+    kwargs = dict(chat_id=event.chat_id, message_id=event.message_id,
+                  business_connection_id=event.business_connection_id, text=status)
+    try:
+        result = await _maybe_await(bot.edit_message_text(**kwargs))
+        if result is False:
+            raise RuntimeError("edit rejected")
+    except Exception:
+        logger.info("Transcription command edit failed; using Business reply")
+        try:
+            await _maybe_await(bot.send_message(
+                chat_id=event.chat_id, business_connection_id=event.business_connection_id,
+                reply_to_message_id=event.message_id, text=status, **_notification_kwargs(adapter)))
+        except Exception:
+            logger.warning("Transcription command Business reply failed")
+
+
+def _route_transcription_command(event: TelegramBusinessEvent, context: ModuleContext) -> ModuleResult:
+    message = event.raw_message
+    if not (_business_identity.owner_command(message, _business_identity.cached_owner(message))
+            or _business_identity.confirmation(message)):
+        return ModuleResult.pass_through()
+    # Telegram echoes our status edit as an edited Business message. Consume it
+    # without executing the command again, even after a process restart.
+    if event.update_type == "edited_message" or _business_identity.confirmation(message):
+        return ModuleResult.handled("telegram_business_transcription_command_edit")
+    return ModuleResult.handled("telegram_business_transcription_command",
+                                work=lambda: _confirm_transcription_command(event, context))
+
+
 _MODULES = (
+    EventModule(name="transcription_commands", route=_route_transcription_command, enabled=_module_enabled),
     EventModule(
         name="voice_transcription",
         route=_route_voice_module,
@@ -1976,7 +2020,16 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
         return {"action": "skip", "reason": duplicate_reason}
 
     try:
-        _schedule_module_work(result.work)
+        work = result.work
+        if result.reason == "telegram_business_transcription_command":
+            # Commit local storage before this synchronous hook returns. Only
+            # network confirmation is scheduled, so the following note sees it.
+            status = _transcription_modes.command_status_sync(
+                normalized_event.raw_message,
+                owner=_business_identity.cached_owner(normalized_event.raw_message))
+            work = lambda: _confirm_transcription_command(
+                normalized_event, ModuleContext(gateway=gateway), status=status)
+        _schedule_module_work(work)
     except Exception as exc:  # noqa: BLE001 - dispatch must survive scheduling failure
         _forget_identity(normalized_event.identity)
         logger.warning("%s: failed to schedule module work: %s", _PLUGIN_NAME, exc, exc_info=True)

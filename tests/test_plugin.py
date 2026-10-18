@@ -245,7 +245,7 @@ def test_manifest_uses_current_fields():
     assert manifest == {
         "manifest_version": 1,
         "name": LEGACY_PLUGIN_ID,
-        "version": "0.8.0",
+        "version": "0.9.0",
         "description": (
             "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
         ),
@@ -259,7 +259,7 @@ def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "hermes-telegram-business"
-    assert metadata["version"] == "0.8.0"
+    assert metadata["version"] == "0.9.0"
     assert metadata["description"] == (
         "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
     )
@@ -957,7 +957,9 @@ async def test_uneditable_outgoing_transcript_falls_back_to_separate_reply(
         }
     ]
     if failure == "expired":
-        assert bot.business_connection_calls == []
+        # Stable owner-key lookup now precedes media policy, even when the
+        # eventual transcript cannot fit or edit the original caption.
+        assert bot.business_connection_calls == ["business-123"]
         assert bot.edit_calls == []
     elif failure in {"api", "api_false"}:
         assert len(bot.edit_calls) == 1
@@ -966,7 +968,7 @@ async def test_uneditable_outgoing_transcript_falls_back_to_separate_reply(
 
 
 @pytest.mark.asyncio
-async def test_over_caption_limit_transcript_skips_direction_lookup_and_uses_reply(
+async def test_over_caption_limit_transcript_uses_policy_owner_lookup_and_reply(
     plugin, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
@@ -982,7 +984,7 @@ async def test_over_caption_limit_transcript_skips_direction_lookup_and_uses_rep
         transcribe_fn=lambda _path: {"success": True, "transcript": transcript},
     )
 
-    assert bot.business_connection_calls == []
+    assert bot.business_connection_calls == ["business-123"]
     assert bot.edit_calls == []
     assert bot.calls[0]["text"] == f"🎙️ {transcript}"
 

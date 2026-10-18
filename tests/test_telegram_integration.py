@@ -208,3 +208,86 @@ async def test_real_ptb_business_transcript_serialization(plugin, telegram_app, 
         entities = json.loads(params["entities"])
     assert entities[0]["type"] == "expandable_blockquote"
     assert entities[0]["length"] == len(f"🎙️ {transcript}".encode("utf-16-le")) // 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sender,marker,claimed", [(1000, False, True), (2000, False, False), (2000, True, False)])
+@pytest.mark.parametrize("edit_fails", [False, True])
+async def test_native_transcription_command_authorization_history_and_fallback(
+    plugin, telegram_app, monkeypatch, sender, marker, claimed, edit_fails,
+):
+    app, request = telegram_app
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    request.responses["editMessageText"] = ((400, {"ok": False, "error_code": 400, "description": "Bad Request: edit failed"})
+        if edit_fails else (200, {"ok": True, "result": True}))
+    adapter = SimpleNamespace(platform="telegram", _bot=app.bot)
+    plugin._register_telegram_handlers(app, adapter)
+    core = AsyncMock()
+    app.add_handler(TypeHandler(Update, core))
+    message = {"message_id": 77, "date": 1, "business_connection_id": "business-123",
+               "chat": {"id": 991, "type": "private", "first_name": "Casey", "username": "casey"},
+               "from": {"id": sender, "is_bot": False, "first_name": "Sender"}, "text": "/transcribe off"}
+    if marker:
+        message["sender_business_bot"] = {"id": 123, "is_bot": True, "first_name": "Business bot"}
+    update = Update.de_json({"update_id": 42, "business_message": message}, app.bot)
+    await app.process_update(update)
+    # Check immediately: the command must commit before PTB accepts the next note.
+    assert plugin._transcription_modes.mode_for("1000", "991") == ("off" if claimed else "both")
+    await app.process_update(update)
+    assert core.await_count == (0 if claimed else 2)
+    writes = [params for endpoint, params in request.calls if endpoint == "editMessageText"]
+    replies = [params for endpoint, params in request.calls if endpoint == "sendMessage"]
+    assert len(writes) == int(claimed)
+    assert len(replies) == int(claimed and edit_fails)
+    if claimed:
+        assert writes[0]["business_connection_id"] == "business-123"
+        if edit_fails:
+            assert replies[0]["business_connection_id"] == "business-123"
+        assert not list(plugin._transcription_modes.path().parents[1].rglob("*.jsonl"))
+        # The gateway's edit echo must never be archived or re-executed, including
+        # after cache eviction, nor leak to ordinary core processing.
+        plugin._business_identity.OWNER_CACHE.clear()
+        message["text"] = "/transcribe off → Transcription: off"
+        message["sender_business_bot"] = {"id": 123, "is_bot": True, "first_name": "Business bot"}
+        message["edit_date"] = 2
+        await app.process_update(Update.de_json({"update_id": 43, "edited_business_message": message}, app.bot))
+        assert core.await_count == 0
+        assert len([1 for endpoint, _ in request.calls if endpoint == "editMessageText"]) == 1
+        assert not list(plugin._transcription_modes.path().parents[1].rglob("*.jsonl"))
+    else:
+        files = list(plugin._transcription_modes.path().parents[1].rglob("*.jsonl"))
+        assert files
+        assert json.loads(files[0].read_text().splitlines()[0])["text"] == "/transcribe off"
+
+
+@pytest.mark.asyncio
+async def test_native_off_then_both_before_media_download(plugin, telegram_app, monkeypatch):
+    app, request = telegram_app
+    request.responses["editMessageText"] = (200, {"ok": True, "result": True})
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    adapter = SimpleNamespace(platform="telegram", _bot=app.bot,
+                              _is_user_authorized_from_message=Mock(return_value=True))
+    plugin._register_telegram_handlers(app, adapter)
+    core = AsyncMock()
+    app.add_handler(TypeHandler(Update, core))
+    download = AsyncMock(side_effect=RuntimeError("stop at download"))
+    monkeypatch.setattr(plugin, "_download_voice", download)
+    def update(number, *, mode=None):
+        message = {"message_id": number, "date": 1, "business_connection_id": "business-123",
+                   "chat": {"id": 991, "type": "private"},
+                   "from": {"id": 1000, "is_bot": False, "first_name": "Owner"}}
+        message.update({"text": f"/transcribe {mode}"} if mode else
+                       {"voice": {"file_id": "v", "file_unique_id": "v", "duration": 3}})
+        return Update.de_json({"update_id": number, "business_message": message}, app.bot)
+    await app.process_update(update(1, mode="off"))
+    await app.process_update(update(2))
+    if plugin._pending_tasks:
+        await asyncio.gather(*plugin._pending_tasks)
+    download.assert_not_awaited()
+    assert not [1 for endpoint, _ in request.calls if endpoint == "sendMessage"]
+    await app.process_update(update(3, mode="both"))
+    await app.process_update(update(4))
+    if plugin._pending_tasks:
+        await asyncio.gather(*plugin._pending_tasks)
+    download.assert_awaited_once()
+    core.assert_not_awaited()

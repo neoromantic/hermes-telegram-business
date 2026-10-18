@@ -44,6 +44,9 @@ except ModuleNotFoundError as exc:
         return Path(configured).expanduser() if configured else Path.home() / ".hermes"
 
 
+from . import business_identity as _business_identity
+from . import transcription_modes as _transcription_modes
+
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "telegram-business-voice-transcriber"
@@ -85,7 +88,7 @@ VERIFY_EVENT_ID_TEMP_DIR_PREFIX = ".verify-event-ids-"
 VERIFY_REFERENCE_TOMBSTONE_TEMP_DIR_PREFIX = ".verify-reference-tombstones-"
 VERIFY_REFERENCE_CLASSIFICATION_TEMP_DIR_PREFIX = ".verify-reference-classifications-"
 
-_OWNER_CACHE: dict[str, str] = {}
+_OWNER_CACHE = _business_identity.OWNER_CACHE
 _CACHE_LOCK = threading.RLock()
 _CHAT_STATE_CACHE: dict[str, "ChatStateCacheEntry"] = {}
 _DELETION_TIMERS: dict[tuple[str, str], "DeletionTimerEntry"] = {}
@@ -2639,28 +2642,7 @@ async def _maybe_await(value: Any) -> Any:
 
 
 async def _resolve_direction(message: Any, *, bot: Any = None) -> str:
-    if _get(message, "sender_business_bot") is not None:
-        return "outbound"
-    business_connection_id = _get(message, "business_connection_id") or _get(message, "_hermes_business_connection_id")
-    from_user_id = _get(_get(message, "from_user"), "id")
-    if not business_connection_id or from_user_id is None or bot is None:
-        return "unknown"
-    connection_key = str(business_connection_id)
-    owner_id = _OWNER_CACHE.get(connection_key)
-    if owner_id is None:
-        get_connection = getattr(bot, "get_business_connection", None)
-        if not callable(get_connection):
-            return "unknown"
-        try:
-            connection = await _maybe_await(get_connection(business_connection_id))
-        except Exception:
-            return "unknown"
-        owner = _get(_get(connection, "user"), "id")
-        if owner is None:
-            return "unknown"
-        owner_id = str(owner)
-        _OWNER_CACHE[connection_key] = owner_id
-    return "outbound" if owner_id == str(from_user_id) else "inbound"
+    return await _business_identity.resolve_direction(message, bot=bot)
 
 
 def _extract_history_text(message: Any) -> str | None:
@@ -2691,6 +2673,8 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
             source = attribute
             break
     if payload is None or event_type is None or source is None:
+        return False
+    if event_type != "message.deleted" and await _business_identity.exclude_from_history(payload, bot=bot):
         return False
 
     business_connection_id = _get(payload, "business_connection_id") or _get(payload, "_hermes_business_connection_id")
@@ -3066,12 +3050,14 @@ def _resolve_chat_entry(*, business_connection_id: str | None, chat_id: str) -> 
     return matches[0]
 
 
-def _resolve_contact_entry(*, business_connection_id: str | None, contact: str) -> dict[str, Any]:
+def _resolve_contact_entry(*, business_connection_id: str | None, contact: str,
+                           owner_connections: Iterable[str] | None = None) -> dict[str, Any]:
     needle = _normalize_contact_lookup(contact)
     matches = [
         entry
         for entry in _filter_catalog_entries(business_connection_id=business_connection_id)
         if needle in _contact_lookup_tokens(entry)
+        and (owner_connections is None or str(entry.get("business_connection_id")) in owner_connections)
     ]
     if not matches:
         raise ValueError(f"no matching contact found for {contact!r}")
@@ -3329,6 +3315,7 @@ def _chat_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def setup_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="telegram_business_command")
+    _transcription_modes.setup_cli(subs)
     history = subs.add_parser("history", help="Read and maintain Telegram Business history")
     history_subs = history.add_subparsers(dest="telegram_business_history_command")
 
@@ -3399,6 +3386,8 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
 
 
 def handle_cli(args: argparse.Namespace) -> int:
+    if getattr(args, "telegram_business_command", None) == "mode":
+        return _transcription_modes.handle_cli(args)
     action = getattr(args, "_history_action", None)
     if action is None:
         print("Usage: hermes telegram-business history <chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>")

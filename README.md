@@ -14,13 +14,47 @@ A Telegram Business integration for [Hermes Agent](https://github.com/NousResear
 1. A native Telegram handler intercepts Business `voice`, `video_note`, `audio`, and conservatively identified audio `document` updates before ordinary media processing; generic documents and video pass through.
 2. Requires a real Telegram Business connection and preserves its `business_connection_id`.
 3. Returns `action: skip` so the ordinary auth/agent path does not process the media.
-4. Downloads the media transiently and delegates speech recognition to Hermes's configured `transcribe_audio` backend. Attached files must have safe byte/duration metadata, are locally duration-checked when needed, and pass a short mono/16 kHz speech-presence probe before full transcription.
+4. Checks the per-chat transcription mode before any download, STT, or cleanup. Skipped media is consumed silently. Allowed media downloads transiently and delegates speech recognition to Hermes's configured `transcribe_audio` backend. Attached files must have safe byte/duration metadata, are locally duration-checked when needed, and pass a short mono/16 kHz speech-presence probe before full transcription.
 5. Optionally asks the host-owned `ctx.llm` facade for conservative proofreading or opt-in enrichment with ASR correction, filler cleanup, paragraphing, lists, and long-note titles.
 6. Publishes the first structurally usable enriched candidate. Empty output or a catastrophic size change gets one feedback retry; raw STT is the last fallback when neither model result is usable.
 7. For a short outgoing Business message, appends the transcript to the original voice/video-note caption as an expandable blockquote, retrying the same caption as plain text when Telegram rejects the new entity type.
 8. Uses expandable Business-scoped replies for incoming, long, expired, or uneditable messages, with the equivalent plain-text retry.
 
 Handled updates are identified from stable Telegram Business connection, chat, update/message, and relationship data, then suppressed in memory for 24 hours. A successful caption edit suppresses the separate transcript reply, so the chat never receives both forms. PTB `BadRequest` is treated as a definite Telegram-side rejection unless it is the recognized `message is not modified` or unsupported-entity case. Failed entity requests are not treated as delivered before their targeted plain-text retry, and ambiguous post-send transport/backend failures suppress the reply fallback unless remote state is verified. The plugin never runs a separate model provider client and never needs its own credentials.
+
+## Per-chat transcription modes (0.9.0)
+
+The connected account owner controls transcription in each Business chat:
+
+| Mode | Notes transcribed |
+|---|---|
+| `both` (default) | Owner and contact |
+| `own` | Owner only |
+| `peer` | Contact only |
+| `off` | None |
+
+One mode covers voice notes, round video, and attached audio. Send `/transcribe` in the Business chat to see its mode, `/transcribe both|own|peer|off` to change it, or `/transcribe reset` to restore the default. Only `from.id` matching the connected owner authorizes a command; a contact's command remains ordinary text. The bot edits the command into a short English status, with a Business reply if editing fails. The contact may see the command and status. Commands and their status edits/replies are excluded from text history. Owner edits of commands are consumed without applying another mode change.
+
+Policy is checked once before media download, STT, and cleanup. An excluded note is claimed silently so the ordinary Hermes agent cannot process it. Direction uses a shared helper: `sender_business_bot` or an owner sender ID means own; another known sender means peer. With a stable owner key, `both` and `off` need no direction. Unknown direction under `own`/`peer` transcribes as usual and logs the reason.
+
+Modes are keyed by `(owner_user_id, chat_id)` and survive Business connection reconnects. The owner is obtained from cached `getBusinessConnection` or its persisted verified mapping for the same connection, shared with history even when history is disabled. The native PTB command path resolves the owner before history or gateway dispatch; the synchronous normalized command route accepts an in-memory or persisted, unambiguous verified mapping for the exact connection and commits local mode changes before returning. Network confirmation is asynchronous. A wholly unknown connection cannot initialize identity through this synchronous route; the native PTB path resolves it first. If owner lookup fails and no verified identity is cached, commands cannot change modes, and media transcribes as usual with an `unknown_owner_fail_open` log. The peer's sender ID is never used as an owner key. This conservative fallback means a saved `off` policy cannot be applied until its owner key is known.
+
+Storage is `$HERMES_HOME/data/telegram-business/transcription-modes.json` (`0600`). Each chat entry contains mode, UTC `updated_at`, `updated_via` (`chat` or `cli`), and a name/@username label snapshot. The same file retains discovered owner-to-connection IDs so a separate CLI process can select an owner with history disabled. It contains no message or transcript text. POSIX advisory locking serializes chat/CLI read-modify-write updates; private temporary files are flushed and atomically replaced. The gateway reloads on mtime/inode changes, including deletion/recreation, without restarting. A missing file defaults to `both`. Malformed/unreadable data logs a content-free warning and retains the last valid runtime policy, or defaults to `both` on a cold start. Writes refuse to overwrite corrupt data; repair or restore the file first.
+
+The secondary CLI uses the existing plugin command registration:
+
+```bash
+hermes telegram-business mode list
+hermes telegram-business mode get 991
+hermes telegram-business mode set 991 off
+hermes telegram-business mode reset 991
+hermes telegram-business mode set @alice own --owner 123456
+hermes telegram-business mode get 'Alice Smith' --connection business-connection-id
+```
+
+Numeric chat IDs work with history disabled. Names/@usernames require enabled history and its existing contact resolver, scoped to the selected owner's known connections. Ambiguous matches require an explicit connection or numeric chat ID. `--owner` is needed when multiple owners are known; before the first discovery, it can bootstrap an explicit numeric owner ID. On upgrade, existing history also supplies owner/connection evidence from stored outbound sender IDs, without new traffic or mode mappings. Connections with conflicting outbound senders are excluded. Inbound-only history and contact profiles cannot prove ownership: use numeric IDs with an explicit owner until a verified connection is available. Name lookup still requires a current history catalog (rebuild it with the existing history CLI if requested). `list` shows saved overrides, including explicitly saved `both`; `reset` removes an override. There is no environment default override, automatic detection, timed/per-media mode, counter, agent tool, or mode skill.
+
+Acceptance remains **pending live owner-gateway smoke**: `/transcribe off` then a silent skipped note; `/transcribe both` then transcription resumes. This checkout has not been installed, restarted, or deployed by this change.
 
 ## Correspondence history
 
@@ -45,7 +79,7 @@ Canonical storage is profile-local JSONL with a rebuildable contact catalog. Cap
 
 ## Planned assistant
 
-The next layer uses opted-in history to build an editable, evidence-backed owner persona and per-contact context. It will support contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover. These features are requirements, not runtime capabilities in 0.8.0.
+The next layer uses opted-in history to build an editable, evidence-backed owner persona and per-contact context. It will support contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover. These features are requirements, not runtime capabilities in 0.9.0.
 
 See the [roadmap](docs/ROADMAP.md) and [assistant design](docs/ASSISTANT.md). This project complements Nous Research's [official reply-drafting plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/telegram-business); it is a separate community integration.
 
@@ -63,7 +97,7 @@ Telegram Business voice/video notes can originate from users outside the ordinar
 HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH=1
 ```
 
-The plugin registers native Telegram handlers before the ordinary Hermes media handler. Only Business voice/video/audio candidates are claimed, including attachments rejected by the audio limits or speech probe. Unrelated messages continue through Hermes normally. The bypass above applies only to those Business media candidates; it does not authorize ordinary bot messages.
+The plugin registers native Telegram handlers before the ordinary Hermes media handler. Owner `/transcribe` commands and their status echoes are claimed before history capture. Business voice/video/audio candidates are claimed, including attachments rejected by the audio limits or speech probe. Unrelated messages continue through Hermes normally. The bypass above applies only to those Business media candidates; it does not authorize ordinary bot messages.
 
 History has its own explicit enable switch and records eligible Business text updates independently of the ordinary DM allowlist. Telegram's selected Business-chat scope and the optional history filters determine what is captured.
 
@@ -152,7 +186,7 @@ If the trust gate, provider, or model is unavailable, the plugin logs the cleanu
 
 ## Current module architecture
 
-The plugin registers native Telegram handlers, a `pre_gateway_dispatch` hook, and a history CLI/skill. Business text observations are persisted before normal dispatch; supported media is consumed directly before Hermes downloads it. The voice pipeline normalizes Telegram Business updates before its module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. Direction remains `unknown` when Telegram supplies no outgoing marker; the voice module retains its existing asynchronous Business-owner lookup before editing a caption.
+The plugin registers native Telegram handlers, a `pre_gateway_dispatch` hook, and a history CLI/skill. Business text observations are persisted before normal dispatch; supported media is consumed directly before Hermes downloads it. The voice pipeline normalizes Telegram Business updates before its module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. A shared cached Business-owner helper resolves direction for history, transcription policy, and caption editing. The native handler authorizes and finishes commands before history capture; the normalized command module precedes voice routing.
 
 Modules are a small ordered tuple. Each module has its own enable check, declares whether it may receive the host-owned LLM facade, and explicitly returns `handled` or `pass_through`. A pass-through result leaves the ordinary Hermes path untouched. A handled result returns `action: skip` immediately and schedules any slow work outside gateway dispatch:
 
@@ -163,7 +197,8 @@ Telegram gateway event
        -> pass_through: try next module / ordinary Hermes path
        -> handled: duplicate guard + action: skip (no agent turn)
   -> asynchronous module work
-  -> voice/video note: unchanged transient download -> full STT
+  -> shared owner-key transcription policy (skip silently or continue)
+  -> voice/video note: transient download -> full STT
   -> attached audio: metadata gate -> authoritative getFile-size gate -> transient download -> local ffprobe verification -> ffmpeg prefix probe
   -> unsupported attached-audio container: transient mono/16 kHz WAV normalization
   -> Hermes transcribe_audio (configured host STT; probe first for attached files)

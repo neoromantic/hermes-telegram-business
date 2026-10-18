@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0 - Unreleased
+
+- Add manual per-chat `both` (default), `own`, `peer`, and `off` transcription modes across voice, round video, and attached audio, applied before download, STT, and cleanup. Skipped updates remain silently claimed.
+- Add owner-only `/transcribe` show/set/reset commands with English edit confirmations and Business reply fallback; exclude commands and status echoes from every text-history capture path while preserving contact commands as ordinary text.
+- Share cached Business owner lookup and direction across policy, history, and caption editing; key modes by owner user ID and chat ID across reconnects. Unknown owners never use the peer's ID; unknown direction in `own`/`peer` fails open with a content-free reason log.
+- Store private metadata in profile-local `transcription-modes.json`, with process-locked atomic writes, mtime/inode reload, deletion/recreation support, and corrupt-file write refusal plus last-valid/default runtime recovery.
+- Add `hermes telegram-business mode list|get|set|reset`, numeric selectors without history, and owner-scoped existing contact resolution with explicit ambiguity errors. Upgrade lookup can discover owners from legacy outbound history without new traffic; peer profiles and conflicting sender evidence never assign ownership.
+- Reuse persisted verified mappings for the same connection after restart, including during owner-lookup outages. Normalized owner commands commit local policy before returning so subsequent media observes the change; unknown connections require native asynchronous identity initialization.
+- Align package, manifest, and lock metadata to 0.9.0. No automatic detector, SQLite, counters, mode agent tools, or mode skills are included.
+- Live owner-gateway off/both smoke remains pending. This implementation does not claim installation, restart, deployment, or live Telegram validation.
+
 ## 0.8.0 - Unreleased
 
 - Finish opt-in Business text history with contact/date/text search, aliases, edits, preserved deletions, and correction classification in canonical JSONL.

@@ -2,7 +2,7 @@ manifest_version: 1
 # Legacy-stable runtime identity: changing this would break existing Hermes
 # install directories, config keys, and update/remove commands.
 name: telegram-business-voice-transcriber
-version: 0.8.0
+version: 0.9.0
 description: "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
 author: neoromantic
 kind: standalone
