@@ -398,7 +398,9 @@ def reconcile(value: dict, messages: list[dict], *, refresh: bool) -> list[dict]
                     if fact["kind"] == "observed" and not protected(fact):
                         fact["kind"] = "inferred"
                         fact["confidence"] = "low"
-            if fact.get("owner_review") and fact["status"] in {"active", "stale"}:
+            # Review is orthogonal to source validity: keep stale candidates
+            # eligible for invalidation if the model does not re-support them.
+            if fact.get("owner_review") and fact["status"] == "active":
                 fact["status"] = "owner review"
             if fact != before:
                 fact["last_revision"] = value["revision"] + 1
@@ -813,7 +815,8 @@ async def refresh(
             patches = []
             for fact in generated["facts"]:
                 if (protected(fact) or fact["status"] not in {"active", "owner review"}
-                        or any(fact["id"] == removed["id"] for removed in value["removed"])):
+                        or (fact["id"] in original_ids
+                            and any(fact["id"] == removed["id"] for removed in value["removed"]))):
                     continue
                 patch = copy.deepcopy(fact)
                 # In-flight IDs are provisional. A concurrent owner note may
