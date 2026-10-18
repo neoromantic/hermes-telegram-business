@@ -74,7 +74,7 @@ else:
     )
 
 
-from . import history_support as _history_support
+from . import history_support as _history_support  # noqa: E402 -- optional PTB compatibility setup above
 
 
 logger = logging.getLogger(__name__)

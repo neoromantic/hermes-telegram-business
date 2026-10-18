@@ -34,6 +34,64 @@ Use `--until` with an ISO timestamp to bound the end of a query. Both bounds are
 
 The bundled `history` skill gives Hermes the same bounded contact-first recipes. Stored text is conversation data, not instructions for the agent.
 
+## Correspondence stats
+
+```bash
+hermes telegram-business stats
+hermes telegram-business stats --contact @alice --since 30d
+hermes telegram-business stats --chat 991 --connection business-123 --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow
+hermes telegram-business stats --contact @alice --format json --session-gap 90m
+```
+
+Top-level `stats` is a deterministic local report over retained JSONL. It makes no LLM or network calls and writes no state. `history stats` remains **storage stats**: record/file counts, bytes, health and capture configuration.
+
+With no contact/chat selector, stats shows at most `--limit` contacts (default 20, maximum 5000), ordered by latest **counted** activity after the range and replacement exclusions. Contacts without counted activity sort last; connection and chat IDs break ties deterministically. `--connection` can restrict the table. Selecting a contact/chat gives a detailed report; it uses the same aliases and ambiguity errors as history. JSON uses the same report structure for both modes.
+
+Only archived text messages count. Voice, video notes, media, captions, service messages and automatic voice transcripts are excluded. Neither report format prints message content, deletion reasons or archived text. Human-readable contact labels escape terminal controls.
+
+### Time, counts and sessions
+
+- One message is one `(connection, chat, message_id)`. Repeated events and edits do not add messages. The latest observed edit supplies direction, including `unknown`; unknown is separate from received/contact and sent/owner.
+- Send time comes from the original creation evidence's `message_at`, then the earliest available edit's `message_at`, then the first observation. Later edits never move an original send time. Observation-month partitions are all scanned, including edits and classifications outside the selected range.
+- Both bounds are inclusive. History durations (`7d`, `90m`, `6h`, `1w`, `30s`) are relative to one shared current instant. ISO timestamps accept offsets; an offset-free ISO timestamp uses UTC, matching history. A plain `YYYY-MM-DD` starts or ends the day in `--tz`, including its final microsecond and DST changes. The timezone defaults to `HERMES_TELEGRAM_BUSINESS_TIMEZONE`, otherwise UTC, and is always reported. With no `--since`, all retained history is considered.
+- Deleted messages still count, except those whose latest retained deletion classification is `likely_duplicate` or `likely_correction`. These exclusions apply even when deletion/classification happened outside the requested send-time range.
+- Deletion counts use **delete observation time**, never classification time. The latest classification replaces earlier classifications of the same tombstone. Classification-only evidence surviving a pruned tombstone uses `deleted_observed_at`; missing delete timestamps are reported separately and cannot be assigned to a range.
+- Unexplained deletions are counts only; `history deletions` supplies details. The archive cannot prove who actually deleted a message. Message direction does **not** identify the deleter. JSON therefore reports all unexplained deletions under actor `unknown` (contact/owner are zero known attributions), and text states this uncertainty.
+- Active days are distinct local dates with counted activity, also split into received and sent. Latest activity and “no observed reply after it” refer only to counted messages in the selected range; they do not imply intent or an overdue response.
+- Sessions use send-time order. A new session starts only when the gap is **strictly greater** than `--session-gap` (default `6h`). Unknown-direction messages participate. Sessions are cut at the range edges. Reports count starters by contact/owner/unknown and sessions ending on received activity without an observed reply. Equal send timestamps use message ID string order to resolve ties; this deterministic order cannot establish the real order of simultaneous messages.
+
+### Missing history and JSON
+
+`retained_from` is the first **retained observation**, not proof of capture start or continuous coverage. If `--since` precedes it, the range is marked partial. Coverage remains unknown otherwise: capture gaps and earlier pruning cannot be disproved from the retained archive. Pruned partitions automatically disappear from the next report.
+
+Deletions without original evidence are counted separately (no message observation before the deletion, or a retained `missing_original` classification). Legitimate messages seen only in edits still count once; `edit_only_messages` separately identifies that evidence limitation. They do not prove exactly when capture began. `send_time_fallback_messages` identifies counted messages with no retained Telegram send timestamp. These evidence counts are not added to message totals. `deletions_without_observation_time` covers all retained unplaceable deletions, since their range cannot be determined.
+
+JSON schema version 1 has stable top-level keys: `timezone`, inclusive UTC `since`/`until` (null when unbounded), `time_basis`, `text_messages_only`, `session_gap_seconds`, `sessions_cut_at_range_bounds`, `deletion_actor`, `deletion_details_command`, `coverage_note`, `contacts_total`, `contacts_returned`, and `contacts`. Each contact contains identity (`business_connection_id`, `chat_id`, `contact`), `messages`, `active_days`, `latest_activity`, `last_message_no_observed_reply`, `sessions`, `deletions`, and `missing_history`. Counts are integers; missing activity timestamps/directions are null. JSON timestamps are UTC; text renders them in the reported timezone. `missing_history.completeness` is always `unknown`.
+
+Reads use existing root/chat locks and require a fresh catalog. Missing locks or stale/dirty/corrupt catalogs return the established rebuild/maintenance instructions without changing files. Torn/malformed JSONL fails with verification/repair instructions; stats never repairs or rebuilds. Output rows are bounded, but exact reconstruction scans all retained records for selected chats and retains their metadata in memory. Use a contact selector to limit the scan. Notifications, turns and response-time metrics are deferred.
+
+### Reproduce with synthetic data
+
+From this checkout, run the real registered CLI against a disposable fictional archive (stdlib only; no Telegram account or installed plugin needed):
+
+```bash
+python docs/examples/correspondence_stats.py stats --contact @alice_example --since 2026-09-19 --until 2026-10-19 --tz Europe/Moscow
+python docs/examples/correspondence_stats.py stats --format json
+```
+
+Fixture setup explicitly creates the canonical JSONL/catalog under a temporary directory beside the example and removes it afterward. The stats read itself writes nothing. The first command reports, among its timing/coverage lines:
+
+```text
+@alice_example connection=business-123 chat=991
+  messages 5: received 3, sent 1, unknown direction 1
+  active days 2 (received 2, sent 1)
+  last message: received, no observed reply after it
+  sessions 2 (gap 21600s, cut at range bounds): started by contact 2, by owner 0, unknown 0; ended without observed reply 1
+  deletions 3: unexplained 1 (actor unknown), likely correction 1, likely duplicate 0, unclassifiable 1, pending 0
+```
+
+The range is partial, with one deletion without an original and one counted edit-only message. A November edit/classification does not move the October send times or hide the correction exclusion.
+
 ## Edits and deletions
 
 ```bash
@@ -63,6 +121,7 @@ These are observable text-similarity categories, not judgments about a person's 
 | `HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | Pre-delete replacement window, in seconds. |
 | `HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS` | `0` | Closed-partition retention target; `0` disables age pruning. |
 | `HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES` | `1073741824` | Total storage target before pruning old closed partitions. |
+| `HERMES_TELEGRAM_BUSINESS_TIMEZONE` | `UTC` | Default IANA timezone for correspondence stats; overridden by `--tz`. |
 
 Unknown chat types are excluded unless an exact chat ID or earlier canonical profile evidence establishes eligibility. No member-count requests run on capture.
 
@@ -74,10 +133,10 @@ $HERMES_HOME/data/telegram-business/history/
   contacts.json
 ```
 
-JSONL is canonical. Events have durable identities and are appended under a lock with `fsync`; retries do not append the same event twice. The contact catalog is a small derived directory, not a second message database. Monthly partitions follow observation time. Contact queries select the relevant conversation and date partitions before streaming records.
+JSONL is canonical. Events have durable identities and are appended under a lock with `fsync`; retries do not append the same event twice. The contact catalog is a small derived directory, not a second message database. Monthly partitions follow observation time. History timeline/search queries select the relevant conversation and observation-date partitions before streaming records. Correspondence stats scans all retained partitions of selected chats to reconstruct send-time activity correctly.
 
 ```bash
-hermes telegram-business history stats
+hermes telegram-business history stats  # storage stats
 hermes telegram-business history catalog
 hermes telegram-business history catalog --rebuild
 hermes telegram-business history verify

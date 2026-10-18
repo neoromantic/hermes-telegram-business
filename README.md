@@ -33,6 +33,9 @@ HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1
 Restart the gateway, then search by contact:
 
 ```bash
+hermes telegram-business stats --contact @alice --since 30d
+hermes telegram-business stats --limit 20
+hermes telegram-business history stats  # storage stats (records, bytes, config)
 hermes telegram-business history contacts --search alice --limit 20
 hermes telegram-business history show --contact @alice --since 7d --limit 100
 hermes telegram-business history search --contact @alice --text estimate --since 30d --limit 100
@@ -40,6 +43,8 @@ hermes telegram-business history deletions --status unexplained --limit 20
 ```
 
 History captures new text messages, edits, and deletions as Telegram delivers them. It preserves deleted text and distinguishes likely corrections, duplicates, unexplained deletions, and missing originals. It does not import old conversations. Contact names and observed aliases are searchable; ambiguous names require an explicit choice.
+
+Top-level `stats` reports text-message counts, active days, latest activity, sessions and deletion counts from retained history, without printing message text. It supports inclusive send-time ranges, IANA timezones and `--format json`; no contact selector lists the 20 most recently active contacts after filtering. Deletion actors and archive completeness remain unknown. `history stats` continues to report storage health. [Definitions and reproducible synthetic example](docs/HISTORY.md#correspondence-stats).
 
 Canonical storage is profile-local JSONL with a rebuildable contact catalog. Capture and search require no LLM. Media and captions are excluded from history in this version. [History configuration, retention, and CLI](docs/HISTORY.md).
 

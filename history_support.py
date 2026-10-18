@@ -20,13 +20,14 @@ import tempfile
 import threading
 import unicodedata
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import copy_context
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, TypeVar
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
     import fcntl
@@ -3327,8 +3328,373 @@ def _chat_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _stats_time_bound(value: str | None, *, end: bool, tz: ZoneInfo, now: datetime) -> datetime | None:
+    if value is None or not value.strip():
+        return None
+    raw = value.strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            local = datetime.fromisoformat(raw).replace(tzinfo=tz)
+            # Convert the *next local midnight* before subtracting a microsecond:
+            # a DST day need not contain 24 hours.
+            if end:
+                return (local + timedelta(days=1)).astimezone(timezone.utc) - timedelta(microseconds=1)
+            return local.astimezone(timezone.utc)
+        if re.fullmatch(r"\d+[smhdw]", raw):
+            return now - _stats_gap(raw, allow_zero=True)
+        parsed = _parse_datetime(raw)
+        if parsed is not None:
+            return parsed  # Match history: an ISO timestamp without an offset means UTC.
+    except (ValueError, OverflowError):
+        pass
+    raise ValueError(f"invalid {'--until' if end else '--since'}; use a history duration, ISO timestamp or YYYY-MM-DD")
+
+
+def _stats_gap(value: str, *, allow_zero: bool = False) -> timedelta:
+    if not re.fullmatch(r"\d+[smhdw]", value):
+        raise ValueError("--session-gap must be a positive duration such as 90m, 6h or 1d")
+    try:
+        result = timedelta(seconds=int(value[:-1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[value[-1]])
+    except OverflowError:
+        raise ValueError("duration is too large") from None
+    if not allow_zero and result <= timedelta(0):
+        raise ValueError("--session-gap must be positive")
+    return result
+
+
+def _stats_metadata(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read canonical JSONL under its existing lock, retaining no message text.
+
+    Never select observed-month partitions by send-time bounds. Edits and later
+    classifications outside the range are needed to reconstruct current truth.
+    """
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def consume(record: dict[str, Any]) -> None:
+        event_type = record.get("event_type")
+        observed = _parse_datetime(record.get("observed_at"))
+        invalid = (
+            record.get("schema_version") != SCHEMA_VERSION
+            or event_type not in {"message.created", "message.edited", "message.deleted", "deletion.classified"}
+            or not isinstance(record.get("event_id"), str)
+            or not record["event_id"]
+            or observed is None
+            or not isinstance(record.get("message_id"), int)
+            or isinstance(record.get("message_id"), bool)
+            or str(record.get("business_connection_id")) != str(entry.get("business_connection_id"))
+            or str(record.get("chat_id")) != str(entry.get("chat_id"))
+            or record.get("direction") not in {"inbound", "outbound", "unknown"}
+            or (record.get("message_at") is not None and _parse_datetime(record["message_at"]) is None)
+        )
+        if event_type == "deletion.classified":
+            invalid = (
+                invalid
+                or not isinstance(record.get("deleted_event_id"), str)
+                or not record.get("deleted_event_id")
+                or record.get("classification")
+                not in {
+                    "unexplained",
+                    "likely_correction",
+                    "likely_duplicate",
+                    "unclassifiable",
+                }
+            )
+            invalid = invalid or (
+                record.get("deleted_observed_at") is not None and _parse_datetime(record["deleted_observed_at"]) is None
+            )
+        if invalid:
+            raise ValueError("invalid canonical stats metadata")
+        if record["event_id"] in seen:
+            return
+        seen.add(record["event_id"])
+        records.append(
+            {
+                key: record.get(key)
+                for key in (
+                    "event_id",
+                    "event_type",
+                    "observed_at",
+                    "business_connection_id",
+                    "chat_id",
+                    "message_id",
+                    "message_at",
+                    "direction",
+                    "deleted_event_id",
+                    "classification",
+                    "deleted_observed_at",
+                )
+            }
+            | {"original_missing": record.get("classification_reason") == "missing_original"}
+        )
+
+    with _chat_read_lock(_entry_chat_dir(entry)):
+        try:
+            _scan_records(_entry_chat_dir(entry), repair_tails=False, on_record=consume)
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            if _tail_repair_instruction() in str(exc):
+                raise
+            # Do not interpolate invalid field values, decoder bytes or archived text.
+            raise ValueError(
+                "cannot read canonical history for stats; run 'hermes telegram-business history verify'; "
+                "torn tails require 'hermes telegram-business history verify --repair-tails'"
+            ) from None
+    # Stable sorting preserves canonical file order for equal observation times.
+    records.sort(key=lambda record: _parse_datetime(record["observed_at"]))
+    return records
+
+
+def _stats_chat(
+    entry: dict[str, Any], *, since: datetime | None, until: datetime | None, tz: ZoneInfo, gap: timedelta
+) -> dict[str, Any]:
+    records = _stats_metadata(entry)
+    # Use the canonical message reconstruction for latest direction; separate
+    # time/evidence and deletion joins preserve original send time and tombstones.
+    evidence: dict[str, list[dict[str, Any]]] = {}
+    deleted: dict[str, dict[str, Any]] = {}
+    classified: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if record["event_type"] in {"message.created", "message.edited"}:
+            evidence.setdefault(str(record["message_id"]), []).append(record)
+        elif record["event_type"] == "message.deleted":
+            deleted[record["event_id"]] = record
+        else:
+            classified[record["deleted_event_id"]] = record
+
+    # An edit's latest direction wins even if a delayed original observation
+    # was appended afterward. Canonical file order breaks equal-observation ties.
+    latest_messages = []
+    for items in evidence.values():
+        edits = [item for item in items if item["event_type"] == "message.edited"]
+        latest_messages.append((edits or items)[-1])
+    state = _build_chat_state(latest_messages)
+
+    def in_range(at: datetime) -> bool:
+        return (since is None or at >= since) and (until is None or at <= until)
+
+    statuses = {key: 0 for key in ("unexplained", "likely_correction", "likely_duplicate", "unclassifiable", "pending")}
+    excluded: set[str] = set()
+    missing = 0
+    missing_deletion_time = 0
+    # Classification-only evidence may survive pruning of the tombstone.
+    for event_id in sorted(deleted.keys() | classified.keys()):
+        tombstone = deleted.get(event_id)
+        classification = classified.get(event_id)
+        record = tombstone or classification
+        message_key = str(record["message_id"])
+        if tombstone and classification and str(tombstone["message_id"]) != str(classification["message_id"]):
+            raise ValueError("inconsistent deletion reference; run 'hermes telegram-business history verify'")
+        status = classification["classification"] if classification else "pending"
+        if status in {"likely_correction", "likely_duplicate"}:
+            excluded.add(message_key)
+        at = _parse_datetime(tombstone["observed_at"] if tombstone else record.get("deleted_observed_at"))
+        if at is None:
+            missing_deletion_time += 1
+            continue  # Classification time is never substituted for delete observation.
+        if not in_range(at):
+            continue
+        statuses[status] += 1
+        prior_evidence = any(_parse_datetime(item["observed_at"]) <= at for item in evidence.get(message_key, []))
+        if not prior_evidence or (classification and classification["original_missing"]):
+            missing += 1
+
+    messages: list[tuple[datetime, str, str]] = []
+    edit_only = 0
+    fallback = 0
+    for key, message in state.messages.items():
+        items = evidence[key]
+        originals = [item for item in items if item["event_type"] == "message.created"]
+        send_at = next((_parse_datetime(item["message_at"]) for item in originals if item["message_at"]), None)
+        if send_at is None:
+            send_at = next((_parse_datetime(item["message_at"]) for item in items if item["message_at"]), None)
+        uses_fallback = send_at is None
+        send_at = send_at or _parse_datetime(items[0]["observed_at"])
+        if key in excluded or not in_range(send_at):
+            continue
+        messages.append((send_at, key, message.direction))
+        edit_only += not originals
+        fallback += uses_fallback
+    messages.sort(key=lambda item: (item[0], item[1]))
+    labels = {"inbound": "received", "outbound": "sent", "unknown": "unknown"}
+    counts = {label: sum(direction == key for _, _, direction in messages) for key, label in labels.items()}
+    days = {
+        label: len({at.astimezone(tz).date() for at, _, direction in messages if direction == key})
+        for key, label in labels.items()
+    }
+    days["total"] = len({at.astimezone(tz).date() for at, _, _ in messages})
+    latest = {
+        label: next((_isoformat_utc(at) for at, _, direction in reversed(messages) if direction == key), None)
+        for key, label in labels.items()
+    }
+    latest["any"] = _isoformat_utc(messages[-1][0]) if messages else None
+    latest["direction"] = labels[messages[-1][2]] if messages else None
+    starts = dict.fromkeys(("contact", "owner", "unknown"), 0)
+    sessions: list[list[tuple[datetime, str, str]]] = []
+    for item in messages:
+        if not sessions or item[0] - sessions[-1][-1][0] > gap:
+            sessions.append([])
+            starts[{"inbound": "contact", "outbound": "owner", "unknown": "unknown"}[item[2]]] += 1
+        sessions[-1].append(item)
+    retained_at = _parse_datetime(records[0]["observed_at"]) if records else None
+    return {
+        "business_connection_id": entry.get("business_connection_id"),
+        "chat_id": entry.get("chat_id"),
+        "contact": _catalog_entry_display_name(entry),
+        "messages": {"total": len(messages), **counts},
+        "active_days": days,
+        "latest_activity": latest,
+        "last_message_no_observed_reply": bool(messages and messages[-1][2] == "inbound"),
+        "sessions": {
+            "total": len(sessions),
+            "started_by": starts,
+            "ended_without_observed_reply": sum(session[-1][2] == "inbound" for session in sessions),
+        },
+        "deletions": {
+            "total": sum(statuses.values()),
+            **statuses,
+            "unexplained_by_actor": {"contact": 0, "owner": 0, "unknown": statuses["unexplained"]},
+        },
+        "missing_history": {
+            "retained_from": _isoformat_utc(retained_at),
+            "range_starts_before_retained": bool(since and retained_at and since < retained_at),
+            "completeness": "unknown",
+            "deletions_without_original": missing,
+            "edit_only_messages": edit_only,
+            "send_time_fallback_messages": fallback,
+            "deletions_without_observation_time": missing_deletion_time,
+        },
+    }
+
+
+def _correspondence_report(args: argparse.Namespace) -> dict[str, Any]:
+    tz_name = args.tz or os.getenv("HERMES_TELEGRAM_BUSINESS_TIMEZONE") or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError("invalid --tz: use an IANA timezone name") from None
+    now = _utcnow()
+    since = _stats_time_bound(args.since, end=False, tz=tz, now=now)
+    until = _stats_time_bound(args.until, end=True, tz=tz, now=now)
+    if since is not None and until is not None and until < since:
+        raise ValueError("--until must be greater than or equal to --since")
+    gap = _stats_gap(args.session_gap)
+    # Root-before-chat locking keeps the resolver/catalog and all chat scans in
+    # one read-only snapshot, including during concurrent append/prune operations.
+    with _root_read_lock() if history_root().exists() else nullcontext():
+        if args.contact or args.chat:
+            entries = [
+                _resolve_history_entry(business_connection_id=args.connection, chat_id=args.chat, contact=args.contact)
+            ]
+        else:
+            entries = _filter_catalog_entries(business_connection_id=args.connection)
+        chats = [_stats_chat(entry, since=since, until=until, tz=tz, gap=gap) for entry in entries]
+    chats.sort(
+        key=lambda chat: (
+            _parse_datetime(chat["latest_activity"]["any"]) or datetime.min.replace(tzinfo=timezone.utc),
+            str(chat["business_connection_id"]),
+            str(chat["chat_id"]),
+        ),
+        reverse=True,
+    )
+    total = len(chats)
+    if not (args.contact or args.chat):
+        chats = chats[: _bounded_limit(args.limit, 20)]
+    return {
+        "schema_version": 1,
+        "timezone": tz_name,
+        "since": _isoformat_utc(since),
+        "until": _isoformat_utc(until),
+        "time_basis": "telegram_send_time_or_first_observation",
+        "text_messages_only": True,
+        "session_gap_seconds": int(gap.total_seconds()),
+        "sessions_cut_at_range_bounds": True,
+        "deletion_actor": "unknown: archive cannot prove who deleted a message",
+        "deletion_details_command": "hermes telegram-business history deletions",
+        "coverage_note": "Retained observations only; capture gaps and pruning prevent a completeness guarantee.",
+        "contacts_total": total,
+        "contacts_returned": len(chats),
+        "contacts": chats,
+    }
+
+
+def _correspondence_text(report: dict[str, Any], *, detailed: bool) -> str:
+    tz = ZoneInfo(report["timezone"])
+
+    def local(value: str | None) -> str:
+        at = _parse_datetime(value)
+        return at.astimezone(tz).isoformat() if at else "none"
+
+    lines = [
+        f"range {local(report['since']) if report['since'] else 'all retained'}.."
+        f"{local(report['until']) if report['until'] else 'latest retained'} {report['timezone']}; "
+        "by Telegram send time (first observation fallback); text messages only",
+        report["coverage_note"],
+        "Deletion actor unknown: archive cannot prove who deleted; details: history deletions.",
+    ]
+    if not detailed:
+        lines.append("contact | connection | chat | messages | received | sent | unknown | latest counted activity")
+    for chat in report["contacts"]:
+        counts, latest, missing = chat["messages"], chat["latest_activity"], chat["missing_history"]
+        if not detailed:
+            partial = "; partial range" if missing["range_starts_before_retained"] else ""
+            lines.append(
+                f"{chat['contact']} | {chat['business_connection_id']} | {chat['chat_id']} | "
+                f"{counts['total']} | {counts['received']} | {counts['sent']} | {counts['unknown']} | "
+                f"{local(latest['any'])}; retained from {local(missing['retained_from'])}{partial}"
+            )
+            continue
+        days, sessions, deletions = chat["active_days"], chat["sessions"], chat["deletions"]
+        lines.extend(
+            [
+                f"{chat['contact']} connection={chat['business_connection_id']} chat={chat['chat_id']}",
+                f"  messages {counts['total']}: received {counts['received']}, sent {counts['sent']}, "
+                f"unknown direction {counts['unknown']}",
+                f"  active days {days['total']} (received {days['received']}, sent {days['sent']})",
+                f"  latest {local(latest['any'])} {latest['direction'] or ''}; "
+                f"latest received {local(latest['received'])}; last sent {local(latest['sent'])}",
+                "  last message: "
+                + (
+                    "received, no observed reply after it"
+                    if chat["last_message_no_observed_reply"]
+                    else latest["direction"] or "none"
+                ),
+                f"  sessions {sessions['total']} (gap {report['session_gap_seconds']}s, cut at range bounds): "
+                f"started by contact {sessions['started_by']['contact']}, by owner {sessions['started_by']['owner']}, "
+                f"unknown {sessions['started_by']['unknown']}; ended without observed reply "
+                f"{sessions['ended_without_observed_reply']}",
+                f"  deletions {deletions['total']}: unexplained {deletions['unexplained']} (actor unknown), "
+                f"likely correction {deletions['likely_correction']}, likely duplicate {deletions['likely_duplicate']}, "
+                f"unclassifiable {deletions['unclassifiable']}, pending {deletions['pending']}",
+                f"  missing history: retained from {local(missing['retained_from'])}"
+                + (" (range is partial)" if missing["range_starts_before_retained"] else "; completeness unknown")
+                + f"; deletions without original {missing['deletions_without_original']}; "
+                f"edit-only messages counted {missing['edit_only_messages']}; "
+                f"first-observation send-time fallback {missing['send_time_fallback_messages']}; "
+                f"deletions without observation time {missing['deletions_without_observation_time']}",
+            ]
+        )
+    if not report["contacts"]:
+        lines.append("No matching Telegram Business history found.")
+    return "\n".join(_escape_terminal_text(line) for line in lines)
+
+
 def setup_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="telegram_business_command")
+    correspondence = subs.add_parser(
+        "stats",
+        help="Read-only correspondence stats (text messages only)",
+        description="Count retained text messages by Telegram send time; no message text is printed.",
+    )
+    correspondence.add_argument("--connection")
+    correspondence.add_argument("--chat")
+    correspondence.add_argument("--contact")
+    correspondence.add_argument("--since", help="Inclusive send-time bound: history duration, ISO timestamp, or local date")
+    correspondence.add_argument("--until", help="Inclusive bound; a plain date includes the entire local day")
+    correspondence.add_argument("--tz", help="IANA timezone (environment HERMES_TELEGRAM_BUSINESS_TIMEZONE, else UTC)")
+    correspondence.add_argument("--session-gap", default="6h", help="New session after a strictly greater gap (default 6h)")
+    correspondence.add_argument("--limit", type=int, default=20, help="All-contact rows (default 20, maximum 5000)")
+    correspondence.add_argument("--format", choices=["text", "json"], default="text")
+    correspondence.set_defaults(_history_action="correspondence_stats")
     history = subs.add_parser("history", help="Read and maintain Telegram Business history")
     history_subs = history.add_subparsers(dest="telegram_business_history_command")
 
@@ -3347,7 +3713,8 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     catalog.add_argument("--rebuild", action="store_true")
     catalog.set_defaults(_history_action="catalog")
 
-    stats = history_subs.add_parser("stats", help="Show aggregate history stats")
+    stats = history_subs.add_parser("stats", help="Show storage stats (records, bytes, configuration)",
+                                    description="Storage stats: records, bytes, health and capture configuration.")
     stats.set_defaults(_history_action="stats")
 
     show = history_subs.add_parser("show", help="Show a bounded history timeline")
@@ -3401,9 +3768,17 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
 def handle_cli(args: argparse.Namespace) -> int:
     action = getattr(args, "_history_action", None)
     if action is None:
-        print("Usage: hermes telegram-business history <chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>")
+        print("Usage: hermes telegram-business stats [options] | history <chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>")
         return 1
     try:
+        if action == "correspondence_stats":
+            report = _correspondence_report(args)
+            if args.format == "json":
+                print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            else:
+                print(_correspondence_text(report, detailed=bool(args.chat or args.contact)))
+            return 0
+
         if action == "chats":
             entries = sorted(
                 _filter_catalog_entries(business_connection_id=getattr(args, "connection", None)),
