@@ -373,7 +373,7 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
 
     assert plugin._llm_facade is llm
     assert telegram_registrations == [plugin._register_telegram_handlers]
-    assert registrations == [("pre_gateway_dispatch", plugin._on_pre_gateway_dispatch)]
+    assert registrations == [("pre_gateway_dispatch", plugin._on_pre_gateway_dispatch_async)]
     assert cli_registrations == [
         {
             "name": "telegram-business",

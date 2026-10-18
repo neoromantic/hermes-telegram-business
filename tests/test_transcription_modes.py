@@ -428,30 +428,46 @@ def legacy_history(plugin, monkeypatch):
     return write
 
 
-def test_upgrade_cli_discovers_old_history_without_mode_file(plugin, legacy_history, capsys):
-    assert cli(plugin, "get", "@casey") == 0
-    assert "owner=1000 chat=991 mode=both" in capsys.readouterr().out
-    assert cli(plugin, "set", "@casey", "off", "--owner", "1000", "--connection", "old") == 0
-    assert plugin._transcription_modes.mode_for("1000", "991") == "off"
-
-
-def test_upgrade_cli_preserves_owner_and_name_ambiguity(plugin, legacy_history, capsys):
-    legacy_history("second", 2000, 992)
+def test_upgrade_cli_explicit_selection_never_verifies_owner(plugin, legacy_history, capsys, monkeypatch):
+    modes = plugin._transcription_modes
+    # Old-format outbound records can represent a peer sender via business-bot
+    # semantics; the marker itself was never retained in the historical record.
+    peer_message = test_plugin.make_message(from_user_id=2000)
+    peer_message.sender_business_bot = SimpleNamespace(id=999)
+    assert plugin._business_identity.direction(peer_message, "1000") == "outbound"
+    legacy_history("peer-outbound", 2000, 992)
+    monkeypatch.setattr(plugin._history_support, "_load_records", Mock(side_effect=AssertionError("no archive scan")))
     assert cli(plugin, "get", "@casey") == 1
     assert "--owner" in capsys.readouterr().out
-    assert cli(plugin, "get", "@casey", "--owner", "1000", "--connection", "second") == 1
-    assert cli(plugin, "get", "@casey", "--owner", "1000") == 0
-    legacy_history("old", 1000, 993)
     assert cli(plugin, "get", "@casey", "--owner", "1000") == 1
-    assert "ambiguous" in capsys.readouterr().out
+    assert "/transcribe once" in capsys.readouterr().out
+    assert cli(plugin, "set", "@casey", "off", "--owner", "1000", "--connection", "peer-outbound") == 0
+    assert modes.mode_for("1000", "992") == "off"
+    assert modes.mode_for("2000", "992") == "both"
+    assert modes.snapshot()["owners"] == {}
+    assert modes.snapshot()["chats"]["1000"]["992"]["label"] == "@casey"
+    assert plugin._business_identity.cached_owner(test_plugin.make_message(business_id="peer-outbound")) is None
+    assert not plugin._business_identity.owner_command(
+        test_history.make_business_text_update(business_id="peer-outbound", text="/transcribe off",
+                                             from_user_id=1000).business_message, None)
 
 
-def test_upgrade_cli_never_assigns_peer_or_conflicting_connection(plugin, legacy_history, capsys):
-    legacy_history("inbound-only", 3000, 994, "inbound")
-    assert cli(plugin, "get", "@casey", "--owner", "3000", "--connection", "inbound-only") == 1
-    legacy_history("old", 2000, 995)
+def test_upgrade_cli_preserves_ambiguity_and_requires_existing_connection(plugin, legacy_history, capsys):
+    legacy_history("old", 2000, 993)
     assert cli(plugin, "get", "@casey", "--owner", "1000", "--connection", "old") == 1
+    assert "ambiguous" in capsys.readouterr().out
+    assert cli(plugin, "get", "@casey", "--owner", "1000", "--connection", "missing") == 1
+    assert "existing history catalog" in capsys.readouterr().out
+    assert cli(plugin, "get", "@casey", "--connection", "old") == 1
     assert not plugin._transcription_modes.path().exists()
+
+
+@pytest.mark.parametrize("verified", [["2000"], ["1000", "2000"]])
+def test_upgrade_cli_rejects_foreign_or_ambiguous_verified_mapping(plugin, legacy_history, capsys, verified):
+    for owner in verified:
+        plugin._transcription_modes.remember_owner(owner, "old")
+    assert cli(plugin, "get", "@casey", "--owner", "1000", "--connection", "old") == 1
+    assert "conflicts with verified ownership" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
@@ -473,7 +489,7 @@ async def test_restart_saved_off_uses_exact_verified_mapping_without_network(plu
 async def test_normalized_cold_command_commits_delayed_write_before_next_voice(plugin, monkeypatch):
     import time
     modes, identity = plugin._transcription_modes, plugin._business_identity
-    modes.remember_owner("1000", "business-123")
+    assert not modes.path().exists()
     identity.OWNER_CACHE.clear()
     modes._CACHE.clear()
     original = modes.set_mode
@@ -482,11 +498,18 @@ async def test_normalized_cold_command_commits_delayed_write_before_next_voice(p
         original(*args, **kwargs)
     monkeypatch.setattr(modes, "set_mode", delayed)
     bot = SimpleNamespace(edit_message_text=AsyncMock(), send_message=AsyncMock(),
-                          get_business_connection=AsyncMock(side_effect=AssertionError("no network identity lookup")))
+                          get_business_connection=AsyncMock(return_value=SimpleNamespace(user=SimpleNamespace(id=1000))))
     message = test_history.make_business_text_update(text="/transcribe off", from_user_id=1000).business_message
     event = test_plugin.make_event(message)
     gateway = SimpleNamespace(adapters={event.source.platform: SimpleNamespace(_bot=bot)})
-    assert plugin._on_pre_gateway_dispatch(event, gateway)["action"] == "skip"
+    hooks = {}
+    plugin.register(SimpleNamespace(
+        llm=None, register_telegram_handler=lambda callback: None,
+        register_hook=lambda name, callback: hooks.update({name: callback}),
+        register_cli_command=lambda **kwargs: None, register_skill=lambda *args: None))
+    callback = hooks["pre_gateway_dispatch"]
+    assert asyncio.iscoroutinefunction(callback)
+    assert await callback(event, gateway) == {"action": "skip", "reason": "telegram_business_transcription_command"}
     # No event-loop yield between command claim and checking persisted policy.
     assert modes.mode_for("1000", "991") == "off"
     assert not await modes.should_transcribe(test_plugin.make_message(), bot=bot)
@@ -494,13 +517,13 @@ async def test_normalized_cold_command_commits_delayed_write_before_next_voice(p
     monkeypatch.setattr(plugin, "_download_voice", download)
     voice = test_plugin.make_message()
     voice.message_id = 78
-    assert plugin._on_pre_gateway_dispatch(test_plugin.make_event(voice), gateway)["action"] == "skip"
+    assert (await callback(test_plugin.make_event(voice), gateway))["action"] == "skip"
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
     assert not await plugin._history_support.observe_ptb_update(
         test_history.make_business_text_update(text="/transcribe off", from_user_id=1000), bot=bot)
     assert test_history.load_records(plugin) == []
     await asyncio.gather(*plugin._pending_tasks)
-    bot.get_business_connection.assert_not_awaited()
+    bot.get_business_connection.assert_awaited_once_with("business-123")
     download.assert_not_awaited()
 
 
@@ -508,3 +531,47 @@ def test_persisted_ambiguous_connection_never_authorizes_owner(plugin):
     plugin._transcription_modes.remember_owner("1000", "business-123")
     plugin._transcription_modes.remember_owner("2000", "business-123")
     assert plugin._business_identity.cached_owner(test_plugin.make_message()) is None
+
+
+@pytest.mark.asyncio
+async def test_registered_async_cold_contact_command_stays_ordinary(plugin, monkeypatch):
+    hooks = {}
+    plugin.register(SimpleNamespace(
+        llm=None, register_telegram_handler=lambda callback: None,
+        register_hook=lambda name, callback: hooks.update({name: callback}),
+        register_cli_command=lambda **kwargs: None, register_skill=lambda *args: None))
+    modes, identity = plugin._transcription_modes, plugin._business_identity
+    assert not modes.path().exists()
+    assert identity.OWNER_CACHE == {}
+    bot = SimpleNamespace(get_business_connection=AsyncMock(
+        return_value=SimpleNamespace(user=SimpleNamespace(id=1000))))
+    update = test_history.make_business_text_update(text="/transcribe off", from_user_id=2000)
+    event = test_plugin.make_event(update.business_message)
+    gateway = SimpleNamespace(adapters={event.source.platform: SimpleNamespace(_bot=bot)})
+    assert await hooks["pre_gateway_dispatch"](event, gateway) is None
+    assert modes.mode_for("1000", "991") == "both"
+    bot.get_business_connection.assert_awaited_once_with("business-123")
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    assert await plugin._history_support.observe_ptb_update(update, bot=bot)
+    assert test_history.load_records(plugin)[0]["text"] == "/transcribe off"
+
+
+@pytest.mark.asyncio
+async def test_registered_async_cold_confirmation_excludes_without_lookup_or_write(plugin, monkeypatch):
+    hooks = {}
+    plugin.register(SimpleNamespace(
+        llm=None, register_telegram_handler=lambda callback: None,
+        register_hook=lambda name, callback: hooks.update({name: callback}),
+        register_cli_command=lambda **kwargs: None, register_skill=lambda *args: None))
+    bot = SimpleNamespace(get_business_connection=AsyncMock(side_effect=AssertionError("echo needs no lookup")))
+    update = test_history.make_business_text_update(
+        text="/transcribe off → Transcription: off", from_user_id=2000)
+    update.business_message.sender_business_bot = SimpleNamespace(id=999)
+    event = test_plugin.make_event(update.business_message)
+    gateway = SimpleNamespace(adapters={event.source.platform: SimpleNamespace(_bot=bot)})
+    assert (await hooks["pre_gateway_dispatch"](event, gateway))["action"] == "skip"
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    assert not await plugin._history_support.observe_ptb_update(update, bot=bot)
+    assert test_history.load_records(plugin) == []
+    assert not plugin._transcription_modes.path().exists()
+    bot.get_business_connection.assert_not_awaited()

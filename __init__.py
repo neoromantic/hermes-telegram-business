@@ -2036,11 +2036,23 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
     return {"action": "skip", "reason": result.reason or "telegram_business_event_handled"}
 
 
+async def _on_pre_gateway_dispatch_async(event: Any = None, gateway: Any = None, **kwargs: Any) -> Optional[dict[str, str]]:
+    """Resolve cold command identity before the synchronous policy commit."""
+    normalized = _normalize_business_event(event)
+    if normalized is not None:
+        message = normalized.raw_message
+        if (_business_identity.command_text(message)
+                and not _business_identity.confirmation(message)):
+            _, bot = _get_adapter_and_bot(event, gateway)
+            await _business_identity.resolve_owner(message, bot=bot)
+    return _on_pre_gateway_dispatch(event=event, gateway=gateway, **kwargs)
+
+
 def register(ctx: Any) -> None:
     global _llm_facade
     _llm_facade = ctx.llm
     ctx.register_telegram_handler(_register_telegram_handlers)
-    ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
+    ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch_async)
     ctx.register_cli_command(
         name="telegram-business",
         help="Read and maintain Telegram Business history",

@@ -159,7 +159,6 @@ def set_mode(owner: str, chat: str, mode: str | None, *, via: str, label: str = 
     if mode is not None and mode not in MODES:
         raise ValueError("mode must be both, own, peer or off")
     def update(data):
-        data["owners"].setdefault(str(owner), [])
         chats = data["chats"].setdefault(str(owner), {})
         if mode is None:
             chats.pop(str(chat), None)
@@ -225,32 +224,6 @@ async def command_status(message: Any, *, owner: str) -> str:
     return await asyncio.to_thread(command_status_sync, message, owner=owner)
 
 
-def history_owner_connections(history) -> dict[str, list[str]]:
-    """Discover legacy owners only from outbound sender evidence, never peers.
-
-    Multiple outbound senders make the entire connection unsafe to assign.
-    The catalog stores contact profiles, not proof of ownership.
-    """
-    if not history.history_config_from_env().active or not history.history_root().exists():
-        return {}
-    evidence: dict[str, set[str]] = {}
-    with history._root_read_lock():
-        for chat_dir in history._iter_chat_dirs():
-            with history._chat_read_lock(chat_dir):
-                records, _ = history._load_records(chat_dir)
-                for record in records:
-                    sender = str(record.get("sender_id", ""))
-                    connection = record.get("business_connection_id")
-                    if (record.get("direction") == "outbound" and sender.isdecimal()
-                            and connection and record.get("event_type") in {"message.created", "message.edited"}):
-                        evidence.setdefault(str(connection), set()).add(sender)
-    owners: dict[str, list[str]] = {}
-    for connection, candidates in evidence.items():
-        if len(candidates) == 1:
-            owners.setdefault(next(iter(candidates)), []).append(connection)
-    return owners
-
-
 def setup_cli(subs) -> None:
     mode = subs.add_parser("mode", help="Read or change per-chat transcription modes")
     actions = mode.add_subparsers(dest="_mode_action")
@@ -272,16 +245,9 @@ def handle_cli(args: argparse.Namespace) -> int:
             raise ValueError("Usage: hermes telegram-business mode <list|get|set|reset>")
         data = snapshot(strict=True)
         known_connections = {owner: list(connections) for owner, connections in data["owners"].items()}
-        # Explicit numeric operations must keep working without healthy history.
-        selector = getattr(args, "chat", "")
-        needs_history = getattr(args, "owner", None) is None or (
-            action != "list" and not re.fullmatch(r"-?\d+", selector))
-        legacy = history_owner_connections(history) if needs_history else {}
-        for historical_owner, connections in legacy.items():
-            for connection in connections:
-                mapped = {key for key, values in known_connections.items() if connection in values}
-                if not mapped or mapped == {historical_owner}:
-                    known_connections.setdefault(historical_owner, []).append(connection)
+        from . import business_identity as identity
+        for connection, cached_owner in identity.OWNER_CACHE.items():
+            known_connections.setdefault(cached_owner, []).append(connection)
         owners = set(known_connections) | set(data["chats"])
         requested = getattr(args, "owner", None)
         if requested is None:
@@ -306,8 +272,21 @@ def handle_cli(args: argparse.Namespace) -> int:
             connection = getattr(args, "connection", None)
             connections = [connection for connection in known_connections.get(owner, [])
                            if sum(connection in values for values in known_connections.values()) == 1]
-            if connection is not None and connection not in connections:
-                raise ValueError("connection is not known for the selected owner")
+            if connection is not None:
+                mapped = {key for key, values in known_connections.items() if connection in values}
+                if mapped and mapped != {owner}:
+                    raise ValueError("connection conflicts with verified ownership for the selected owner")
+                if connection not in connections:
+                    if requested is None:
+                        raise ValueError("historical selection requires both --owner and --connection")
+                    catalog = history._catalog_entries_for_cli()
+                    if not any(str(entry.get("business_connection_id")) == connection for entry in catalog):
+                        raise ValueError("connection is not present in the existing history catalog")
+                    # Explicit local USER selection, never verified ownership.
+                    connections = [connection]
+            if not connections:
+                raise ValueError("no verified owner-to-connection mapping; ask the owner to send /transcribe once "
+                                 "or pass explicit --owner and --connection")
             # Use the existing exact contact resolver, including its ambiguity
             # diagnostics; scope its catalog input by the selected owner first.
             entry = history._resolve_contact_entry(business_connection_id=connection, contact=selector,
