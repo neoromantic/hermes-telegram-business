@@ -17,6 +17,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
+from . import chat_settings as _chat_settings
 from . import dossier_cli as _cli
 from . import dossier_support as _ds
 from . import dossier_view as _view
@@ -150,15 +151,20 @@ def _missing_reason(entry: dict[str, Any], cfg: _ds.DossierConfig, now: datetime
 
 
 def load_contact_snapshot(business_connection_id: Any, chat_id: Any, *, now: datetime | None = None,
-                          manage_global: bool = False) -> _view.DossierSnapshot:
-    """Everything the contact views need for one Business chat. Blocking."""
+                          manage_global: bool = False, owner_user_id: Any = None) -> _view.DossierSnapshot:
+    """Everything the contact views need for one Business chat. Blocking.
+
+    ``owner_user_id`` is the chat's verified owner, whose per-chat switches apply (else the known one).
+    """
     now, cfg = now or _history._utcnow(), _ds.load_config()
     entry, private = contact_entry(business_connection_id, chat_id)
     key = _ds.chat_key(business_connection_id, chat_id)
     failure = _failure(_ds.load_state(), key)
+    chat_enabled = not _chat_settings.paused(business_connection_id, chat_id, "dossier", owner=owner_user_id)
     base = {**_common(cfg, now, manage_global), "kind": "contact", "failure_error": failure,
             "refreshing": refreshing(business_connection_id, chat_id), "in_history": private,
-            "business_connection_id": str(business_connection_id), "chat_id": chat_id}
+            "business_connection_id": str(business_connection_id), "chat_id": chat_id,
+            "chat_enabled": chat_enabled}
     try:
         dossier, corrupt = _ds.load_for_target(("contact", entry)), False
     except (OSError, ValueError):
@@ -169,7 +175,7 @@ def load_contact_snapshot(business_connection_id: Any, chat_id: Any, *, now: dat
         return _view.DossierSnapshot(label=label, dossier=None, status="corrupt", **base)
     if dossier is None:
         reason = None
-        if cfg.enabled:
+        if cfg.enabled and chat_enabled:
             reason = "failed" if failure else _missing_reason(entry, cfg, now)
         return _view.DossierSnapshot(label=label, dossier=None, status="missing", missing_reason=reason, **base)
     return _view.DossierSnapshot(label=label, dossier=dossier, **base, **_sources(dossier, now, cfg))
@@ -199,10 +205,11 @@ def load_persona_snapshot(*, now: datetime | None = None) -> _view.DossierSnapsh
 
 
 def load_snapshot(target: str, business_connection_id: Any, chat_id: Any, *, now: datetime | None = None,
-                  manage_global: bool = False) -> _view.DossierSnapshot:
+                  manage_global: bool = False, owner_user_id: Any = None) -> _view.DossierSnapshot:
     if target == "persona":
         return load_persona_snapshot(now=now)
-    return load_contact_snapshot(business_connection_id, chat_id, now=now, manage_global=manage_global)
+    return load_contact_snapshot(business_connection_id, chat_id, now=now, manage_global=manage_global,
+                                 owner_user_id=owner_user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -210,11 +217,13 @@ def load_snapshot(target: str, business_connection_id: Any, chat_id: Any, *, now
 # ---------------------------------------------------------------------------
 
 
-def start_refresh(business_connection_id: Any, chat_id: Any) -> str:
+def start_refresh(business_connection_id: Any, chat_id: Any, owner_user_id: Any = None) -> str:
     """Start a forced contact cycle in a thread: started | running | busy | unavailable. Blocking."""
     cfg, llm = _ds.load_config(), _ds._LLM
     entry, private = contact_entry(business_connection_id, chat_id)
     if not cfg.enabled or not _history.capture_enabled() or not llm_ready(llm) or not private:
+        return "unavailable"
+    if _chat_settings.paused(business_connection_id, chat_id, "dossier", owner=owner_user_id):
         return "unavailable"
     key = _refresh_key(_ds.chat_key(business_connection_id, chat_id))
     with _REFRESH_LOCK:
@@ -247,6 +256,14 @@ def _refresh_worker(llm: Any, entry: dict[str, Any], key: tuple[str, str], stop:
             item = _REFRESHES.get(key)
             if item is not None and item[0] is threading.current_thread():
                 del _REFRESHES[key]
+
+
+def stop_refresh(business_connection_id: Any, chat_id: Any) -> None:
+    """Stop this chat's running panel refresh ("No dossier" or "Don't save"): no further model call or write."""
+    with _REFRESH_LOCK:
+        item = _REFRESHES.get(_refresh_key(_ds.chat_key(business_connection_id, chat_id)))
+    if item is not None:
+        item[1].set()
 
 
 def join_refreshes(timeout: float | None = None) -> None:
@@ -320,10 +337,11 @@ async def _panel_action(owner_user_id: Any, conn: Any, chat_id: Any, lang: str, 
         return _view.render_state("operator_only", lang)
 
     async def snapshot(kind: str = target) -> _view.DossierSnapshot:
-        return await asyncio.to_thread(load_snapshot, kind, conn, chat_id, manage_global=manage_global)
+        return await asyncio.to_thread(load_snapshot, kind, conn, chat_id, manage_global=manage_global,
+                                       owner_user_id=owner_user_id)
 
     if name == "refresh":
-        outcome = await asyncio.to_thread(start_refresh, conn, chat_id)
+        outcome = await asyncio.to_thread(start_refresh, conn, chat_id, owner_user_id)
         if outcome == "running":
             notice = _view.notice_text("refresh_started", lang)
             return replace(_view.render_overview(await snapshot("contact"), lang), notice=notice)
@@ -429,7 +447,8 @@ async def _post_dossier(bot: Any, payload: Any, *, business_connection_id: str, 
     command_id = _history._get(payload, "message_id")
     _history.remember_control_message(business_connection_id, chat_id, command_id)
     await _delete_command(bot, business_connection_id, command_id)
-    snap = await asyncio.to_thread(load_contact_snapshot, business_connection_id, chat_id)
+    snap = await asyncio.to_thread(load_contact_snapshot, business_connection_id, chat_id,
+                                   owner_user_id=owner_user_id)
     reason, error = _view.post_blocker(snap), None
     if reason is None:
         view = _view.render_overview(snap, lang, audience="contact")

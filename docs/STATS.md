@@ -275,6 +275,7 @@ as of 2026-10-19 14:32
 Other states:
 
 - **History is off.** `Stats need history. Turn it on in Settings (/telesec).`
+- **History paused for this chat.** The chat is set to Don't save in its panel ([per-chat history](../README.md#per-chat-history-and-dossier)). The report still shows what was saved, with `History is paused for this chat.` at the end.
 - **Connection not known yet.** The bot has not seen the Business connection for this chat yet.
 - **Bad time zone.** `TELESEC_TIMEZONE` is not a known IANA name.
 - **No history for this chat.** History records new text messages only, so a chat with no message since capture started has no report yet. It also shows when the chat is outside the history scope settings (see [HISTORY.md](HISTORY.md)); widen the scope to include it.

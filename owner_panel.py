@@ -32,8 +32,12 @@ DEFAULT_MODE = _history.TRANSCRIBE_DEFAULT_MODE
 
 CALLBACK_PREFIX = "tb:"
 MAX_CALLBACK_BYTES = 64  # Telegram's callback_data limit.
-ACTIONS = frozenset({"m", "r", "s", "b", "p"})
+ACTIONS = frozenset({"m", "r", "s", "b", "p", "f"})
 NO_ARG_ACTIONS = frozenset({"r", "b", "p"})
+# `tb:f:<chat>:<arg>`: this chat's history (h) or dossier (d) on or off. Args carry the target value,
+# so a stale or double tap is harmless.
+FLAG_ARGS = frozenset({"h.on", "h.off", "d.on", "d.off"})
+FLAG_FEATURES = {"h": "history", "d": "dossier"}
 
 MAX_TEXT_UNITS = 4096  # Telegram's message text limit, counted in UTF-16 code units.
 MAX_TOAST_CHARS = 200  # Telegram's answerCallbackQuery text limit.
@@ -76,6 +80,21 @@ _STRINGS: dict[str, dict[str, str]] = {
         "mode.peer": "peer",
         "mode.off": "off",
         "reset": "Reset to default",
+        "history.on": "Save history",
+        "history.off": "Don't save",
+        "dossier.on": "Keep dossier",
+        "dossier.off": "No dossier",
+        "history.settings": "History: off in Settings",
+        "history.server": "History: off (server settings)",
+        "history.unreadable": "Chat settings can't be read; history and dossiers are paused.",
+        "dossier.settings": "Dossier: off in Settings",
+        "dossier.needs_history": "Dossier: needs history",
+        "dossier.private_only": "Dossier: private chats only",
+        "history.done.on": "History: on for this chat",
+        "history.done.off": "History: off for this chat",
+        "dossier.done.on": "Dossier: on for this chat",
+        "dossier.done.off": "Dossier: off for this chat",
+        "chat_save_error": "Error: could not save the chat setting",
         "refresh": "Refresh",
         "refreshed": "Refreshed",
         "back": "« Back",
@@ -106,6 +125,21 @@ _STRINGS: dict[str, dict[str, str]] = {
         "mode.peer": "собеседника",
         "mode.off": "выкл",
         "reset": "Сбросить",
+        "history.on": "Сохранять историю",
+        "history.off": "Не сохранять",
+        "dossier.on": "Вести досье",
+        "dossier.off": "Не вести",
+        "history.settings": "История: выключена в настройках",
+        "history.server": "История: выкл (настройки сервера)",
+        "history.unreadable": "Настройки чатов не читаются; история и досье на паузе.",
+        "dossier.settings": "Досье: выключено в настройках",
+        "dossier.needs_history": "Досье: нужна история",
+        "dossier.private_only": "Досье: только для личных чатов",
+        "history.done.on": "История: включена для этого чата",
+        "history.done.off": "История: выключена для этого чата",
+        "dossier.done.on": "Досье: включено для этого чата",
+        "dossier.done.off": "Досье: выключено для этого чата",
+        "chat_save_error": "Ошибка: не удалось сохранить настройку чата",
         "refresh": "Обновить",
         "refreshed": "Обновлено",
         "back": "« Назад",
@@ -237,6 +271,8 @@ def parse_callback(data: Any) -> PanelCallback | None:
         return None
     if action == "m":
         return PanelCallback(action, int(chat), arg) if arg in MODES else None
+    if action == "f":
+        return PanelCallback(action, int(chat), arg) if arg in FLAG_ARGS else None
     section = _SECTION_ARG_RE.match(arg)
     if section is None:
         return None
@@ -335,6 +371,51 @@ def chat_label_text(chat_id: Any, label: str | None) -> str:
     return f"{label} · chat {chat_id}" if label else f"chat {chat_id}"
 
 
+# Row states with a status line of their own; any other hidden state shows no line.
+_HISTORY_LINES = frozenset({"settings", "server", "unreadable"})
+_DOSSIER_LINES = frozenset({"settings", "needs_history"})
+CHAT_DEFAULT_FEATURES = ("on", "on")
+
+
+def feature_rows(
+    chat_id: Any, features: tuple[str, str], language_code: str | None = None
+) -> tuple[list[str], list[list[tuple[str, str]]]]:
+    """This chat's history and dossier controls in the transcription style: (status lines, button rows).
+
+    ``features`` is (history, dossier) from ``chat_settings.chat_state``: "on" or "off" shows a choice
+    row with "•" on the value in effect; any other state hides the row, and some show a line instead.
+    """
+    lines: list[str] = []
+    rows: list[list[tuple[str, str]]] = []
+    for (key, feature), state, with_line in zip(
+        FLAG_FEATURES.items(), features, (_HISTORY_LINES, _DOSSIER_LINES), strict=True
+    ):
+        if state in ("on", "off"):
+            rows.append(
+                [
+                    (("• " if value == state else "") + tr(f"{feature}.{value}", language_code),
+                     callback_data("f", chat_id, f"{key}.{value}"))
+                    for value in ("on", "off")
+                ]
+            )
+        elif state in with_line:
+            lines.append(tr(f"{feature}.{state}", language_code))
+    return lines, rows
+
+
+def flag_unavailable(feature: str, features: tuple[str, str], language_code: str | None = None) -> str | None:
+    """The toast for a tap on a hidden history or dossier row (a stale button), else None."""
+    history, dossier = features
+    state = history if feature == "history" else dossier
+    if state in ("on", "off"):
+        return None
+    if feature == "dossier" and state == "no_history":
+        state, feature = history, "history"
+    if state == "unreadable":
+        return tr("chat_save_error", language_code)
+    return tr(f"{feature}.{state}", language_code)
+
+
 def render_main(
     ctx: PanelContext,
     entry: Any,
@@ -342,11 +423,13 @@ def render_main(
     transcription_enabled: bool,
     *,
     notice: str | None = None,
+    features: tuple[str, str] = CHAT_DEFAULT_FEATURES,
 ) -> PanelView:
-    """The panel's main view: transcription controls, one row per section, Refresh.
+    """The panel's main view: transcription, history and dossier controls, then the sections and Refresh.
 
     ``entry`` is the chat's stored mode entry (None for the default). ``notice``
     is a one-line status such as a save error, shown under the header.
+    ``features`` is (history, dossier), see ``feature_rows``.
     """
     chat = ctx.chat_id
     lang = ctx.language_code
@@ -367,9 +450,13 @@ def render_main(
             buttons.append([(tr("reset", lang), callback_data("r", chat))])
     else:
         lines.append(tr("transcription_disabled", lang))
-    for section in section_list:
-        buttons.append([(section_label(section, lang), section_callback(chat, section.key))])
-    buttons.append([(tr("refresh", lang), callback_data("p", chat))])
+    feature_lines, feature_buttons = feature_rows(chat, features, lang)
+    lines += feature_lines
+    buttons += feature_buttons
+    # Sections and Refresh, two per row.
+    tail = [(section_label(section, lang), section_callback(chat, section.key)) for section in section_list]
+    tail.append((tr("refresh", lang), callback_data("p", chat)))
+    buttons += [tail[index : index + 2] for index in range(0, len(tail), 2)]
     return PanelView(text="\n".join(lines), buttons=buttons)
 
 

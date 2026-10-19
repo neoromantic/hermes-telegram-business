@@ -372,6 +372,16 @@ def _mode_count() -> int | None:
         return None
 
 
+def _chat_counts() -> dict[str, int | None]:
+    """Chats with history or the dossier off (None while chat-settings.json can't be read)."""
+    from . import chat_settings  # lazy: chat_settings imports this module
+
+    try:
+        return dict(chat_settings.default_store().counts())
+    except (OSError, ValueError):
+        return {"history": None, "dossier": None}
+
+
 def _status_line(feature: str, item: dict[str, Any]) -> str:
     if item["source"] in ("default", "unreadable"):
         return f"{feature}: {_state(item['enabled'])} ({item['source']})"
@@ -383,9 +393,10 @@ def _show(as_json: bool) -> int:
     paused = current["dossiers"]["enabled"] and not current["history"]["enabled"]
     degraded = file_degraded()
     modes = _mode_count()
+    chats = _chat_counts()
     ignored = ignored_env_names()
     if as_json:
-        document = {**current, "chat_overrides": {"transcription": modes}, "ignored_env": ignored,
+        document = {**current, "chat_overrides": {"transcription": modes, **chats}, "ignored_env": ignored,
                     "settings_file_unreadable": degraded}
         document["dossiers"] = {**current["dossiers"], "paused": paused}
         print(json.dumps(document, ensure_ascii=True, indent=2))
@@ -398,6 +409,10 @@ def _show(as_json: bool) -> int:
         lines.append(f"warning: {settings_path()} is unreadable; {SAVE_HINT}.")
     if modes is not None:
         lines.append(f"Per-chat transcription modes: {modes}")
+    if chats["history"] is None:
+        lines.append("warning: chat-settings.json is unreadable; see 'hermes telesec chat list'.")
+    elif chats["history"] or chats["dossier"]:
+        lines.append(f"Chats with history off: {chats['history']}; with the dossier off: {chats['dossier']}")
     for name in ignored:
         lines.append(f"note: {name} is set in this process but no longer read.")
     lines.append(f"Change: '{SETTINGS_COMMAND} set <transcription|history|dossiers> on|off', "

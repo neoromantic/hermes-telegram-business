@@ -715,7 +715,7 @@ def test_register_adds_the_dossier_section(dossier_plugin):
     assert (section.key, section.label) == ("dossier", "Dossier")
     view = owner_panel.render_main(owner_panel.PanelContext("1000", str(CHAT), None, BUSINESS_ID), None,
                                    owner_panel.sections(), True)
-    assert [("Dossier", f"tb:s:{CHAT}:dossier")] in view.buttons
+    assert ("Dossier", f"tb:s:{CHAT}:dossier") in [button for row in view.buttons for button in row]
 
 
 @pytest.mark.asyncio
@@ -823,7 +823,7 @@ async def test_panel_back_returns_to_a_plain_main_view(plug, ds, panel):
     assert bot.api == []
     (edit,) = bot.edits
     assert edit["text"].startswith("Owner panel:")
-    assert [("Dossier", f"tb:s:{CHAT}:dossier")] in keyboard_of(edit["reply_markup"])
+    assert ("Dossier", f"tb:s:{CHAT}:dossier") in [button for row in keyboard_of(edit["reply_markup"]) for button in row]
 
 
 # ---------------------------------------------------------------------------

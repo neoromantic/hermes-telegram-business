@@ -2815,6 +2815,25 @@ async def _maintain_if_due(current: datetime) -> None:
         logger.warning("%s: %s", PLUGIN_NAME, warning)
 
 
+async def _chat_capture_paused(bot: Any, business_connection_id: Any, chat_id: Any) -> bool:
+    """The owner set "Don't save" for this chat (chat_settings). Fails closed: an unknown owner of a chat id
+    that some owner paused, an unreadable chat-settings.json with nothing valid read before, or an error
+    all skip capture. Covers new messages, edits and deletions."""
+    from . import chat_settings  # lazy: chat_settings imports this module
+
+    try:
+        store = chat_settings.default_store()
+        if not store.excluded_anywhere("history", chat_id):
+            return False  # fast path: nobody paused this chat id, so no owner lookup
+        owner = chat_settings.known_owner(business_connection_id)
+        if owner is None:
+            owner, _reason = await resolve_business_owner(bot, business_connection_id)
+        return store.is_off(owner, chat_id, "history")
+    except Exception as exc:  # noqa: BLE001 - a broken check pauses capture rather than record a paused chat
+        logger.warning("%s: chat settings check failed (%s); history not recorded", PLUGIN_NAME, type(exc).__name__)
+        return True
+
+
 async def _capture_update(update: Any, *, bot: Any, current: datetime, direction: str | None) -> bool:
     config = history_config_from_env()
     if not config.active:
@@ -2852,6 +2871,8 @@ async def _capture_update(update: Any, *, bot: Any, current: datetime, direction
         chat_type=chat_type,
         known_chat_type=known_chat_type,
     ):
+        return False
+    if await _chat_capture_paused(bot, business_connection_id, chat_id):
         return False
 
     chat_dir: Path | None = None

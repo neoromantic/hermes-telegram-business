@@ -247,7 +247,7 @@ async def test_owner_start_sends_the_panel_and_stops_dispatch(plugin, modes):
     (call,) = bot.calls
     assert call["chat_id"] == OWNER
     assert "business_connection_id" not in call
-    assert call["text"] == "Owner panel: chat 991\nTranscription: both (default)"
+    assert call["text"] == "Owner panel: chat 991\nTranscription: both (default)\nHistory: off in Settings"
     assert keyboard(call["reply_markup"]) == [MODE_ROW, [("Refresh", "tb:p:991")]]
     assert bot.business_connection_calls == [BCID]
 
@@ -261,7 +261,7 @@ async def test_panel_shows_the_stored_mode_label_and_reset(plugin, modes):
     assert await dispatch(plugin, start_update(), bot) is True
 
     (call,) = bot.calls
-    assert call["text"] == "Owner panel: Casey (@casey) · chat 991\nTranscription: peer"
+    assert call["text"] == "Owner panel: Casey (@casey) · chat 991\nTranscription: peer\nHistory: off in Settings"
     rows = keyboard(call["reply_markup"])
     assert rows[0] == [("both", "tb:m:991:both"), ("own", "tb:m:991:own"), ("• peer", "tb:m:991:peer"),
                        ("off", "tb:m:991:off")]
@@ -598,7 +598,7 @@ async def test_panel_keeps_a_stored_label(plugin, modes, monkeypatch):
 
     entry = modes.default_store().get(OWNER, CHAT)
     assert (entry.mode, entry.label) == ("peer", "Casey Customer (@casey)")
-    assert last_edit(bot)[0] == "Owner panel: Casey Customer (@casey) · chat 991\nTranscription: peer"
+    assert last_edit(bot)[0] == "Owner panel: Casey Customer (@casey) · chat 991\nTranscription: peer\nHistory: off in Settings"
 
 
 @pytest.mark.asyncio
@@ -709,7 +709,7 @@ async def test_each_mode_button_sets_the_mode_via_panel_and_edits_the_panel(plug
     assert modes.default_store().connection_owner(BCID) == str(OWNER)
     assert bot.answers == [{"callback_query_id": "query-1", "text": f"Transcription: {mode}"}]
     text, rows = last_edit(bot)
-    assert text == f"Owner panel: chat 991\nTranscription: {mode}"
+    assert text == f"Owner panel: chat 991\nTranscription: {mode}\nHistory: off in Settings"
     assert [label for label, _data in rows[0]] == [f"• {m}" if m == mode else m for m in ("both", "own", "peer", "off")]
     assert rows[1] == [("Reset to default", "tb:r:991")]
     assert bot.calls == []
@@ -730,7 +730,7 @@ async def test_reset_button_returns_to_default_and_keeps_the_label_rule(plugin, 
     assert modes.default_store().get(OWNER, CHAT) is None
     assert bot.answers[-1] == {"callback_query_id": "query-1", "text": "Transcription: both (default)"}
     text, rows = last_edit(bot)
-    assert text == "Owner panel: Casey · chat 991\nTranscription: both (default)"
+    assert text == "Owner panel: Casey · chat 991\nTranscription: both (default)\nHistory: off in Settings"
     assert rows == [MODE_ROW, [("Refresh", "tb:p:991")]]
 
 
@@ -743,7 +743,7 @@ async def test_refresh_shows_a_change_from_elsewhere(plugin, modes):
     assert await dispatch(plugin, callback_update("tb:p:991"), bot) is True
 
     assert bot.answers == [{"callback_query_id": "query-1", "text": "Refreshed"}]
-    assert last_edit(bot)[0] == "Owner panel: chat 991\nTranscription: off"
+    assert last_edit(bot)[0] == "Owner panel: chat 991\nTranscription: off\nHistory: off in Settings"
 
 
 @pytest.mark.asyncio
@@ -783,7 +783,7 @@ async def test_corrupt_modes_file_shows_the_save_error_and_is_never_overwritten(
     assert path.read_text(encoding="utf-8") == "{not json"
     error = "Error: could not save transcription mode"
     assert bot.answers == [{"callback_query_id": "query-1", "text": error}]
-    assert last_edit(bot)[0] == f"Owner panel: chat 991\n{error}\nTranscription: both (default)"
+    assert last_edit(bot)[0] == f"Owner panel: chat 991\n{error}\nTranscription: both (default)\nHistory: off in Settings"
 
 
 @pytest.mark.asyncio
@@ -821,7 +821,7 @@ async def test_quiet_chat_after_restart_still_gets_mode_buttons(plugin, modes):
 
     assert await dispatch(plugin, start_update("/start bizChat424242"), bot) is True
     (call,) = bot.calls
-    assert call["text"] == "Owner panel: chat 424242\nTranscription: both (default)"
+    assert call["text"] == "Owner panel: chat 424242\nTranscription: both (default)\nHistory: off in Settings"
     assert keyboard(call["reply_markup"]) == [
         [(label, data.replace(":991:", ":424242:")) for label, data in MODE_ROW],
         [("Refresh", "tb:p:424242")],
@@ -847,7 +847,7 @@ async def test_typed_chat_ids_are_capped_per_owner(plugin, modes, monkeypatch):
     error = "Error: could not save transcription mode"
     assert bot.answers[-1] == {"callback_query_id": "query-1", "text": error}
     assert modes.default_store().get(OWNER, 3) is None
-    assert last_edit(bot)[0] == f"Owner panel: chat 3\n{error}\nTranscription: both (default)"
+    assert last_edit(bot)[0] == f"Owner panel: chat 3\n{error}\nTranscription: both (default)\nHistory: off in Settings"
     assert sorted(modes.default_store().snapshot()[str(OWNER)]) == ["1", "2"]
 
 
@@ -886,7 +886,7 @@ async def test_disabled_transcription_hides_mode_controls(plugin, modes, monkeyp
 
     assert await dispatch(plugin, start_update(), bot) is True
     (call,) = bot.calls
-    assert call["text"] == "Owner panel: chat 991\nTranscription: off in Settings"
+    assert call["text"] == "Owner panel: chat 991\nTranscription: off in Settings\nHistory: off in Settings"
     assert keyboard(call["reply_markup"]) == [[("Refresh", "tb:p:991")]]
 
     assert await dispatch(plugin, callback_update("tb:m:991:off"), bot) is True
@@ -906,7 +906,7 @@ async def test_mode_buttons_leave_a_stored_mode_while_transcription_is_disabled(
 
     assert modes.default_store().get(OWNER, CHAT).mode == "off"
     assert bot.answers == [{"callback_query_id": "query-1", "text": "Transcription: off in Settings"}]
-    assert last_edit(bot) == ("Owner panel: Casey · chat 991\nTranscription: off in Settings",
+    assert last_edit(bot) == ("Owner panel: Casey · chat 991\nTranscription: off in Settings\nHistory: off in Settings",
                               [[("Refresh", "tb:p:991")]])
 
 
@@ -931,7 +931,7 @@ async def test_registered_section_opens_with_back_and_back_returns(plugin, modes
     bot = PanelBot(business_owner_id=OWNER)
 
     assert await dispatch(plugin, start_update(), bot) is True
-    assert keyboard(bot.calls[0]["reply_markup"])[1] == [("Stats", "tb:s:991:stats")]
+    assert keyboard(bot.calls[0]["reply_markup"])[1] == [("Stats", "tb:s:991:stats"), ("Refresh", "tb:p:991")]
 
     assert await dispatch(plugin, callback_update("tb:s:991:stats"), bot) is True
     text, rows = last_edit(bot)
@@ -948,8 +948,8 @@ async def test_registered_section_opens_with_back_and_back_returns(plugin, modes
 
     assert await dispatch(plugin, callback_update("tb:b:991"), bot) is True
     text, rows = last_edit(bot)
-    assert text == "Owner panel: chat 991\nTranscription: both (default)"
-    assert rows == [MODE_ROW, [("Stats", "tb:s:991:stats")], [("Refresh", "tb:p:991")]]
+    assert text == "Owner panel: chat 991\nTranscription: both (default)\nHistory: off in Settings"
+    assert rows == [MODE_ROW, [("Stats", "tb:s:991:stats"), ("Refresh", "tb:p:991")]]
 
 
 @pytest.mark.asyncio
@@ -1189,7 +1189,7 @@ async def test_real_ptb_start_and_button_never_reach_core(plugin, modes, telegra
     assert answer == {"callback_query_id": "cq-1", "text": "Transcription: off"}
     edit = calls[3][1]
     assert (edit["chat_id"], edit["message_id"]) == (str(OWNER), "700")
-    assert edit["text"] == "Owner panel: chat 991\nTranscription: off"
+    assert edit["text"] == "Owner panel: chat 991\nTranscription: off\nHistory: off in Settings"
     assert modes.default_store().get(OWNER, CHAT).updated_via == "chat"
 
 
@@ -1227,17 +1227,16 @@ async def test_panel_speaks_russian_to_a_russian_client(plugin, modes):
 
     assert await dispatch(plugin, start_update(language_code="ru"), bot) is True
     (call,) = bot.calls
-    assert call["text"] == "Панель владельца: chat 991\nРасшифровка: все (по умолчанию)"
+    assert call["text"] == "Панель владельца: chat 991\nРасшифровка: все (по умолчанию)\nИстория: выключена в настройках"
     assert keyboard(call["reply_markup"]) == [
         [("• все", "tb:m:991:both"), ("мои", "tb:m:991:own"), ("собеседника", "tb:m:991:peer"), ("выкл", "tb:m:991:off")],
-        [("Проба", "tb:s:991:probe")],
-        [("Обновить", "tb:p:991")],
+        [("Проба", "tb:s:991:probe"), ("Обновить", "tb:p:991")],
     ]
 
     assert await dispatch(plugin, callback_update("tb:m:991:off", language_code="ru-RU"), bot) is True
     assert bot.answers[-1] == {"callback_query_id": "query-1", "text": "Расшифровка: выкл"}
     text, buttons = last_edit(bot)
-    assert text == "Панель владельца: chat 991\nРасшифровка: выкл"
+    assert text == "Панель владельца: chat 991\nРасшифровка: выкл\nИстория: выключена в настройках"
     assert buttons[1] == [("Сбросить", "tb:r:991")]
     assert modes.default_store().get(OWNER, CHAT).mode == "off"  # stored by mode id, not by label
 
@@ -1252,7 +1251,7 @@ async def test_panel_speaks_russian_to_a_russian_client(plugin, modes):
     # English for everyone else, including a client with no language.
     assert await dispatch(plugin, callback_update("tb:r:991", language_code="de"), bot) is True
     assert bot.answers[-1] == {"callback_query_id": "query-1", "text": "Transcription: both (default)"}
-    assert last_edit(bot)[0] == "Owner panel: chat 991\nTranscription: both (default)"
+    assert last_edit(bot)[0] == "Owner panel: chat 991\nTranscription: both (default)\nHistory: off in Settings"
 
 
 @pytest.mark.asyncio
