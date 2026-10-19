@@ -329,7 +329,7 @@ def test_history_skill_documents_runtime_scheduler_and_defaults():
 
 def test_ci_runs_on_main_and_version_tags():
     workflow = yaml.load(
-        (ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8"),
+        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
 
