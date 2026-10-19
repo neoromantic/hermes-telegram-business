@@ -35,3 +35,7 @@ addopts = "-ra --confcutdir=tests"
 [tool.ruff]
 target-version = "py311"
 line-length = 120
+
+[tool.ruff.lint.per-file-ignores]
+# The plugin directory is named by the installer (plugins/telesec) or the clone, not by us.
+"__init__.py" = ["N999"]
