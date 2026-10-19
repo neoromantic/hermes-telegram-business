@@ -14,6 +14,20 @@ History checks must cover one-time opt-in, private-chat defaults, explicit scope
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## 0.12.0 and 0.12.1 release and live smoke: 2026-10-19
+
+Before tagging, `hermes plugins validate --install-deps` on a clean Hermes v0.22.2 passed for 0.12.0. CI ran 1026 tests on Python 3.11–3.14.
+
+The production gateway (Hermes 0.21.6) was updated plugin-only.
+
+- **0.12.0 and migration.** The plugin checkout was fast-forwarded to `v0.12.0`, and the gateway restarted at 20:26 UTC. The one-time migration stored history as on (`via migration`) from the old environment variable and logged a warning. Transcription stayed on by default, and the 0.11.0 dossier switch stayed on.
+- **Incident.** About one minute later, a scheduled Hermes maintenance run rebuilt the plugin dependency environment and could not resolve it: the 0.12.0 dev dependency group asked for a newer ruamel.yaml than Hermes 0.21.6 pins. Hermes then disabled Telesec in the config. The running gateway kept working, but the next restart would not have loaded the plugin. `hermes plugins validate` had printed ok; the resolver error was only in stderr.
+- **0.12.1 fix.** [0.12.1 (#66)](https://github.com/neoromantic/telesec/pull/66) makes the dev group name packages only, without versions. After a fast-forward to `v0.12.1`, `hermes plugins enable telesec` resolved the dependency environment. The gateway restarted at 20:35 UTC, wired the `telesec` handlers, started the dossier worker, and connected to Telegram. `hermes telesec settings` showed transcription on (default), history on (via migration), and dossiers on (via migration).
+- **Live smoke** from the owner's account in the bot DM. `/telesec` opened Settings with the three rows, all on. `/start bizChat<chat_id>` opened the panel with the transcription row, Reset, and the new Save history / Don't save and Keep dossier / No dossier rows. Don't save answered "History: off for this chat", stored one entry, and hid the dossier row behind "Dossier: needs history". Save history answered "History: on for this chat" and removed the entry. ⚙️ Settings opened Settings with « Back. No new message appeared in the Business chat, and the four bot-DM fixtures were deleted. The gateway logged no rich-edit fallback and no Telesec error.
+- **Screenshots.** `settings.png`, `owner-panel.png`, and `dossier-panel.png` were retaken on 0.12.1 right after the smoke, with no switch or mode changed ([Documentation images](#documentation-images)).
+
+No message text, contact names, or raw contact IDs are included here.
+
 ## 0.11.0 release and live smoke: 2026-10-19
 
 Before tagging, `hermes plugins validate --install-deps --json` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`) passed: exit 0, `ok: true`, all 14 checks, security scan `safe`. The only warning is the known private STT import. CI passed on Python 3.11–3.14.
@@ -159,7 +173,9 @@ Keep evidence free of real contact details and message content. Record Hermes/PT
 
 `voice-transcript.png` and `stats-panel.png` are real Telegram for macOS screenshots from the production gateway on 2026-10-19 (code identical to 0.10.0). The voice note was a synthetic 10-second English recording sent by the owner in a controlled Business chat. Its transcript was added to the caption about 4 seconds later. The Stats view was opened from the owner's private chat with the bot. Contact names, usernames, and chat IDs are blurred. Afterwards the chat's mode was set back to `off`, and the test voice and panel messages were deleted. `banner.png` (1200x600) is rendered from `docs/images/src/banner.html` and uses the voice screenshot.
 
-`owner-panel.png`, `dossier-panel.png`, and `dossier-fact.png` are real Telegram for macOS screenshots from the production gateway on 2026-10-19 running 0.11.0. The panel, its Dossier overview, and one fact card were opened from the owner's private chat with the bot for a controlled Business chat whose dossier was built from real messages. The contact's name, username, chat and message IDs, the fact text, and the source quote are blurred; headings, counts, and buttons are not. `/dossier` was not sent in the Business chat, and the panel messages were deleted afterwards.
+`settings.png`, `owner-panel.png`, and `dossier-panel.png` are real Telegram for macOS screenshots from the production gateway on 2026-10-19 running 0.12.1. Settings was opened with `/telesec`, and the panel with `/start bizChat<chat_id>` for a controlled Business chat, both from the owner's private chat with the bot; the Dossier overview was opened from the panel's Dossier button. Settings shows all three switches on. The contact's name, username, and chat ID are blurred; the overview's fact sections are collapsed, so no fact text is visible. Headings, counts, and buttons are not blurred. No switch, mode, or per-chat row was tapped, nothing was sent in the Business chat, and the commands and panel messages were deleted afterwards.
+
+`dossier-fact.png` is a real Telegram for macOS screenshot from the production gateway on 2026-10-19 running 0.11.0, a fact card opened from the same chat's Dossier overview. The contact's username, the fact text, the message ID, and the source quote are blurred; headings and buttons are not. `/dossier` was not sent in the Business chat, and the panel messages were deleted afterwards.
 
 The transcript illustration depicts implemented delivery shapes. The history image contains actual CLI output captured from synthetic Business updates. The assistant illustration is explicitly a future-design concept. All use fictional content and have editable HTML sources in `docs/images/src/`.
 
