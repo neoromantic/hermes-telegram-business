@@ -38,7 +38,7 @@ Out of scope:
 - Media goes to the STT backend configured in Hermes, which may be local or external. The downloaded file is deleted after processing.
 - Transcript cleanup and dossiers use the host-owned `ctx.llm` facade. The plugin has no credentials of its own. Dossiers are off until `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1` is set.
 - History is off until `HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1` is set. It stays on the gateway host. See [retention and removal](docs/HISTORY.md#retention-and-removal) and [dossier storage](docs/DOSSIERS.md#storage-and-privacy).
-- Logs record IDs, counts, and error types, never message text or transcripts.
+- Logs record IDs, counts, and errors, never message text or transcripts.
 
 ## Keep reports clean
 
