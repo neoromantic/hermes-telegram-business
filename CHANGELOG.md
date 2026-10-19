@@ -1,14 +1,11 @@
 # Changelog
 
-## Unreleased
-
-### 0.10.0 — Renamed to Telesec
+## 0.10.0 - 2026-10-19
 
 - Rename the product, runtime plugin ID, catalog key, CLI, skills, and repository to Telesec.
 - Automatically migrate history, the contact catalog, transcription modes, dossiers, plugin state/cache, and Hermes config entries without changing content or private permissions. See the README upgrade script for the required name-based reinstall, including explicit dependency consent for headless installation.
 - Use `TELESEC_*` environment variables; old names and `hermes telegram-business` remain deprecated aliases for this release.
 - Expose history, dossiers, cleanup style, timezone, and agent passthrough in Hermes Desktop settings, with environment overrides.
-
 - Consume all Business message, edit, and deletion updates after history capture and transcription routing so ordinary contact/owner text cannot start an agent turn. Set `TELESEC_AGENT_ENABLE=1` to allow unhandled updates through the ordinary Hermes auth/agent path. Bot DMs and the owner panel keep their existing routing.
 - Prepare manifest v2 metadata with a tested Hermes 0.21.6 minimum and catalog submission notes; disclose network calls, local processes, background work, storage, retention, and the absence of telemetry.
 - Allow the catalog validator's recording context to register the plugin without its missing `llm` property; real Hermes continues to supply `ctx.llm`.
@@ -23,6 +20,7 @@
 - Add a neutral system prompt section (`telesec.reference`, Hermes 0.21.5+) that points the agent to the `mode` and `stats` JSON commands and the bundled skills, and tells it that a reply to a panel message is about the panel's `chat <id>`.
 - Ignore the Business copies of the owner's own chat with the bot (the panel and the agent chat): they are no longer captured into history, transcribed, or counted, and history, stats, dossiers, and the panel skip such a chat that an older version captured. The bot's id comes from the running bot or from `TELEGRAM_BOT_TOKEN`.
 - Add a 📊 Stats view to the owner panel: the one-chat `stats` report for the last 7, 30, or 90 days or all history, shown only in the owner's private chat with the bot. Read-only, no LLM, nothing stored ([#4](https://github.com/neoromantic/telesec/issues/4)).
+- Add real Telegram screenshots of a transcribed voice note, the owner panel, and its Stats view, plus a 1200x600 catalog banner. State that Telesec is not affiliated with Nous Research.
 
 ## 0.9.0 - 2026-10-19
 

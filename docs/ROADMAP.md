@@ -16,10 +16,10 @@ The product connects readable Telegram voice messages with useful personal corre
 - [Correspondence stats #4](https://github.com/neoromantic/telesec/issues/4), first slice: the deterministic [`stats` command](STATS.md).
 - Opt-in contact dossiers and owner persona ([#17](https://github.com/neoromantic/telesec/issues/17)), built in the gateway background. [Dossier guide](DOSSIERS.md).
 
-## Unreleased
+## Implemented in 0.10.0
 
 - Renamed to **Telesec**, with automatic private data/config migration and Hermes Desktop settings.
-
+- Business text never starts an agent turn unless `TELESEC_AGENT_ENABLE=1` is set.
 - Owner panel: Telegram's "Manage Bot" button in a Business chat opens the bot's private chat with that chat's transcription mode as buttons, visible only to the owner. Other features add per-chat views with `owner_panel.register_section` and localize them through the panel's string catalog (English and Russian). The in-chat `/transcribe` command from 0.9.0 is removed: the panel is the only control inside Telegram.
 - Stats in the owner panel ([#4](https://github.com/neoromantic/telesec/issues/4)): a 📊 Stats section with the one-chat `stats` report for the last 7, 30, or 90 days or all history. [Owner panel stats](STATS.md#in-telegram-owner-panel).
 
@@ -48,7 +48,7 @@ Deferred from the #17 first slice: using dossiers in drafts (#18) and automatic 
 | [Raw-first transcripts #8](https://github.com/neoromantic/telesec/issues/8) | Show raw STT immediately, then edit the same caption/reply after cleanup; start with one output target. |
 | [Transcription controls #7](https://github.com/neoromantic/telesec/issues/7) | Implemented in 0.9.0: manual per-chat `both`, `own`, `peer`, and `off`. Automatic peer detection remains a separate investigation. |
 | [Scheduled sending #3](https://github.com/neoromantic/telesec/issues/3) | Recover the existing static-text send CLI; Hermes cron owns timing, with explicit targets and no ledger. |
-| [Correspondence insights #4](https://github.com/neoromantic/telesec/issues/4) | First slice in 0.9.0: the deterministic [`stats` command](STATS.md) with per-contact counts, active days, sessions, latest activity, and deletions. The same one-chat report in the [owner panel](STATS.md#in-telegram-owner-panel) is unreleased. Remaining: opt-in owner notifications [#27](https://github.com/neoromantic/telesec/issues/27), response-time and turn metrics [#28](https://github.com/neoromantic/telesec/issues/28), and an all-contacts overview in the panel [#29](https://github.com/neoromantic/telesec/issues/29). |
+| [Correspondence insights #4](https://github.com/neoromantic/telesec/issues/4) | First slice in 0.9.0: the deterministic [`stats` command](STATS.md) with per-contact counts, active days, sessions, latest activity, and deletions. The same one-chat report is in the [owner panel](STATS.md#in-telegram-owner-panel) since 0.10.0. Remaining: opt-in owner notifications [#27](https://github.com/neoromantic/telesec/issues/27), response-time and turn metrics [#28](https://github.com/neoromantic/telesec/issues/28), and an all-contacts overview in the panel [#29](https://github.com/neoromantic/telesec/issues/29). |
 | [Voice bursts #9](https://github.com/neoromantic/telesec/issues/9) | Opt-in same-sender grouping with ordering and explicit boundaries; avoid delaying every single note. |
 | [Release and launch #10](https://github.com/neoromantic/telesec/issues/10) | Align versions, verify installation, refresh visual docs, and publish accurate release/demo material. |
 
