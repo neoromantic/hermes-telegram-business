@@ -3,9 +3,9 @@
 One mode per (Business owner, chat) decides whose voice notes, round videos,
 and attached audio are transcribed: ``both`` (default), ``own``, ``peer``, or
 ``off``. Modes live in a small private JSON file that the gateway re-reads
-whenever it changes, so a CLI write or an in-chat ``/transcribe`` command
-applies to the next message without a restart. The file never stores message
-text, transcripts, or counters.
+whenever it changes, so a CLI write, an owner-panel button, or an in-chat
+``/transcribe`` command applies to the next message without a restart. The
+file never stores message text, transcripts, or counters.
 
 This module is stdlib-only and depends only on ``history_support``.
 """
@@ -33,10 +33,13 @@ logger = logging.getLogger(__name__)
 
 MODES = _history.TRANSCRIBE_MODES
 DEFAULT_MODE = _history.TRANSCRIBE_DEFAULT_MODE
+# The owner panel writes "chat" too: 0.9.0 drops entries with any other value,
+# so a new one here would lose panel-set modes on a rollback.
 UPDATED_VIA = ("chat", "cli")
 SCHEMA_VERSION = 1
 MODES_FILENAME = "transcription-modes.json"
 MAX_LABEL_CHARS = 128
+MAX_CHATS_PER_OWNER = 5000
 MAX_USAGE_ARGS_CHARS = 32
 MODE_USAGE = "Usage: hermes telegram-business mode <list|get|set|reset>"
 COMMAND_USAGE = _history.TRANSCRIBE_USAGE
@@ -469,6 +472,8 @@ class ModeStore:
                 snapshot.connections[connection_key] = owner_key
             chats = snapshot.setdefault(owner_key, {})
             previous = chats.get(chat_key)
+            if previous is None and len(chats) >= MAX_CHATS_PER_OWNER:
+                raise ModeStoreError(f"owner already has {MAX_CHATS_PER_OWNER} chats with a stored mode")
             entry = ModeEntry(
                 mode=mode,
                 updated_at=_format_timestamp(now),

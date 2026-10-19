@@ -76,6 +76,7 @@ else:
 
 from . import dossier_support as _dossier_support
 from . import history_support as _history_support
+from . import owner_panel as _owner_panel
 from . import transcription_modes as _transcription_modes
 
 
@@ -411,6 +412,10 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
     from telegram.ext import ApplicationHandlerStop, BaseHandler
 
     async def on_business_update(update: Any, context: Any) -> None:
+        try:
+            _note_business_update_chat(update)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping must not break dispatch
+            logger.debug("%s: business chat note failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         # Owner `/transcribe` commands are claimed before history capture, the
         # media filter, and the DM allowlist: Business ownership is the auth.
         try:
@@ -445,7 +450,40 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
                 for attribute in ("business_message", "edited_business_message", "deleted_business_messages")
             )
 
+    async def on_owner_panel_update(update: Any, context: Any) -> None:
+        # "Manage Bot" opens the owner's private chat with `/start bizChat<id>`;
+        # the panel and its `tb:` buttons never reach the ordinary Hermes path.
+        claimed = _is_owner_panel_callback(update)
+        try:
+            claimed = await _handle_owner_panel_update(update, bot=context.bot)
+        except Exception as exc:  # noqa: BLE001 - panel failures must not break dispatch
+            logger.warning("%s: owner panel handling failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        if claimed:
+            raise ApplicationHandlerStop
+
+    class OwnerPanelHandler(BaseHandler):
+        def check_update(self, update: Any) -> bool:
+            try:
+                return _is_owner_panel_update(update)
+            except Exception:  # noqa: BLE001 - a malformed update is simply not ours
+                return False
+
+    async def on_business_connection_update(update: Any, context: Any) -> None:
+        # Never claimed: core still sees the update.
+        try:
+            await _handle_business_connection_update(update)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping must not break dispatch
+            logger.warning("%s: business connection handling failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+
+    class BusinessConnectionHandler(BaseHandler):
+        def check_update(self, update: Any) -> bool:
+            return getattr(update, "business_connection", None) is not None
+
     app.add_handler(BusinessHandler(on_business_update, block=True), group=_RAW_HISTORY_HANDLER_GROUP)
+    app.add_handler(OwnerPanelHandler(on_owner_panel_update, block=True), group=_RAW_HISTORY_HANDLER_GROUP)
+    app.add_handler(
+        BusinessConnectionHandler(on_business_connection_update, block=True), group=_RAW_HISTORY_HANDLER_GROUP
+    )
     _dossier_support.ensure_worker_started()
 
 
@@ -2079,6 +2117,437 @@ async def _handle_transcribe_command_update(update: Any, *, bot: Any, adapter: A
     except Exception as exc:  # noqa: BLE001 - the owner's command must never reach core
         logger.warning("%s: transcribe command failed (%s)", _PLUGIN_NAME, type(exc).__name__)
     return True
+
+
+# --- Owner panel ("Manage Bot") ---------------------------------------------------------------
+
+# Owner checks rebuild the known connections on every call; per-connection
+# owners are cached by history_support's owner cache (successes only). These
+# small, bounded, in-memory maps keep strangers and dead connections cheap.
+_PANEL_LOOKUP_FAILED_TTL = 300.0
+_PANEL_NEGATIVE_TTL = 60.0
+_PANEL_LOOKUP_TIMEOUT = 5.0
+_PANEL_SECTION_TIMEOUT = 8.0
+_PANEL_MAX_LIVE_LOOKUPS = 5
+_PANEL_MAP_MAX = 10_000
+_TRANSIENT_LOOKUP_ERRORS = frozenset({"TimedOut", "NetworkError", "RetryAfter"})
+
+# Business connection id -> (monotonic time, transient) of its last failed owner lookup.
+_PANEL_LOOKUP_FAILED: dict[str, tuple[float, bool]] = {}
+# Telegram user id -> (monotonic time, status) of a recent "not_owner"/"unknown" check.
+_PANEL_NEGATIVE: dict[str, tuple[float, str]] = {}
+# (business connection id, chat id) pairs seen in Business updates this process.
+_PANEL_SEEN_CHATS: dict[tuple[str, str], None] = {}
+# Business connection id -> owner id from Telegram's `business_connection`
+# updates this process. In memory only: any account can connect the bot, so a
+# connection alone never becomes a persisted owner (that would make the CLI see
+# a second owner and refuse to infer one).
+_PANEL_KNOWN_CONNECTIONS: dict[str, str] = {}
+
+
+def _bounded_put(mapping: dict[Any, Any], key: Any, value: Any) -> None:
+    mapping.pop(key, None)
+    mapping[key] = value
+    while len(mapping) > _PANEL_MAP_MAX:
+        mapping.pop(next(iter(mapping)))
+
+
+def _note_business_chat(business_connection_id: Any, chat_id: Any) -> None:
+    """Remember that this connection has this chat, so the panel may change its mode."""
+    if business_connection_id and chat_id is not None:
+        _bounded_put(_PANEL_SEEN_CHATS, (str(business_connection_id), str(chat_id)), None)
+
+
+def _note_business_update_chat(update: Any) -> None:
+    for attribute in ("business_message", "edited_business_message", "deleted_business_messages"):
+        payload = getattr(update, attribute, None)
+        if payload is not None:
+            _note_business_chat(_business_connection_id(payload), _get(_get(payload, "chat"), "id"))
+            return
+
+
+async def _handle_business_connection_update(update: Any) -> None:
+    """Telegram reports the bot (dis)connected: remember or forget the connection's owner in memory."""
+    connection = getattr(update, "business_connection", None)
+    connection_id = _get(connection, "id")
+    if not connection_id:
+        return
+    key = str(connection_id)
+    if _get(connection, "is_enabled") is False:
+        _history_support._OWNER_CACHE.pop(key, None)
+        _PANEL_KNOWN_CONNECTIONS.pop(key, None)
+        _bounded_put(_PANEL_LOOKUP_FAILED, key, (time.monotonic(), False))
+        logger.info("%s: Business connection disabled", _PLUGIN_NAME)
+        return
+    owner = _get(_get(connection, "user"), "id")
+    if owner is None:
+        return
+    owner_id = str(owner)
+    _history_support._OWNER_CACHE[key] = owner_id
+    _bounded_put(_PANEL_KNOWN_CONNECTIONS, key, owner_id)
+    _PANEL_LOOKUP_FAILED.pop(key, None)
+    _PANEL_NEGATIVE.pop(owner_id, None)
+    logger.info("%s: Business connection enabled", _PLUGIN_NAME)
+
+
+def _is_owner_panel_callback(update: Any) -> bool:
+    query = getattr(update, "callback_query", None)
+    data = _get(query, "data") if query is not None else None
+    return isinstance(data, str) and data.startswith(_owner_panel.CALLBACK_PREFIX)
+
+
+def _is_owner_panel_update(update: Any) -> bool:
+    """A `tb:` button press, or a private-chat `/start bizChat<id>` from "Manage Bot"."""
+    if getattr(update, "callback_query", None) is not None:
+        return _is_owner_panel_callback(update)
+    message = getattr(update, "message", None)
+    if message is None or _get(_get(message, "chat"), "type") != "private":
+        return False
+    return _owner_panel.parse_start_payload(_get(message, "text")) is not None
+
+
+@dataclass(frozen=True)
+class _PanelOwner:
+    status: str  # "owner" | "not_owner" | "unknown"
+    connections: tuple[str, ...] = ()
+    cached: bool = False  # a negative result reused from _PANEL_NEGATIVE
+
+
+@dataclass(frozen=True)
+class _PanelState:
+    ctx: _owner_panel.PanelContext
+    entry: Any
+    store_label: str | None
+
+
+def _panel_catalog() -> list[dict[str, Any]]:
+    """History catalog entries, read-only; none when history is off or unreadable."""
+    return _transcription_modes._history_entries()
+
+
+def _transient_lookup_failure(reason: str) -> bool:
+    kind, _, error = reason.partition(":")
+    return kind == "lookup_failed" and error in _TRANSIENT_LOOKUP_ERRORS
+
+
+def _remember_negative(sender_id: str, owner: _PanelOwner) -> _PanelOwner:
+    _bounded_put(_PANEL_NEGATIVE, sender_id, (time.monotonic(), owner.status))
+    return owner
+
+
+async def _verify_panel_owner(
+    bot: Any, sender_id: str, catalog: list[dict[str, Any]], chat_id: str | None = None
+) -> _PanelOwner:
+    """Is ``sender_id`` the owner of a Business connection the plugin knows?
+
+    Known connections come from the modes file's owner bindings, the owner
+    lookups cached this process, the `business_connection` updates seen this
+    process (in memory only), and the history catalog, rebuilt on every call
+    so a new connection is found.
+    A live lookup wins; a binding backs up only a transient lookup failure.
+    "unknown" means the plugin knows no connection at all; once it knows one,
+    anyone it cannot verify is "not_owner" (fail closed).
+    """
+    now = time.monotonic()
+    bindings = dict(_transcription_modes.default_store().snapshot().connections)
+    owner_cache = {**_PANEL_KNOWN_CONNECTIONS, **_history_support._OWNER_CACHE}
+    negative = _PANEL_NEGATIVE.get(sender_id)
+    if negative is not None:
+        fresh = now - negative[0] < _PANEL_NEGATIVE_TTL
+        if fresh and sender_id not in bindings.values() and sender_id not in owner_cache.values():
+            return _PanelOwner(negative[1], cached=True)
+        _PANEL_NEGATIVE.pop(sender_id, None)
+    chat_connections = {
+        str(entry["business_connection_id"])
+        for entry in catalog
+        if entry.get("business_connection_id") and chat_id is not None and str(entry.get("chat_id")) == chat_id
+    }
+    known = set(bindings) | set(owner_cache)
+    known |= {str(entry["business_connection_id"]) for entry in catalog if entry.get("business_connection_id")}
+    if not known:
+        return _remember_negative(sender_id, _PanelOwner("unknown"))
+    resolved: dict[str, str | None] = {}
+    pending: list[str] = []
+    for connection in sorted(known):
+        if connection in owner_cache:
+            resolved[connection] = owner_cache[connection]
+            continue
+        failed = _PANEL_LOOKUP_FAILED.get(connection)
+        if failed is not None and now - failed[0] < _PANEL_LOOKUP_FAILED_TTL:
+            resolved[connection] = bindings.get(connection) if failed[1] else None
+            continue
+        pending.append(connection)
+    already_owner = sender_id in resolved.values()
+    # The chat's own connections first, then the sender's bindings, then the rest;
+    # a confirmed owner only looks up connections that can change the chat's scope.
+    pending.sort(key=lambda c: (c not in chat_connections, bindings.get(c) != sender_id, c))
+    if already_owner:
+        pending = [c for c in pending if c in chat_connections or bindings.get(c) == sender_id]
+    lookups = pending[:_PANEL_MAX_LIVE_LOOKUPS]
+    if lookups:
+        tasks = {
+            connection: asyncio.ensure_future(_history_support.resolve_business_owner(bot, connection))
+            for connection in lookups
+        }
+        done, not_done = await asyncio.wait(tasks.values(), timeout=_PANEL_LOOKUP_TIMEOUT)
+        for task in not_done:
+            task.cancel()
+        for connection, task in tasks.items():
+            if task in done and not task.cancelled() and task.exception() is None:
+                owner_id, reason = task.result()
+            else:
+                owner_id, reason = None, "lookup_failed:TimedOut"
+            if owner_id is None:
+                transient = _transient_lookup_failure(reason)
+                if reason.startswith("lookup_failed") or reason in ("owner_missing", "connection_disabled"):
+                    _bounded_put(_PANEL_LOOKUP_FAILED, connection, (now, transient))
+                owner_id = bindings.get(connection) if transient else None
+            resolved[connection] = owner_id
+    verified = tuple(connection for connection in sorted(resolved) if resolved[connection] == sender_id)
+    if verified:
+        _PANEL_NEGATIVE.pop(sender_id, None)
+        return _PanelOwner("owner", verified)
+    return _remember_negative(sender_id, _PanelOwner("not_owner"))
+
+
+def _panel_state(owner: _PanelOwner, owner_id: str, chat_id: str, catalog: list[dict[str, Any]], arg: str | None):
+    """Context for one chat: prefer the owner's connection that history lists for it. Blocking (store read).
+
+    A verified owner may set a mode for any chat id: "Manage Bot" names a chat
+    on their own connection, entries are stored per owner (so they never touch
+    another owner's chat with the same contact), and ``MAX_CHATS_PER_OWNER``
+    caps hand-typed ids.
+    """
+    connection = None
+    profile = None
+    for item in catalog:
+        item_connection = str(item.get("business_connection_id") or "")
+        if str(item.get("chat_id")) == chat_id and item_connection in owner.connections:
+            connection = item_connection
+            profile = item.get("current_profile")
+            break
+    seen = next((c for c in owner.connections if (c, chat_id) in _PANEL_SEEN_CHATS), None)
+    if connection is None:
+        connection = seen or (owner.connections[0] if owner.connections else None)
+    entry = _transcription_modes.default_store().get(owner_id, chat_id)
+    # Same snapshot rule as the chat command: build_chat_label over the contact's
+    # profile (control characters stripped, clipped), never message content;
+    # without a profile the stored label stays.
+    store_label = _transcription_modes.build_chat_label(profile) if isinstance(profile, dict) else None
+    label = (entry.label if entry is not None else None) or store_label
+    ctx = _owner_panel.PanelContext(
+        owner_user_id=owner_id,
+        chat_id=chat_id,
+        chat_label=label,
+        business_connection_id=connection,
+        arg=arg,
+    )
+    return _PanelState(ctx=ctx, entry=entry, store_label=store_label)
+
+
+def _panel_markup(view: _owner_panel.PanelView) -> Any:
+    if not view.buttons:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(text=label, callback_data=data) for label, data in row] for row in view.buttons]
+    )
+
+
+def _log_panel(action: str, chat_id: Any, mode: str | None = None) -> None:
+    logger.info(
+        "%s: owner panel action=%s chat=%s mode=%s", _PLUGIN_NAME, action, _safe_part(chat_id), mode or "-"
+    )
+
+
+def _unknown_connection_text() -> str:
+    """The hint for an unverifiable `/start`; blocking (reads the modes file state)."""
+    if _transcription_modes.default_store().file_degraded():
+        return _owner_panel.UNKNOWN_CONNECTION_MODES_UNREADABLE
+    if not _voice_module_enabled():
+        return _owner_panel.UNKNOWN_CONNECTION_NO_TRANSCRIBE
+    return _owner_panel.UNKNOWN_CONNECTION
+
+
+async def _handle_owner_panel_update(update: Any, *, bot: Any) -> bool:
+    """Serve the owner panel; True means the update is claimed (never reaches core)."""
+    query = getattr(update, "callback_query", None)
+    if query is not None:
+        if not _is_owner_panel_callback(update):
+            return False
+        try:
+            await _handle_owner_panel_callback(query, bot=bot)
+        except Exception as exc:  # noqa: BLE001 - a `tb:` button is always ours
+            logger.warning("%s: owner panel callback failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        return True
+    message = getattr(update, "message", None)
+    if message is None or _get(_get(message, "chat"), "type") != "private":
+        return False
+    chat_id = _owner_panel.parse_start_payload(_get(message, "text"))
+    sender_id = _get(_get(message, "from_user"), "id")
+    private_chat_id = _get(_get(message, "chat"), "id")
+    if chat_id is None or sender_id is None or private_chat_id is None:
+        return False
+    catalog = await asyncio.to_thread(_panel_catalog)
+    owner = await _verify_panel_owner(bot, str(sender_id), catalog, str(chat_id))
+    if owner.status == "not_owner":
+        # Not a verified Business owner: an ordinary `/start` for the usual path.
+        logger.debug("%s: owner panel start not from a Business owner", _PLUGIN_NAME)
+        return False
+    try:
+        if owner.status == "unknown":
+            # No Business connection known yet: hint once per sender per TTL, always claim.
+            if not owner.cached:
+                text = await asyncio.to_thread(_unknown_connection_text)
+                await bot.send_message(chat_id=private_chat_id, text=text)
+            _log_panel("start_unknown_connection", chat_id)
+            return True
+        state = await asyncio.to_thread(_panel_state, owner, str(sender_id), str(chat_id), catalog, None)
+        view = _owner_panel.render_main(state.ctx, state.entry, _owner_panel.sections(), _voice_module_enabled())
+        await bot.send_message(
+            chat_id=private_chat_id, text=_owner_panel.clip_text(view.text), reply_markup=_panel_markup(view)
+        )
+        _log_panel("open", chat_id, state.entry.mode if state.entry is not None else None)
+    except Exception as exc:  # noqa: BLE001 - a verified owner's `/start bizChat` never reaches core
+        logger.warning("%s: owner panel open failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+    return True
+
+
+async def _answer_panel_callback(bot: Any, query: Any, text: str | None, *, alert: bool = False) -> None:
+    query_id = _get(query, "id")
+    answer = getattr(bot, "answer_callback_query", None)
+    if query_id is None or not callable(answer):
+        return
+    kwargs: dict[str, Any] = {"callback_query_id": query_id}
+    if text:
+        kwargs["text"] = text[: _owner_panel.MAX_TOAST_CHARS]  # longer text fails the answer
+    if alert:
+        kwargs["show_alert"] = True
+    try:
+        await _maybe_await(answer(**kwargs))
+    except Exception as exc:  # noqa: BLE001 - an unanswered button only spins briefly
+        logger.warning("%s: owner panel answer failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+
+
+async def _call_section_render(section: _owner_panel.Section, ctx: _owner_panel.PanelContext) -> Any:
+    view = await asyncio.to_thread(section.render, ctx)
+    if inspect.isawaitable(view):
+        view = await view
+    return view
+
+
+async def _render_panel_section(section: _owner_panel.Section, state: _PanelState) -> _owner_panel.PanelView:
+    try:
+        view = await asyncio.wait_for(_call_section_render(section, state.ctx), timeout=_PANEL_SECTION_TIMEOUT)
+        if not isinstance(view, _owner_panel.PanelView):
+            raise TypeError("section render did not return a PanelView")
+        if not isinstance(view.text, str) or not view.text.strip():
+            raise ValueError("section render returned empty text")
+        return _owner_panel.with_back(view, state.ctx.chat_id)
+    except Exception as exc:  # noqa: BLE001 - one broken or slow section must not break the panel
+        logger.warning(
+            "%s: owner panel section %s failed (%s)", _PLUGIN_NAME, section.key, type(exc).__name__
+        )
+        return _owner_panel.unavailable_view(state.ctx.chat_id, state.ctx.chat_label)
+
+
+async def _apply_panel_mode(action: _owner_panel.PanelCallback, state: _PanelState) -> tuple[Any, str]:
+    """Set or reset the chat's mode via the panel; returns (entry now in effect, toast)."""
+    store = _transcription_modes.default_store()
+    ctx = state.ctx
+    connection = ctx.business_connection_id
+    if action.action == "m":
+        # Stored as "chat": 0.9.0 drops any other updated_via value (see UPDATED_VIA).
+        result = await asyncio.to_thread(
+            store.set_mode,
+            ctx.owner_user_id,
+            ctx.chat_id,
+            action.arg,
+            via="chat",
+            label=state.store_label,
+            connection=connection,
+        )
+        return result.entry, f"Transcription: {action.arg}"
+    await asyncio.to_thread(store.reset, ctx.owner_user_id, ctx.chat_id, connection=connection)
+    return None, f"Transcription: {_transcription_modes.DEFAULT_MODE} (default)"
+
+
+async def _edit_panel_message(bot: Any, query: Any, view: _owner_panel.PanelView, fallback: Any = None) -> None:
+    """Edit the panel in place; a failed section view falls back to ``fallback`` once."""
+    message = _get(query, "message")
+    message_chat_id = _get(_get(message, "chat"), "id")
+    message_id = _get(message, "message_id")
+    if message_chat_id is None or message_id is None:
+        return
+    try:
+        await _maybe_await(
+            bot.edit_message_text(
+                chat_id=message_chat_id,
+                message_id=message_id,
+                text=_owner_panel.clip_text(view.text),
+                reply_markup=_panel_markup(view),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - e.g. "message is not modified" on Refresh
+        if "not modified" in str(exc).casefold():
+            return
+        logger.warning("%s: owner panel edit failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        if fallback is not None:
+            await _edit_panel_message(bot, query, fallback)
+
+
+async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
+    sender_id = _get(_get(query, "from_user"), "id")
+    parsed = _owner_panel.parse_callback(_get(query, "data"))
+    catalog = await asyncio.to_thread(_panel_catalog)
+    owner = (
+        await _verify_panel_owner(bot, str(sender_id), catalog, str(parsed.chat_id) if parsed else None)
+        if sender_id is not None
+        else _PanelOwner("unknown")
+    )
+    if owner.status != "owner":
+        await _answer_panel_callback(bot, query, _owner_panel.NOT_ALLOWED, alert=True)
+        logger.info("%s: owner panel action=denied", _PLUGIN_NAME)
+        return
+    if parsed is None:
+        await _answer_panel_callback(bot, query, "Unknown action")
+        logger.info("%s: owner panel action=malformed", _PLUGIN_NAME)
+        return
+    chat_id = str(parsed.chat_id)
+    state = await asyncio.to_thread(_panel_state, owner, str(sender_id), chat_id, catalog, parsed.sub)
+    entry = state.entry
+    enabled = _voice_module_enabled()
+    notice: str | None = None
+    view: _owner_panel.PanelView | None = None
+    fallback: _owner_panel.PanelView | None = None
+    if parsed.action in ("m", "r"):
+        # The toast depends on the (fast, local) store write, so answer after it.
+        if not enabled:
+            toast = _owner_panel.TRANSCRIPTION_DISABLED
+        else:
+            try:
+                entry, toast = await _apply_panel_mode(parsed, state)
+            except (_transcription_modes.ModeStoreError, _transcription_modes.ModesFileCorrupt, OSError) as exc:
+                # Like the chat command: a corrupt modes file is never overwritten from Telegram.
+                logger.warning("%s: could not save transcription mode (%s)", _PLUGIN_NAME, type(exc).__name__)
+                toast = notice = _history_support.TRANSCRIBE_SAVE_ERROR
+        await _answer_panel_callback(bot, query, toast)
+    else:
+        # Answer before rendering, so a slow section never outlives the callback's answer window.
+        section = _owner_panel.get_section(parsed.section) if parsed.action == "s" else None
+        if parsed.action == "s":
+            await _answer_panel_callback(bot, query, section.label if section else _owner_panel.SECTION_UNAVAILABLE)
+        else:
+            await _answer_panel_callback(bot, query, "Refreshed" if parsed.action == "p" else None)
+        if section is not None:
+            view = await _render_panel_section(section, state)
+            fallback = _owner_panel.unavailable_view(chat_id, state.ctx.chat_label)
+    if view is None:
+        view = _owner_panel.render_main(state.ctx, entry, _owner_panel.sections(), enabled, notice=notice)
+    action_name = f"s:{parsed.section}" if parsed.action == "s" else parsed.action
+    _log_panel(action_name, chat_id, entry.mode if entry is not None else None)
+    await _edit_panel_message(bot, query, view, fallback)
 
 
 def _setup_cli(subparser: Any) -> None:

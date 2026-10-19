@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add the owner panel: Telegram's "Manage Bot" button in a Business chat opens the owner's private chat with the bot, which answers `/start bizChat<id>` with that chat's transcription mode as buttons (`both`, `own`, `peer`, `off`, reset). Only a verified Business owner gets it, nothing is visible to the contact, and changes are stored like the chat command's (`updated_via: chat`, readable by 0.9.0). In-chat `/transcribe` stays as the fallback.
+- Add a small section registry (`owner_panel.register_section`) so stats and dossiers can show per-chat views in the panel.
+
 ## 0.9.0 - 2026-10-19
 
 - Add per-chat transcription modes (`both` default, `own`, `peer`, `off`) for voice messages, round videos, and attached audio, keyed by Business owner and chat ([#7](https://github.com/neoromantic/hermes-telegram-business/issues/7)).

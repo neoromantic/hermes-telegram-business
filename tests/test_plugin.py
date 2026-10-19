@@ -258,7 +258,9 @@ def test_manifest_uses_current_fields():
 def test_release_notes_and_readme_match_manifest_version():
     version = yaml.safe_load((ROOT / "plugin.yaml").read_text(encoding="utf-8"))["version"]
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    first_release = next(line for line in changelog.splitlines() if line.startswith("## "))
+    first_release = next(
+        line for line in changelog.splitlines() if line.startswith("## ") and line != "## Unreleased"
+    )
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert first_release.startswith(f"## {version} ")

@@ -33,7 +33,23 @@ Each Business chat has one mode that covers voice messages, round videos, and at
 | `peer` | Only the contact's messages. |
 | `off` | Nothing in this chat. |
 
-The main control is an in-chat command. As the connected Business account owner, send it in the chat itself:
+The main control is the owner panel. In any chat where the Business bot is connected, Telegram shows you, the account owner, a "Manage Bot" button. It opens your private chat with the bot, and the bot answers there with that chat's panel:
+
+```text
+Owner panel: Casey (@casey)
+Transcription: off
+[both] [own] [peer] [• off]
+[Reset to default]
+[Refresh]
+```
+
+Tap a mode to set it, or Reset to return to the default; the panel message updates in place. Only you see the panel: it lives in your private chat with the bot and the contact sees nothing. Only a verified owner gets the panel. Anyone else's `/start bizChat…` is treated as an ordinary message, and a panel button pressed by anyone else gets a short "Not allowed" alert.
+
+To confirm you are the owner, the bot checks the Business connections it knows: ones Telegram reported connecting since the gateway started (kept in memory only), ones where you sent `/transcribe` once, ones it already looked up the owner for, and, with history on, the connections in the history catalog. While the gateway knows no Business connection at all, Manage Bot answers with a hint to send `/transcribe` in that chat once (or, with transcription disabled, to turn on history capture). Once it knows one, the owner of a connection it does not know yet must send `/transcribe` in that chat once, which records the connection's owner, before Manage Bot opens the panel; until then their `/start` is handled as an ordinary message. Mode buttons work for the chat right away, even after a restart and before the contact writes again; modes are stored per owner, so your change never touches another owner's chat with the same contact. With `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` set, the panel says so and shows no mode buttons. Other features add their own panel sections.
+
+Panel taps, `/transcribe` commands, and claimed voice updates stop update propagation before Hermes' group-99 dispatch counter, so after a quiet period the core "Telegram ingress is healthy but deaf" warning can report a stale gap. The gap resets on reconnect and needs no action.
+
+The fallback is an in-chat command. As the connected Business account owner, send it in the chat itself:
 
 ```text
 /transcribe          show the current mode
@@ -54,7 +70,7 @@ hermes telegram-business mode reset 991
 
 A chat is a numeric `chat_id` or, with history enabled, a `@username` or name resolved through the history contact catalog. Ambiguous names need the numeric `chat_id` or `--connection`. Without `--owner USER_ID`, a chat on a Business connection whose owner the modes file records belongs to that owner. The connection comes from `--connection`, from the history entry of a chat named by `@username` or name, or, for a numeric `chat_id`, from history when exactly one connection lists that chat. Otherwise the CLI uses the only known owner, where an owner is known once the modes file stores a mode for them or records them as a connection's owner. It does so only when history lists at most one Business connection, or only connections recorded for that owner, since a connection with no recorded owner may belong to another Business account; in every other case pass `--owner`. History does not record owner ids, so on a fresh install the first `set` or `reset` needs `--owner USER_ID`, or one in-chat `/transcribe <mode>` or `/transcribe reset` first (a bare `/transcribe` only shows the mode and records nothing); `list` and `get` report the default. `set` warns about an `--owner` it has not seen before. If the modes file cannot be read or is corrupt, the CLI reports an error instead of the default; only `set` or `reset` with `--owner` backs a corrupt file up and starts a new one.
 
-Modes are stored per (owner, chat) in `$HERMES_HOME/data/telegram-business/transcription-modes.json` with `0600` permissions and atomic writes. Each entry holds only the mode, when and how (`chat` or `cli`) it was set, and a display label for the chat. The file also records which owner each Business connection belongs to: an in-chat `/transcribe <mode>` or `/transcribe reset` records it, and so does the gateway when it looks up the owner for media in a chat with a non-default mode. The gateway's own lookup never records a connection whose chats all use the default, and a recorded connection stays recorded after its chats return to the default. It never holds message text or transcripts. The gateway re-reads the file when it changes, so a CLI change applies to the next message without a restart.
+Modes are stored per (owner, chat) in `$HERMES_HOME/data/telegram-business/transcription-modes.json` with `0600` permissions and atomic writes. Each entry holds only the mode, when and how (`chat` or `cli`; a panel change is stored as `chat` so 0.9.0 can still read it) it was set, and a display label for the chat. The file also records which owner each Business connection belongs to: an in-chat `/transcribe <mode>` or `/transcribe reset` records it, so does a panel change, and so does the gateway when it looks up the owner for media in a chat with a non-default mode. The gateway's own lookup never records a connection whose chats all use the default, and a recorded connection stays recorded after its chats return to the default. Telegram's report that the bot was connected is never recorded, since any Business account can connect the bot. It never holds message text or transcripts. The gateway re-reads the file when it changes, so a CLI change applies to the next message without a restart.
 
 The mode is checked once, before any download, speech recognition, or cleanup. A skipped note is still consumed silently: nothing is posted and the ordinary Hermes path does not see it. Logs record the decision and its reason, never content. When something is uncertain the plugin errs toward transcribing:
 
