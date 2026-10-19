@@ -1935,8 +1935,12 @@ def _log_policy_decision(message: Any, decision: _transcription_modes.PolicyDeci
     )
 
 
+# How long the owner sees a `/transcribe` status before the bot deletes it.
+_COMMAND_STATUS_TTL_SECONDS = 5.0
+
+
 async def _confirm_transcribe_command(*, bot: Any, adapter: Any, message: Any, text: str) -> None:
-    """Edit the owner's command into a status line, or reply when the edit does not apply."""
+    """Edit the owner's command into a status line (or reply), then delete it after a short delay."""
     chat_id = _get(_get(message, "chat"), "id")
     message_id = _get(message, "message_id")
     business_connection_id = _business_connection_id(message)
@@ -1956,14 +1960,42 @@ async def _confirm_transcribe_command(*, bot: Any, adapter: Any, message: Any, t
             )
         except Exception as exc:  # noqa: BLE001 - every failed edit falls back to a reply
             outcome = _classify_caption_edit_exception(exc)
-    if outcome is CaptionEditAttemptOutcome.APPLIED:
+    to_delete = [message_id] if message_id is not None else []
+    if outcome is not CaptionEditAttemptOutcome.APPLIED:
+        # Unlike transcript captions, a duplicate short status is harmless, so any
+        # unapplied or uncertain edit falls back to a Business reply.
+        try:
+            reply = await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                business_connection_id=business_connection_id,
+                reply_to_message_id=message_id,
+                **_notification_kwargs(adapter),
+            )
+            reply_id = _get(reply, "message_id")
+            if isinstance(reply_id, int):
+                to_delete.append(reply_id)
+        except Exception as exc:  # noqa: BLE001 - confirmation is best effort
+            logger.warning("%s: transcribe command confirmation failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+    if business_connection_id and to_delete:
+        _schedule_module_work(lambda: _delete_command_messages(bot, str(business_connection_id), to_delete))
+
+
+async def _delete_command_messages(bot: Any, business_connection_id: str, message_ids: list[int]) -> None:
+    """Remove the command and its status so the contact does not keep seeing them."""
+    await asyncio.sleep(_COMMAND_STATUS_TTL_SECONDS)
+    delete = getattr(bot, "delete_business_messages", None)
+    if not callable(delete):
         return
-    # Unlike transcript captions, a duplicate short status is harmless, so any
-    # unapplied or uncertain edit falls back to a Business reply.
     try:
-        await _send_transcript_messages(bot=bot, adapter=adapter, message=message, texts=[text], collapsible=False)
-    except Exception as exc:  # noqa: BLE001 - confirmation is best effort
-        logger.warning("%s: transcribe command confirmation failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        await _maybe_await(delete(business_connection_id=business_connection_id, message_ids=message_ids))
+    except Exception as exc:  # noqa: BLE001 - cleanup is best effort
+        logger.warning(
+            "%s: could not delete the /transcribe command (%s); allow the bot to delete messages "
+            "in Telegram Business > Chatbots",
+            _PLUGIN_NAME,
+            type(exc).__name__,
+        )
 
 
 async def _handle_transcribe_command_update(update: Any, *, bot: Any, adapter: Any) -> bool:
