@@ -111,7 +111,6 @@ _CLEANUP_MIN_CHARS_ENV = "TELESEC_CLEANUP_MIN_CHARS"
 _CLEANUP_MIN_WORDS_ENV = "TELESEC_CLEANUP_MIN_WORDS"
 _TITLE_MIN_CHARS_ENV = "TELESEC_TITLE_MIN_CHARS"
 _TITLE_MIN_WORDS_ENV = "TELESEC_TITLE_MIN_WORDS"
-_ADAPTER_AUTH_BYPASS_ENV = "TELESEC_VOICE_BYPASS_AUTH"
 _AUDIO_FILE_MAX_DURATION_ENV = "TELESEC_AUDIO_FILE_MAX_DURATION_SECONDS"
 _AUDIO_FILE_MAX_BYTES_ENV = "TELESEC_AUDIO_FILE_MAX_BYTES"
 _AUDIO_FILE_PROBE_SECONDS_ENV = "TELESEC_AUDIO_FILE_PROBE_SECONDS"
@@ -463,9 +462,7 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
         except Exception as exc:
             logger.warning("%s: business history observation failed: %s", _PLUGIN_NAME, exc, exc_info=True)
         message = update.effective_message
-        if _is_business_voice_media(message) and (
-            _truthy_env(_ADAPTER_AUTH_BYPASS_ENV) or adapter._is_user_authorized_from_message(message)
-        ):
+        if _is_business_voice_media(message):
             event = SimpleNamespace(
                 source=SimpleNamespace(platform=adapter.platform),
                 raw_message=message,

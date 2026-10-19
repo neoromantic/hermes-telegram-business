@@ -68,15 +68,13 @@ async def telegram_app():
     {"audio": {"file_id": "v", "file_unique_id": "v", "duration": 3, "mime_type": "audio/mpeg"}},
     {"document": {"file_id": "v", "file_unique_id": "v", "file_name": "note.m4a"}},
 ])
-@pytest.mark.parametrize("authorized,bypass,claimed", [
-    (True, False, True), (False, False, False), (False, True, True),
-])
+@pytest.mark.parametrize("authorized", [True, False])
 @pytest.mark.parametrize("agent_enabled", [False, True])
 async def test_native_business_media_dispatch(
-    plugin, telegram_app, monkeypatch, media, authorized, bypass, claimed, agent_enabled,
+    plugin, telegram_app, monkeypatch, media, authorized, agent_enabled,
 ):
+    # Every contact's media is transcribed: the DM allowlist does not apply.
     app, _request = telegram_app
-    monkeypatch.setenv("TELESEC_VOICE_BYPASS_AUTH", str(int(bypass)))
     monkeypatch.setenv("TELESEC_AGENT_ENABLE", str(int(agent_enabled)))
     observe = AsyncMock(return_value=False)
     process = AsyncMock()
@@ -103,10 +101,10 @@ async def test_native_business_media_dispatch(
 
     assert observe.await_count == 2
     observe.assert_awaited_with(update, bot=app.bot)
-    assert process.await_count == int(claimed)
-    assert core.await_count == 2 * int(agent_enabled and not claimed)
-    if claimed:
-        assert process.call_args.kwargs["event"].raw_message is update.effective_message
+    assert process.await_count == 1
+    assert core.await_count == 0
+    assert process.call_args.kwargs["event"].raw_message is update.effective_message
+    adapter._is_user_authorized_from_message.assert_not_called()
 
 
 @pytest.mark.asyncio
