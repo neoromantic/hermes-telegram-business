@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.1 - 2026-10-20
+
+- Fix Hermes disabling Telesec 0.12.0 on its next dependency refresh. Hermes resolves the plugin's development dependency group together with its own pinned packages, and 0.12.0 asked for newer versions than Hermes pins (for example `ruamel.yaml` on Hermes 0.21.6). The group now names packages only; `uv.lock` keeps the exact versions for development. If Hermes already disabled Telesec, update it and run `hermes plugins enable telesec`.
+
 ## 0.12.0 - 2026-10-20
 
 - Add Settings: one screen in the owner's private chat with the bot that turns transcription, history, and dossiers on or off for all chats. Open it with `/telesec` or the new ⚙️ Settings button on every chat's panel. Turning dossiers on asks first and names the model; while history is off, dossiers are paused and Settings says so. Only an owner of every Business connection the bot knows about can change the switches; another verified owner sees them read-only. Nothing is posted into a Business chat, and a `/telesec` typed in a Business chat is never answered there.

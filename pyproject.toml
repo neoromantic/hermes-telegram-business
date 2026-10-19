@@ -1,6 +1,6 @@
 [project]
 name = "telesec"
-version = "0.12.0"
+version = "0.12.1"
 description = "Telesec — Telegram Business secretary for Hermes."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,14 +15,17 @@ Changelog = "https://github.com/neoromantic/telesec/blob/main/CHANGELOG.md"
 
 # Telesec runs inside a Hermes gateway and has no runtime dependencies of its own.
 # The dev group mirrors what Hermes provides (PTB, YAML) plus the test and lint tools.
+# Hermes resolves this group together with its own pins when it installs the plugin,
+# and disables the plugin if they conflict, so it names packages only: uv.lock pins
+# the versions for development and CI.
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
-    "python-telegram-bot==22.8",
-    "pyyaml>=6.0.3",
-    "ruamel.yaml>=0.19.1",
-    "ruff==0.17.1",
+    "pytest",
+    "pytest-asyncio",
+    "python-telegram-bot",
+    "pyyaml",
+    "ruamel.yaml",
+    "ruff",
 ]
 
 [tool.uv]
