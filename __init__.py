@@ -2137,8 +2137,9 @@ _TRANSIENT_LOOKUP_ERRORS = frozenset({"TimedOut", "NetworkError", "RetryAfter"})
 
 # Business connection id -> (monotonic time, transient) of its last failed owner lookup.
 _PANEL_LOOKUP_FAILED: dict[str, tuple[float, bool]] = {}
-# Telegram user id -> (monotonic time, status) of a recent "not_owner"/"unknown" check.
-_PANEL_NEGATIVE: dict[str, tuple[float, str]] = {}
+# Telegram user id -> (monotonic time, status, known connections key) of a recent
+# "not_owner"/"unknown" check.
+_PANEL_NEGATIVE: dict[str, tuple[float, str, int]] = {}
 # (business connection id, chat id) pairs seen in Business updates this process.
 _PANEL_SEEN_CHATS: dict[tuple[str, str], None] = {}
 # Business connection id -> owner id from Telegram's `business_connection`
@@ -2233,8 +2234,8 @@ def _transient_lookup_failure(reason: str) -> bool:
     return kind == "lookup_failed" and error in _TRANSIENT_LOOKUP_ERRORS
 
 
-def _remember_negative(sender_id: str, owner: _PanelOwner) -> _PanelOwner:
-    _bounded_put(_PANEL_NEGATIVE, sender_id, (time.monotonic(), owner.status))
+def _remember_negative(sender_id: str, owner: _PanelOwner, known_key: int) -> _PanelOwner:
+    _bounded_put(_PANEL_NEGATIVE, sender_id, (time.monotonic(), owner.status, known_key))
     return owner
 
 
@@ -2244,9 +2245,9 @@ async def _verify_panel_owner(
     """Is ``sender_id`` the owner of a Business connection the plugin knows?
 
     Known connections come from the modes file's owner bindings, the owner
-    lookups cached this process, the `business_connection` updates seen this
-    process (in memory only), and the history catalog, rebuilt on every call
-    so a new connection is found.
+    lookups cached this process, the `business_connection` updates and the
+    Business messages seen this process (in memory only), and the history
+    catalog, rebuilt on every call so a new connection is found.
     A live lookup wins; a binding backs up only a transient lookup failure.
     "unknown" means the plugin knows no connection at all; once it knows one,
     anyone it cannot verify is "not_owner" (fail closed).
@@ -2254,21 +2255,24 @@ async def _verify_panel_owner(
     now = time.monotonic()
     bindings = dict(_transcription_modes.default_store().snapshot().connections)
     owner_cache = {**_PANEL_KNOWN_CONNECTIONS, **_history_support._OWNER_CACHE}
-    negative = _PANEL_NEGATIVE.get(sender_id)
-    if negative is not None:
-        fresh = now - negative[0] < _PANEL_NEGATIVE_TTL
-        if fresh and sender_id not in bindings.values() and sender_id not in owner_cache.values():
-            return _PanelOwner(negative[1], cached=True)
-        _PANEL_NEGATIVE.pop(sender_id, None)
     chat_connections = {
         str(entry["business_connection_id"])
         for entry in catalog
         if entry.get("business_connection_id") and chat_id is not None and str(entry.get("chat_id")) == chat_id
     }
-    known = set(bindings) | set(owner_cache)
+    chat_connections |= {connection for connection, chat in _PANEL_SEEN_CHATS if chat == chat_id}
+    known = set(bindings) | set(owner_cache) | {connection for connection, _ in _PANEL_SEEN_CHATS}
     known |= {str(entry["business_connection_id"]) for entry in catalog if entry.get("business_connection_id")}
+    known_key = hash(frozenset(known))
+    negative = _PANEL_NEGATIVE.get(sender_id)
+    if negative is not None:
+        # A cached "no" holds only for the same known connections: a newly seen one may be the sender's.
+        fresh = now - negative[0] < _PANEL_NEGATIVE_TTL and negative[2] == known_key
+        if fresh and sender_id not in bindings.values() and sender_id not in owner_cache.values():
+            return _PanelOwner(negative[1], cached=True)
+        _PANEL_NEGATIVE.pop(sender_id, None)
     if not known:
-        return _remember_negative(sender_id, _PanelOwner("unknown"))
+        return _remember_negative(sender_id, _PanelOwner("unknown"), known_key)
     resolved: dict[str, str | None] = {}
     pending: list[str] = []
     for connection in sorted(known):
@@ -2310,11 +2314,13 @@ async def _verify_panel_owner(
     if verified:
         _PANEL_NEGATIVE.pop(sender_id, None)
         return _PanelOwner("owner", verified)
-    return _remember_negative(sender_id, _PanelOwner("not_owner"))
+    return _remember_negative(sender_id, _PanelOwner("not_owner"), known_key)
 
 
 def _panel_state(owner: _PanelOwner, owner_id: str, chat_id: str, catalog: list[dict[str, Any]], arg: str | None):
-    """Context for one chat: prefer the owner's connection that history lists for it. Blocking (store read).
+    """Context for one chat: the owner's connection that history lists for it, else one it was seen on, else None.
+
+    Blocking (store read).
 
     A verified owner may set a mode for any chat id: "Manage Bot" names a chat
     on their own connection, entries are stored per owner (so they never touch
@@ -2329,9 +2335,10 @@ def _panel_state(owner: _PanelOwner, owner_id: str, chat_id: str, catalog: list[
             connection = item_connection
             profile = item.get("current_profile")
             break
-    seen = next((c for c in owner.connections if (c, chat_id) in _PANEL_SEEN_CHATS), None)
     if connection is None:
-        connection = seen or (owner.connections[0] if owner.connections else None)
+        # Only a connection this chat was seen on; never guess, so a section
+        # cannot read or change another connection's data for this chat.
+        connection = next((c for c in owner.connections if (c, chat_id) in _PANEL_SEEN_CHATS), None)
     entry = _transcription_modes.default_store().get(owner_id, chat_id)
     # Same snapshot rule as the chat command: build_chat_label over the contact's
     # profile (control characters stripped, clipped), never message content;
@@ -2368,8 +2375,6 @@ def _unknown_connection_text() -> str:
     """The hint for an unverifiable `/start`; blocking (reads the modes file state)."""
     if _transcription_modes.default_store().file_degraded():
         return _owner_panel.UNKNOWN_CONNECTION_MODES_UNREADABLE
-    if not _voice_module_enabled():
-        return _owner_panel.UNKNOWN_CONNECTION_NO_TRANSCRIBE
     return _owner_panel.UNKNOWN_CONNECTION
 
 

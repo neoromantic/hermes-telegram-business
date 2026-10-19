@@ -287,14 +287,35 @@ async def test_unknown_connection_gets_one_hint_and_is_claimed(plugin, modes):
 
 
 @pytest.mark.asyncio
-async def test_unknown_connection_hint_without_transcription_does_not_suggest_transcribe(plugin, modes, monkeypatch):
+async def test_unknown_connection_hint_works_without_transcription(plugin, modes, monkeypatch):
     monkeypatch.setenv(DISABLE_ENV, "1")
     bot = PanelBot(business_owner_id=OWNER)
 
     assert await dispatch(plugin, start_update(), bot) is True
 
-    assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.UNKNOWN_CONNECTION_NO_TRANSCRIBE}]
-    assert "history capture" in bot.calls[0]["text"]
+    assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.UNKNOWN_CONNECTION}]
+    assert "/transcribe" not in bot.calls[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_any_business_message_in_the_chat_verifies_the_owner(plugin, modes, monkeypatch):
+    # No binding, no history, no `business_connection` update: only a message in the chat.
+    monkeypatch.setenv(DISABLE_ENV, "1")
+    bot = PanelBot(business_owner_id=OWNER)
+    business = ttm.registered_business_handler(plugin, ttm.command_adapter(bot))
+
+    assert await dispatch(plugin, start_update(), bot) is True
+    assert bot.calls[-1]["text"] == plugin._owner_panel.UNKNOWN_CONNECTION
+
+    with pytest.raises(ApplicationHandlerStop):  # Business text is consumed, never an agent turn
+        await business(ttm.make_text_update("hello", from_user_id=PEER), SimpleNamespace(bot=bot))
+    # The cached "unknown" does not outlive the new connection: the next tap opens the panel.
+    assert await dispatch(plugin, start_update(), bot) is True
+    assert bot.calls[-1]["text"].startswith("Owner panel: chat 991\n")
+    assert bot.business_connection_calls == [BCID]
+    # Anyone else is still not the owner, and their `/start` stays ordinary.
+    assert await dispatch(plugin, start_update(from_user_id=PEER), bot) is False
+    assert not ttm.modes_file(plugin).exists()
 
 
 @pytest.mark.asyncio
@@ -426,7 +447,7 @@ async def test_business_connection_update_makes_a_new_owner_known_and_disable_re
     plugin._history_support._OWNER_CACHE.pop("B")  # the in-memory map alone verifies
     assert await dispatch(plugin, start_update(from_user_id=new_owner), bot) is True
     assert bot.calls[-1]["text"].startswith("Owner panel: chat 991\n")
-    assert bot.business_connection_calls == []
+    assert "B" not in bot.business_connection_calls  # only A, where this chat was seen, is checked live
 
     await handler.callback(connection_update(owner=new_owner, connection="B", enabled=False), SimpleNamespace(bot=bot))
     assert "B" not in plugin._history_support._OWNER_CACHE
@@ -629,7 +650,7 @@ async def test_cross_owner_chat_is_never_scoped_to_another_owners_connection(plu
     assert await dispatch(plugin, start_update(), bot) is True
     assert "victim" not in bot.calls[-1]["text"]
     assert await dispatch(plugin, callback_update("tb:s:991:probe"), bot) is True
-    assert seen[0].business_connection_id == "A"
+    assert seen[0].business_connection_id is None  # never guessed from the owner's other connections
     assert "victim" not in (seen[0].chat_label or "")
     owner = await plugin._verify_panel_owner(bot, str(OWNER), catalog, str(CHAT))
     assert owner.connections == ("A",)
@@ -781,9 +802,7 @@ async def test_corrupt_modes_file_after_restart_explains_the_cause(plugin, modes
     assert bot.answers == [{"callback_query_id": "query-1", "text": "Not allowed", "show_alert": True}]
     assert path.read_text(encoding="utf-8") == "{not json"
 
-    # Recovery: a live owner lookup (as the in-chat /transcribe does) verifies again.
-    plugin._PANEL_NEGATIVE.clear()
-    plugin._history_support._OWNER_CACHE[BCID] = str(OWNER)
+    # Recovery: any Business message in the chat lets a live owner lookup verify again.
     plugin._note_business_chat(BCID, CHAT)
     assert await dispatch(plugin, start_update(), bot) is True
     assert bot.calls[-1]["text"].startswith("Owner panel: chat 991\n")
