@@ -370,8 +370,8 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 Tests cover the history CLI and disk recovery, transcript behavior, and real PTB handler/HTTP contracts with simulated Telegram responses. They need no Telegram token, provider credential, network call, or running gateway.
 
 ```bash
-python -m pip install pytest pytest-asyncio pyyaml python-telegram-bot==22.8
-python -m pytest -q
+uv sync
+uv run pytest -q
 ```
 
 Live Telegram client rendering and provider cleanup quality require a separate configured smoke test. The [verification guide](docs/VERIFY.md) records the boundary.

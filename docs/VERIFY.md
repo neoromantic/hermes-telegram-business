@@ -3,7 +3,9 @@
 ## Automated checks
 
 ```bash
-uv run --no-project --python 3.14 --with pytest --with pytest-asyncio --with pyyaml --with python-telegram-bot==22.8 python -m pytest -q
+uv sync
+uv run pytest -q
+uv run ruff check .
 ```
 
 CI runs the suite on Python 3.11–3.14. Telegram, STT, and LLM network calls are simulated. Real PTB objects and request serialization are exercised separately from the lightweight unit fixtures.

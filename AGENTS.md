@@ -24,5 +24,5 @@ Telesec — Telegram Business secretary for Hermes: voice transcription, corresp
 
 ## Code
 
-- Python 3.11+, tests with `python -m pytest -q` (see CI). Keep the handler group and claim behaviour described in the README.
+- Python 3.11+ with uv: `uv sync`, then `uv run pytest -q` and `uv run ruff check .` (CI runs both on 3.11–3.14). Keep the handler group and claim behaviour described in the README.
 - GitHub issues, PRs, and docs are in simple English.
