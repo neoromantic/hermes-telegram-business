@@ -31,15 +31,15 @@ from . import history_support as _history
 
 logger = logging.getLogger(__name__)
 
-MODES = ("both", "own", "peer", "off")
-DEFAULT_MODE = "both"
+MODES = _history.TRANSCRIBE_MODES
+DEFAULT_MODE = _history.TRANSCRIBE_DEFAULT_MODE
 UPDATED_VIA = ("chat", "cli")
 SCHEMA_VERSION = 1
 MODES_FILENAME = "transcription-modes.json"
 MAX_LABEL_CHARS = 128
 MAX_USAGE_ARGS_CHARS = 32
 MODE_USAGE = "Usage: hermes telegram-business mode <list|get|set|reset>"
-COMMAND_USAGE = "Usage: /transcribe [both|own|peer|off|reset]"
+COMMAND_USAGE = _history.TRANSCRIBE_USAGE
 
 _OWNER_KEY_RE = re.compile(r"^\d+$")
 _CHAT_KEY_RE = re.compile(r"^-?\d+$")
@@ -89,6 +89,10 @@ class Snapshot(dict[str, dict[str, ModeEntry]]):
     def __init__(self, *args: Any, connections: dict[str, str] | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.connections: dict[str, str] = dict(connections or {})
+
+    def owners(self) -> list[str]:
+        """Every known owner: one with stored chats or one bound to a connection."""
+        return sorted({*self, *self.connections.values()}, key=int)
 
 
 _Signature = tuple[int, int, int]
@@ -163,6 +167,13 @@ def _decode_file(data: bytes) -> Any:
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _CorruptModesFile(type(exc).__name__) from exc
+
+
+def _parse_file(data: bytes) -> tuple[Snapshot, int]:
+    """Parse file bytes; an empty or whitespace-only file holds no modes, like a missing one."""
+    if not data.strip():
+        return Snapshot(), 0
+    return _parse_payload(_decode_file(data))
 
 
 def _entry_payload(entry: ModeEntry) -> dict[str, Any]:
@@ -269,6 +280,10 @@ def _backup_corrupt_file(path: Path, now: datetime | None) -> Path:
     return backup
 
 
+def _fallback_note(snapshot: Snapshot) -> str:
+    return "keeping the last valid modes" if snapshot or snapshot.connections else "every chat uses both"
+
+
 class ModeStore:
     """Mode file reader with an mtime/inode-keyed cache and locked atomic writes."""
 
@@ -277,6 +292,10 @@ class ModeStore:
         self._lock = threading.Lock()
         self._cache: dict[str, tuple[_Signature | None, Snapshot]] = {}
         self._stat_warned: set[tuple[str, str]] = set()
+        # Paths whose file on disk is corrupt while the last valid modes stand in.
+        self._corrupt: set[str] = set()
+        # Paths whose last stat or read failed with an I/O error (never cached).
+        self._unreadable: set[str] = set()
 
     @property
     def path(self) -> Path:
@@ -286,6 +305,8 @@ class ModeStore:
         with self._lock:
             self._cache.clear()
             self._stat_warned.clear()
+            self._corrupt.clear()
+            self._unreadable.clear()
 
     def snapshot(self) -> Snapshot:
         path = self._path_fn()
@@ -295,22 +316,56 @@ class ModeStore:
         except FileNotFoundError:
             signature = None
         except OSError as exc:
-            self._warn_unreadable_once(path, exc)
-            return Snapshot()
+            self._mark_unreadable(path, exc)
+            return self._last_valid(key)
         with self._lock:
             cached = self._cache.get(key)
             if cached is not None and cached[0] == signature:
+                self._unreadable.discard(key)
                 return cached[1]
         try:
             snapshot = self._load(path) if signature is not None else Snapshot()
+        except _CorruptModesFile as exc:
+            # A damaged file keeps the last valid modes (none on a cold start).
+            # Caching that under the damaged signature warns once per change.
+            snapshot = self._last_valid(key)
+            logger.warning(
+                "transcription modes file %s unreadable (%s); %s",
+                path,
+                exc,
+                _fallback_note(snapshot),
+            )
+            with self._lock:
+                self._corrupt.add(key)
         except OSError as exc:
-            # An I/O error (EMFILE, EACCES, EIO) is transient for an unchanged
-            # signature, so it is never cached: the next message reads again.
-            self._warn_unreadable_once(path, exc)
-            return Snapshot()
+            # An I/O error (EMFILE, EACCES, EIO) is transient, so it is never
+            # cached: the last valid modes apply and the next message reads again.
+            self._mark_unreadable(path, exc)
+            return self._last_valid(key)
+        else:
+            with self._lock:
+                self._corrupt.discard(key)
         with self._lock:
+            self._unreadable.discard(key)
             self._cache[key] = (signature, snapshot)
         return snapshot
+
+    def file_degraded(self) -> bool:
+        """True while the file on disk is corrupt or unreadable and the last valid modes stand in for it."""
+        self.snapshot()
+        key = str(self._path_fn())
+        with self._lock:
+            return key in self._corrupt or key in self._unreadable
+
+    def _mark_unreadable(self, path: Path, exc: OSError) -> None:
+        with self._lock:
+            self._unreadable.add(str(path))
+        self._warn_unreadable_once(path, exc)
+
+    def _last_valid(self, key: str) -> Snapshot:
+        with self._lock:
+            cached = self._cache.get(key)
+        return cached[1] if cached is not None else Snapshot()
 
     def read_strict(self) -> Snapshot:
         """CLI read: an I/O error or a corrupt file raises instead of reading as empty.
@@ -324,7 +379,7 @@ class ModeStore:
         except FileNotFoundError:
             return Snapshot()
         try:
-            return _parse_payload(_decode_file(data))[0]
+            return _parse_file(data)[0]
         except _CorruptModesFile as exc:
             raise ModesFileCorrupt(
                 f"{path} is corrupt ({exc}); `mode set` or `mode reset` with --owner backs it up and starts empty"
@@ -337,23 +392,17 @@ class ModeStore:
             self._stat_warned.add(warned)
         if first:
             logger.warning(
-                "transcription modes file %s unreadable (%s); every chat uses both",
+                "transcription modes file %s unreadable (%s); %s",
                 path,
                 type(exc).__name__,
+                _fallback_note(self._last_valid(str(path))),
             )
 
     def _load(self, path: Path) -> Snapshot:
-        """Parse the file; a corrupt file is cacheable {}, other OSErrors propagate."""
+        """Parse the file; _CorruptModesFile and OSErrors other than a missing file propagate."""
         try:
-            snapshot, skipped = _parse_payload(_decode_file(path.read_bytes()))
+            snapshot, skipped = _parse_file(path.read_bytes())
         except FileNotFoundError:
-            return Snapshot()
-        except _CorruptModesFile as exc:
-            logger.warning(
-                "transcription modes file %s unreadable (%s); every chat uses both",
-                path,
-                exc,
-            )
             return Snapshot()
         if skipped:
             logger.warning("transcription modes file %s: skipped %d invalid entries", path, skipped)
@@ -376,7 +425,7 @@ class ModeStore:
         return False
 
     def known_owners(self) -> list[str]:
-        return sorted(self.snapshot(), key=int)
+        return self.snapshot().owners()
 
     def connection_owner(self, business_connection_id: Any) -> str | None:
         """The owner last recorded for this Business connection, else None."""
@@ -405,6 +454,7 @@ class ModeStore:
         label: str | None = None,
         connection: Any = None,
         now: datetime | None = None,
+        repair_corrupt: bool = False,
     ) -> ModeWriteResult:
         if mode not in MODES:
             raise ModeStoreError(f"mode must be one of {', '.join(MODES)}, got {mode!r}")
@@ -428,10 +478,16 @@ class ModeStore:
             chats[chat_key] = entry
             return entry, True
 
-        return self._write(mutate, now=now)
+        return self._write(mutate, now=now, repair_corrupt=repair_corrupt)
 
     def reset(
-        self, owner: Any, chat: Any, *, connection: Any = None, now: datetime | None = None
+        self,
+        owner: Any,
+        chat: Any,
+        *,
+        connection: Any = None,
+        now: datetime | None = None,
+        repair_corrupt: bool = False,
     ) -> ModeWriteResult:
         owner_key = _validate_owner(owner)
         chat_key = _validate_chat(chat)
@@ -451,19 +507,21 @@ class ModeStore:
                 del snapshot[owner_key]
             return None, changed
 
-        return self._write(mutate, now=now)
+        return self._write(mutate, now=now, repair_corrupt=repair_corrupt)
 
     def _write(
         self,
         mutate: Callable[[Snapshot], tuple[ModeEntry | None, bool]],
         *,
         now: datetime | None,
+        repair_corrupt: bool = False,
     ) -> ModeWriteResult:
+        """Locked read-modify-write; a corrupt file is replaced only when ``repair_corrupt``."""
         path = self._path_fn()
         with _writer_lock(path):
             # Re-read inside the lock, ignoring the cache, so concurrent writers
             # in other processes never lose each other's updates.
-            snapshot, backup_path = self._read_for_write(path, now=now)
+            snapshot, backup_path = self._read_for_write(path, now=now, repair_corrupt=repair_corrupt)
             entry, changed = mutate(snapshot)
             _write_private_json_atomic(path, _snapshot_payload(snapshot))
             try:
@@ -471,20 +529,27 @@ class ModeStore:
             except OSError:
                 signature = None
             with self._lock:
+                self._corrupt.discard(str(path))
+                self._unreadable.discard(str(path))
                 if signature is None:
                     self._cache.pop(str(path), None)
                 else:
                     self._cache[str(path)] = (signature, snapshot)
         return ModeWriteResult(entry=entry, changed=changed, backup_path=backup_path)
 
-    def _read_for_write(self, path: Path, *, now: datetime | None) -> tuple[Snapshot, Path | None]:
+    def _read_for_write(
+        self, path: Path, *, now: datetime | None, repair_corrupt: bool
+    ) -> tuple[Snapshot, Path | None]:
         try:
             data = path.read_bytes()
         except FileNotFoundError:
             return Snapshot(), None
         try:
-            snapshot, skipped = _parse_payload(_decode_file(data))
+            snapshot, skipped = _parse_file(data)
         except _CorruptModesFile as exc:
+            if not repair_corrupt:
+                # Only an explicit CLI write may discard the damaged modes.
+                raise ModesFileCorrupt(f"{path} is corrupt ({exc})") from exc
             backup = _backup_corrupt_file(path, now)
             logger.warning(
                 "transcription modes file %s was corrupt (%s); backed up to %s and started empty",
@@ -567,7 +632,7 @@ def parse_command(text: Any) -> TranscribeCommand | None:
 
 def status_text(command: TranscribeCommand, *, entry: ModeEntry | None, error: bool = False) -> str:
     if error:
-        return f"{command.display} → Error: could not save transcription mode"
+        return f"{command.display} → {_history.TRANSCRIBE_SAVE_ERROR}"
     if command.action == "show":
         current = f"{entry.mode}" if entry is not None else f"{DEFAULT_MODE} (default)"
         return f"{command.display} → Transcription: {current}"
@@ -638,16 +703,6 @@ def add_mode_parser(subs: Any) -> None:
     reset_parser.set_defaults(_mode_action="reset")
 
 
-def _history_connection_count() -> int:
-    """Distinct Business connections in the history catalog (0 when history is off)."""
-    try:
-        if not _history.history_config_from_env().active:
-            return 0
-        return len({str(entry.get("business_connection_id")) for entry in _history._catalog_entries_for_cli()})
-    except Exception:  # noqa: BLE001 - the catalog only tightens owner inference
-        return 0
-
-
 def _resolve_owner(owners: list[str], owner_arg: str | None, *, action: str) -> str | None:
     if owner_arg is not None:
         return _validate_owner(owner_arg)
@@ -655,24 +710,83 @@ def _resolve_owner(owners: list[str], owner_arg: str | None, *, action: str) -> 
         return owners[0] if len(owners) == 1 else None
     if not owners:
         if action in {"set", "reset"}:
-            # Neither the modes file nor the history catalog records an owner
-            # id, so the first write needs one in-chat /transcribe or --owner.
-            raise ValueError("no Business owner known yet; send /transcribe in a Business chat once or pass --owner USER_ID")
+            # The history catalog records no owner id, so the first write needs
+            # one in-chat /transcribe <mode> or /transcribe reset, or --owner.
+            raise ValueError(
+                "no Business owner known yet; send /transcribe <mode> or /transcribe reset "
+                "in a Business chat once, or pass --owner USER_ID"
+            )
         return None
     if len(owners) > 1:
         raise ValueError(f"multiple Business owners known ({', '.join(owners)}); pass --owner")
-    # Every Business connection in history is another owner, possibly one the
-    # modes file has not seen yet, so a single stored owner is not enough.
-    connections = _history_connection_count()
-    if connections > 1:
-        raise ValueError(f"{connections} Business connections found in history; pass --owner")
     return owners[0]
 
 
-def _resolve_chat_selector(selector: str, connection: str | None) -> tuple[str, str | None]:
+def _history_entries() -> list[dict[str, Any]]:
+    """History catalog entries (none when history is off or the catalog cannot be read)."""
+    try:
+        if not _history.history_config_from_env().active:
+            return []
+        return _history._catalog_entries_for_cli()
+    except Exception:  # noqa: BLE001 - the catalog only refines owner inference
+        return []
+
+
+def _history_connections() -> set[str]:
+    """Distinct Business connections in the history catalog (none when history is off)."""
+    return {
+        str(entry["business_connection_id"]) for entry in _history_entries() if entry.get("business_connection_id")
+    }
+
+
+def _history_chat_connection(chat: str) -> str | None:
+    """The Business connection history lists for a numeric chat_id, when exactly one does."""
+    connections = {
+        str(entry["business_connection_id"])
+        for entry in _history_entries()
+        if entry.get("business_connection_id") and str(entry.get("chat_id")) == chat
+    }
+    return connections.pop() if len(connections) == 1 else None
+
+
+def _resolve_chat_owner(
+    snapshot: Snapshot, owner_arg: str | None, connection: str | None, *, action: str
+) -> str | None:
+    """Owner for one chat: --owner, else the chat's recorded connection owner, else the one known owner.
+
+    A single known owner is only inferred when every Business connection in
+    history (plus ``connection``) is recorded for that owner, or there is just
+    one connection: a connection with no recorded owner may be another owner's.
+    """
+    if owner_arg is not None:
+        return _validate_owner(owner_arg)
+    if connection is not None:
+        bound = snapshot.connections.get(connection)
+        if bound is not None:
+            return bound
+    owner = _resolve_owner(snapshot.owners(), None, action=action)
+    if owner is None:
+        return None
+    connections = _history_connections() | ({connection} if connection is not None else set())
+    if len(connections) > 1 and any(snapshot.connections.get(item) != owner for item in connections):
+        if connection is not None:
+            raise ValueError(f"no owner recorded for Business connection {connection}; pass --owner")
+        raise ValueError(
+            f"{len(connections)} Business connections found in history, "
+            f"not all recorded for owner {owner}; pass --owner"
+        )
+    return owner
+
+
+def _resolve_chat_selector(selector: str, connection: str | None) -> tuple[str, str | None, str | None]:
+    """(chat_id, label, Business connection); the connection comes from --connection or history.
+
+    A numeric chat_id takes its connection from history only when exactly one
+    Business connection lists that chat.
+    """
     text = str(selector).strip()
     if _CHAT_KEY_RE.match(text):
-        return text, None
+        return text, None, connection if connection is not None else _history_chat_connection(text)
     if not _history.history_config_from_env().active:
         raise ValueError(
             f"chat selector {text!r} is not a numeric chat_id; "
@@ -684,7 +798,12 @@ def _resolve_chat_selector(selector: str, connection: str | None) -> tuple[str, 
         if "is ambiguous" in str(exc):
             raise ValueError(f"{exc} (pass the numeric chat_id or --connection)") from exc
         raise
-    return str(entry["chat_id"]), _history._catalog_entry_display_name(entry)
+    entry_connection = entry.get("business_connection_id")
+    return (
+        str(entry["chat_id"]),
+        _history._catalog_entry_display_name(entry),
+        str(entry_connection) if entry_connection else connection,
+    )
 
 
 def _render_label(label: str | None) -> str:
@@ -712,9 +831,9 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
             if action not in {"set", "reset"} or owner_arg is None:
                 raise
             snapshot = Snapshot()
-        known = sorted(snapshot, key=int)
-        owner = _resolve_owner(known, owner_arg, action=action)
+        known = snapshot.owners()
         if action == "list":
+            owner = _resolve_owner(known, owner_arg, action=action)
             owners = [owner] if owner is not None else known
             rows = []
             for owner_key in owners:
@@ -729,7 +848,8 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
                 print(row)
             return 0
 
-        chat, label = _resolve_chat_selector(args.chat, getattr(args, "connection", None))
+        chat, label, connection = _resolve_chat_selector(args.chat, getattr(args, "connection", None))
+        owner = _resolve_chat_owner(snapshot, owner_arg, connection, action=action)
         if action == "get":
             entry = snapshot.get(owner, {}).get(chat) if owner is not None else None
             if entry is None:
@@ -740,12 +860,14 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
         if action == "set":
             if known and owner not in known:
                 print(f"warning: owner {owner} is not a known Business owner (known: {', '.join(known)})")
-            result = store.set_mode(owner, chat, args.mode, via="cli", label=label)
+            result = store.set_mode(
+                owner, chat, args.mode, via="cli", label=label, repair_corrupt=owner_arg is not None
+            )
             _print_backup_warning(result)
             print(f"chat={chat} mode={args.mode}")
             return 0
         if action == "reset":
-            result = store.reset(owner, chat)
+            result = store.reset(owner, chat, repair_corrupt=owner_arg is not None)
             _print_backup_warning(result)
             print(f"chat={chat} mode={DEFAULT_MODE} (default)")
             return 0

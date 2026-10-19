@@ -10,6 +10,8 @@ import json
 import logging
 import os
 import stat
+import subprocess
+import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -518,6 +520,55 @@ async def test_shared_direction_helper_covers_every_reason(plugin, modes):
 
 
 @pytest.mark.asyncio
+async def test_direction_helper_falls_back_to_the_stored_binding(plugin, modes):
+    resolve = plugin._history_support.resolve_business_direction
+    failing = FakeBot()
+    failing.business_connection_error = RuntimeError("lookup down")
+    stored = {BCID: "1000"}.get
+
+    own = await resolve(_direction_message(from_user_id=OWNER), bot=failing, stored_owner=stored)
+    assert (own.direction, own.owner_user_id, own.reason) == ("own", "1000", "stored_owner_match")
+    peer = await resolve(_direction_message(from_user_id=PEER), bot=failing, stored_owner=stored)
+    assert (peer.direction, peer.owner_user_id, peer.reason) == ("peer", "1000", "stored_owner_mismatch")
+    unbound = await resolve(_direction_message(bcid="other"), bot=failing, stored_owner=stored)
+    assert (unbound.direction, unbound.reason) == ("unknown", "lookup_failed:RuntimeError")
+    via_bot = await resolve(
+        _direction_message(from_user_id=PEER, sender_business_bot=True), bot=failing, stored_owner=stored
+    )
+    assert (via_bot.direction, via_bot.owner_user_id, via_bot.reason) == ("own", None, "sender_business_bot")
+
+    # A live lookup wins over a stale binding.
+    live = await resolve(_direction_message(from_user_id=OWNER), bot=FakeBot(business_owner_id=OWNER), stored_owner={BCID: "3000"}.get)
+    assert (live.direction, live.owner_user_id, live.reason) == ("own", "1000", "owner_match")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "sender", "transcribed"),
+    [("own", PEER, False), ("own", OWNER, True), ("peer", OWNER, False), ("peer", PEER, True)],
+)
+async def test_stored_binding_gives_direction_when_the_lookup_fails(plugin, modes, caplog, mode, sender, transcribed):
+    caplog.set_level(logging.INFO)
+    seed(plugin, OWNER, CHAT, mode)
+    modes.default_store().bind_connection(BCID, OWNER)
+    bot = FakeBot(business_owner_id=OWNER)
+    bot.business_connection_error = RuntimeError("lookup down")
+    message = make_message(from_user_id=sender)
+    event = make_event(message)
+
+    await plugin._process_business_voice_event(
+        event=event,
+        gateway=gateway_for(event, bot),
+        transcribe_fn=lambda _path: {"success": True, "transcript": LONG_TRANSCRIPT},
+    )
+
+    assert message.voice.get_file_calls == int(transcribed)
+    direction = "own" if sender == OWNER else "peer"
+    assert f"direction={direction} decision={'transcribe' if transcribed else 'skip'}" in caplog.text
+    assert "direction_unknown" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_direction_adapters_keep_their_contracts(plugin, modes):
     history = plugin._history_support
     bot = FakeBot(business_owner_id=OWNER)
@@ -823,6 +874,28 @@ async def test_unverifiable_owner_command_is_ordinary_unknown_text(history_enabl
     assert [(record["direction"], record["text"]) for record in records] == [("unknown", "/transcribe off")]
     assert not modes_file(plugin).exists()
     assert bot.text_edit_calls == []
+
+
+@pytest.mark.asyncio
+async def test_owner_command_uses_the_stored_binding_when_the_lookup_fails(plugin, modes):
+    store = modes.default_store()
+    store.bind_connection(BCID, OWNER)
+    bot = CommandBot(business_owner_id=OWNER)
+    bot.business_connection_error = RuntimeError("lookup down")
+
+    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
+
+    assert store.get(OWNER, CHAT).mode == "off"
+    assert [call["text"] for call in bot.text_edit_calls] == ["/transcribe off → Transcription: off"]
+
+    # The binding never makes a contact the owner, nor lets the Business bot execute a command.
+    contact = make_text_update("/transcribe both", from_user_id=PEER, message_id=78)
+    assert await _run_command(plugin, contact, bot) is False
+    for message_id, text in ((79, "/transcribe both"), (80, "/transcribe both → Transcription: both")):
+        echo = make_text_update(text, from_user_id=OWNER, sender_business_bot=555, message_id=message_id)
+        await _run_command(plugin, echo, bot)
+    assert store.get(OWNER, CHAT).mode == "off"
+    assert len(bot.text_edit_calls) == 1
 
 
 # --- Edit confirmation and reply fallback -----------------------------------------------------
@@ -1160,6 +1233,33 @@ def test_writer_waits_for_cross_process_file_lock(plugin, modes):
     assert modes.ModeStore().get(OWNER, CHAT).mode == "off"
 
 
+def test_cross_process_writers_do_not_lose_updates(plugin, modes):
+    # Independent interpreters import this checkout against the same isolated home.
+    script = """import importlib.util, sys, types
+from pathlib import Path
+constants = types.ModuleType("hermes_constants")
+constants.get_hermes_home = lambda: Path(sys.argv[2])
+sys.modules["hermes_constants"] = constants
+spec = importlib.util.spec_from_file_location("subject", Path(sys.argv[1]) / "__init__.py")
+module = importlib.util.module_from_spec(spec)
+sys.modules["subject"] = module
+spec.loader.exec_module(module)
+for index in range(20):
+    module._transcription_modes.ModeStore().set_mode("1000", str(int(sys.argv[3]) + index), "off", via="cli")
+"""
+    home = modes_file(plugin).parents[2]
+    processes = [
+        subprocess.Popen([sys.executable, "-c", script, str(test_plugin.ROOT), str(home), str(offset)])
+        for offset in (5000, 6000)
+    ]
+    assert [process.wait(timeout=60) for process in processes] == [0, 0]
+
+    payload = json.loads(modes_file(plugin).read_text(encoding="utf-8"))
+    assert sorted(payload["owners"]["1000"]["chats"], key=int) == [
+        str(offset + index) for offset in (5000, 6000) for index in range(20)
+    ]
+
+
 def test_reset_keeps_owner_and_both_needs_no_lookup_and_label_is_kept(plugin, modes):
     store = modes.default_store()
     store.set_mode(OWNER, CHAT, "off", via="chat", label="Alice")
@@ -1286,6 +1386,231 @@ def test_transient_read_error_is_not_cached(plugin, modes, monkeypatch, caplog):
     assert len(warnings) == 1
 
 
+def test_transient_read_error_keeps_last_valid_modes(plugin, modes, monkeypatch, caplog):
+    store = modes.ModeStore()
+    store.set_mode(OWNER, CHAT, "off", via="cli")
+    assert store.get(OWNER, CHAT).mode == "off"
+    # Another process changes the file, then reading it fails for a while.
+    modes.ModeStore().set_mode(OWNER, CHAT, "peer", via="cli")
+    path = modes_file(plugin)
+    original_read_bytes = Path.read_bytes
+    original_stat = os.stat
+    failures = {"read": 2, "stat": 1}
+
+    def flaky_read_bytes(self):
+        if self == path and failures["read"]:
+            failures["read"] -= 1
+            raise OSError(24, "Too many open files")
+        return original_read_bytes(self)
+
+    def flaky_stat(target, *args, **kwargs):
+        if Path(target) == path and failures["stat"]:
+            failures["stat"] -= 1
+            raise OSError(5, "Input/output error")
+        return original_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+    monkeypatch.setattr(modes.os, "stat", flaky_stat)
+
+    assert store.get(OWNER, CHAT).mode == "off"
+    assert store.get(OWNER, CHAT).mode == "off"
+    assert store.get(OWNER, CHAT).mode == "off"
+    assert store.get(OWNER, CHAT).mode == "peer"
+    warnings = [record.getMessage() for record in caplog.records if "unreadable" in record.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].endswith("keeping the last valid modes")
+
+
+@pytest.mark.asyncio
+async def test_corrupt_file_keeps_last_valid_modes_and_only_the_cli_repairs_it(plugin, modes, caplog):
+    seed(plugin, OWNER, CHAT, "off")
+    store = modes.default_store()
+    assert store.get(OWNER, CHAT).mode == "off"
+    path = modes_file(plugin)
+    _write_raw(path, "{not json SECRET-CONTENT")
+
+    assert store.get(OWNER, CHAT).mode == "off"
+    assert store.get(OWNER, CHAT).mode == "off"
+    warnings = [record.getMessage() for record in caplog.records if "unreadable" in record.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].endswith("keeping the last valid modes")
+    assert "SECRET-CONTENT" not in caplog.text
+
+    # The gateway still skips the note and never rewrites the file to bind the connection.
+    bot = FakeBot(business_owner_id=OWNER)
+    assert (await _voice_event(plugin, bot)).voice.get_file_calls == 0
+    assert bot.calls == []
+
+    # An in-chat set or reset answers with an error status instead of overwriting
+    # the file; a bare /transcribe shows the mode the gateway is applying.
+    command_bot = CommandBot(business_owner_id=OWNER)
+    for message_id, text in ((90, "/transcribe both"), (91, "/transcribe reset"), (92, "/transcribe")):
+        assert await _run_command(plugin, make_text_update(text, message_id=message_id), command_bot) is True
+    assert [call["text"] for call in command_bot.text_edit_calls] == [
+        "/transcribe both → Error: could not save transcription mode",
+        "/transcribe reset → Error: could not save transcription mode",
+        "/transcribe → Transcription: off",
+    ]
+    assert path.read_bytes() == b"{not json SECRET-CONTENT"
+    assert list(path.parent.glob("transcription-modes.json.corrupt-*")) == []
+    assert store.get(OWNER, CHAT).mode == "off"
+    with pytest.raises(modes.ModesFileCorrupt):
+        store.bind_connection(BCID, OWNER)
+
+    # Only an explicit CLI write backs the damaged file up and starts fresh.
+    assert run_cli(plugin, "mode", "set", "991", "peer", "--owner", "1000")[0] == 0
+    assert len(list(path.parent.glob("transcription-modes.json.corrupt-*"))) == 1
+    assert store.get(OWNER, CHAT).mode == "peer"
+
+
+@pytest.mark.asyncio
+async def test_corrupt_file_does_not_retry_the_connection_binding_per_message(plugin, modes, caplog, monkeypatch):
+    seed(plugin, OWNER, CHAT, "off")
+    store = modes.default_store()
+    assert store.get(OWNER, CHAT).mode == "off"
+    assert store.connection_owner(BCID) is None
+    path = modes_file(plugin)
+    _write_raw(path, "{not json")
+    binds = []
+    original_bind = store.bind_connection
+    monkeypatch.setattr(store, "bind_connection", lambda *args: binds.append(args) or original_bind(*args))
+
+    bot = FakeBot(business_owner_id=OWNER)
+    for message_id in (80, 81, 82):
+        assert (await _voice_event(plugin, bot, message_id=message_id)).voice.get_file_calls == 0
+    assert binds == []
+    assert store.file_degraded() is True
+    assert "could not record Business connection owner" not in caplog.text
+    assert len([record for record in caplog.records if "unreadable" in record.getMessage()]) == 1
+    assert path.read_bytes() == b"{not json"
+
+    # If the file breaks between the check and the write, the bind fails quietly.
+    caplog.clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "file_degraded", lambda: False)
+        await plugin._bind_business_connection(store, BCID, "1000")
+    assert len(binds) == 1
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+
+    # After the CLI repairs the file, the next note records the connection again.
+    assert run_cli(plugin, "mode", "set", "991", "off", "--owner", "1000")[0] == 0
+    assert store.file_degraded() is False
+    assert (await _voice_event(plugin, bot, message_id=83)).voice.get_file_calls == 0
+    assert store.connection_owner(BCID) == "1000"
+
+
+@pytest.mark.asyncio
+async def test_unreadable_file_does_not_retry_the_connection_binding_per_message(plugin, modes, caplog, monkeypatch):
+    seed(plugin, OWNER, CHAT, "off")
+    store = modes.default_store()
+    assert store.get(OWNER, CHAT).mode == "off"
+    path = modes_file(plugin)
+    # Another process rewrites the file (a new inode), which this process then cannot read.
+    modes.ModeStore().set_mode(OWNER, 992, "peer", via="cli")
+    original_read_bytes = Path.read_bytes
+
+    def denied_read_bytes(self):
+        if self == path:
+            raise PermissionError(13, "Permission denied")
+        return original_read_bytes(self)
+
+    binds = []
+    original_bind = store.bind_connection
+    monkeypatch.setattr(store, "bind_connection", lambda *args: binds.append(args) or original_bind(*args))
+    bot = FakeBot(business_owner_id=OWNER)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", denied_read_bytes)
+        for message_id in (80, 81, 82):
+            assert (await _voice_event(plugin, bot, message_id=message_id)).voice.get_file_calls == 0
+        assert store.file_degraded() is True
+    assert binds == []
+    assert "could not record Business connection owner" not in caplog.text
+    assert len([record for record in caplog.records if "unreadable" in record.getMessage()]) == 1
+
+    # Once the file reads again, the next note records the connection.
+    assert store.file_degraded() is False
+    assert (await _voice_event(plugin, bot, message_id=83)).voice.get_file_calls == 0
+    assert store.connection_owner(BCID) == str(OWNER)
+    assert store.get(OWNER, 992).mode == "peer"
+
+
+def test_stat_failure_marks_the_file_degraded_until_it_reads_again(plugin, modes, monkeypatch):
+    seed(plugin, OWNER, CHAT, "off")
+    store = modes.default_store()
+    assert store.file_degraded() is False
+    path = modes_file(plugin)
+    original_stat = os.stat
+
+    def failing_stat(target, *args, **kwargs):
+        if Path(target) == path:
+            raise OSError(5, "Input/output error")
+        return original_stat(target, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(modes.os, "stat", failing_stat)
+        assert store.file_degraded() is True
+        assert store.get(OWNER, CHAT).mode == "off"
+    # The unchanged file is served from the cache again, without a re-read.
+    assert store.file_degraded() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", ["", " \n\t\n"])
+async def test_empty_modes_file_reads_as_no_modes(plugin, modes, caplog, payload):
+    path = modes_file(plugin)
+    _write_raw(path, payload)
+    store = modes.default_store()
+
+    assert store.snapshot() == {}
+    assert store.file_degraded() is False
+    assert run_cli(plugin, "mode", "list") == (0, "No transcription modes set; every chat uses both (default).")
+    assert run_cli(plugin, "mode", "get", "991") == (0, "chat=991 mode=both (default)")
+    assert run_cli(plugin, "mode", "set", "991", "off")[1].startswith("error: no Business owner known yet;")
+    assert "unreadable" not in caplog.text
+
+    # The owner's in-chat command writes over it without a corrupt-file backup.
+    bot = CommandBot(business_owner_id=OWNER)
+    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
+    assert [call["text"] for call in bot.text_edit_calls] == ["/transcribe off → Transcription: off"]
+    assert store.get(OWNER, CHAT).mode == "off"
+    assert list(path.parent.glob("transcription-modes.json.corrupt-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_bare_transcribe_records_no_owner_for_the_cli(plugin, modes):
+    bot = CommandBot(business_owner_id=OWNER)
+    no_owner = (
+        "error: no Business owner known yet; send /transcribe <mode> or /transcribe reset "
+        "in a Business chat once, or pass --owner USER_ID"
+    )
+
+    assert await _run_command(plugin, make_text_update("/transcribe", message_id=90), bot) is True
+    assert run_cli(plugin, "mode", "set", "992", "off") == (1, no_owner)
+
+    assert await _run_command(plugin, make_text_update("/transcribe reset", message_id=91), bot) is True
+    assert run_cli(plugin, "mode", "set", "992", "off") == (0, "chat=992 mode=off")
+
+
+def test_cli_write_without_owner_never_backs_up_a_file_that_broke_after_the_read(plugin, modes, monkeypatch):
+    seed(plugin, OWNER, 555, "off")
+    store = modes.default_store()
+    valid = store.read_strict()
+    path = modes_file(plugin)
+    _write_raw(path, "{not json")
+    # The CLI read the valid file; it is corrupted before the write takes the lock.
+    monkeypatch.setattr(store, "read_strict", lambda: valid)
+
+    for argv in (("set", "991", "off"), ("reset", "555")):
+        exit_code, output = run_cli(plugin, "mode", *argv)
+        assert exit_code == 1, argv
+        assert output.startswith("error: ") and "is corrupt (JSONDecodeError)" in output, argv
+    assert path.read_bytes() == b"{not json"
+    assert list(path.parent.glob("transcription-modes.json.corrupt-*")) == []
+
+    assert run_cli(plugin, "mode", "set", "991", "off", "--owner", "1000")[0] == 0
+    assert len(list(path.parent.glob("transcription-modes.json.corrupt-*"))) == 1
+
+
 def test_invalid_entries_are_skipped_and_valid_entries_apply(plugin, modes, caplog):
     valid = {"mode": "off", "updated_at": "2026-10-19T12:00:00Z", "updated_via": "cli", "label": None}
     payload = {
@@ -1384,8 +1709,10 @@ def test_cli_list_shows_labels_and_empty_state(plugin, modes):
 def test_cli_owner_inference(plugin, modes):
     exit_code, output = run_cli(plugin, "mode", "set", "991", "off")
     assert exit_code == 1
-    assert "no Business owner known yet" in output
-    assert "--owner" in output
+    assert output == (
+        "error: no Business owner known yet; send /transcribe <mode> or /transcribe reset "
+        "in a Business chat once, or pass --owner USER_ID"
+    )
     assert run_cli(plugin, "mode", "get", "991") == (0, "chat=991 mode=both (default)")
 
     modes.default_store().set_mode(OWNER, 1, "off", via="chat")
@@ -1424,7 +1751,45 @@ def test_cli_warns_about_an_unknown_explicit_owner_and_reset_repairs_a_typo(plug
 
 
 @pytest.mark.asyncio
-async def test_cli_requires_owner_when_history_has_several_connections(history_enabled, modes):
+async def test_cli_one_owner_across_several_connections_needs_no_owner(history_enabled, modes):
+    plugin = history_enabled
+    history = plugin._history_support
+    bot = FakeBot(business_owner_id=OWNER)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
+    for update_id, (bcid, chat_id, username) in enumerate(((BCID, 991, "alice"), ("business-b", 995, "bob")), 1):
+        await history.observe_ptb_update(
+            test_history.make_business_text_update(
+                text="hi", business_id=bcid, chat_id=chat_id, chat_username=username, update_id=update_id, date=base
+            ),
+            bot=bot,
+            now=base,
+        )
+    store = modes.default_store()
+    store.bind_connection(BCID, OWNER)
+    store.bind_connection("business-b", OWNER)
+
+    assert run_cli(plugin, "mode", "set", "@alice", "own") == (0, "chat=991 mode=own")
+    assert run_cli(plugin, "mode", "set", "@bob", "off") == (0, "chat=995 mode=off")
+    assert run_cli(plugin, "mode", "get", "@bob")[1].startswith("chat=995 mode=off (via cli at ")
+    assert run_cli(plugin, "mode", "reset", "@alice") == (0, "chat=991 mode=both (default)")
+    assert store.get(OWNER, 995).mode == "off"
+
+    # A second owner, known only through its connection binding: a chat on a
+    # recorded connection still resolves, by name or by the chat_id history
+    # lists for it; a chat_id history does not list needs --owner.
+    store.bind_connection("business-c", 3000)
+    assert run_cli(plugin, "mode", "get", "@bob")[1].startswith("chat=995 mode=off (via cli at ")
+    assert run_cli(plugin, "mode", "get", "995")[1].startswith("chat=995 mode=off (via cli at ")
+    assert run_cli(plugin, "mode", "set", "995", "peer") == (0, "chat=995 mode=peer")
+    assert store.get(OWNER, 995).mode == "peer"
+    for argv in (("set", "999", "own"), ("reset", "999"), ("get", "999")):
+        assert run_cli(plugin, "mode", *argv) == (1, "error: multiple Business owners known (1000, 3000); pass --owner")
+    assert run_cli(plugin, "mode", "set", "@bob", "own", "--owner", "3000") == (0, "chat=995 mode=own")
+    assert store.get(OWNER, 995).mode == "peer"
+
+
+@pytest.mark.asyncio
+async def test_cli_requires_owner_for_a_connection_with_no_recorded_owner(history_enabled, modes):
     plugin = history_enabled
     history = plugin._history_support
     bot = FakeBot(business_owner_id=OWNER)
@@ -1434,9 +1799,12 @@ async def test_cli_requires_owner_when_history_has_several_connections(history_e
         bot=bot,
         now=base,
     )
-    modes.default_store().set_mode(OWNER, 1, "off", via="chat")
+    store = modes.default_store()
+    store.set_mode(OWNER, 1, "off", via="cli")
+    # One connection in history: the one known owner is inferred.
     assert run_cli(plugin, "mode", "set", "@alice", "own") == (0, "chat=991 mode=own")
 
+    # A second Business account whose chats all use the default is never recorded.
     await history.observe_ptb_update(
         test_history.make_business_text_update(
             text="hi", business_id="business-b", chat_id=995, chat_username="bob", update_id=2, date=base
@@ -1444,14 +1812,58 @@ async def test_cli_requires_owner_when_history_has_several_connections(history_e
         bot=bot,
         now=base,
     )
+    unbound_b = "error: no owner recorded for Business connection business-b; pass --owner"
+    for argv in (("set", "@bob", "off"), ("reset", "@bob"), ("get", "@bob")):
+        assert run_cli(plugin, "mode", *argv) == (1, unbound_b)
+    numeric = "error: 2 Business connections found in history, not all recorded for owner 1000; pass --owner"
+    assert run_cli(plugin, "mode", "set", "999", "off") == (1, numeric)
+    # A chat_id history lists takes that chat's connection.
+    assert run_cli(plugin, "mode", "set", "995", "off") == (1, unbound_b)
+    assert run_cli(plugin, "mode", "set", "995", "off", "--connection", "business-b") == (1, unbound_b)
+    assert run_cli(plugin, "mode", "set", "@alice", "peer") == (
+        1,
+        f"error: no owner recorded for Business connection {BCID}; pass --owner",
+    )
+    assert store.get(OWNER, 995) is None
 
-    for argv in (("set", "@bob", "off"), ("set", "991", "off"), ("reset", "@bob"), ("get", "@bob")):
-        exit_code, output = run_cli(plugin, "mode", *argv)
-        assert exit_code == 1
-        assert output == "error: 2 Business connections found in history; pass --owner"
-    assert modes.default_store().get(OWNER, 995) is None
-    assert run_cli(plugin, "mode", "set", "@bob", "off", "--owner", "3000")[0] == 0
-    assert modes.default_store().get(3000, 995).mode == "off"
+    # A recorded connection resolves on its own, by name or by its chat_id;
+    # a chat_id history does not list still needs --owner.
+    store.bind_connection(BCID, OWNER)
+    assert run_cli(plugin, "mode", "set", "@alice", "peer") == (0, "chat=991 mode=peer")
+    assert run_cli(plugin, "mode", "set", "991", "off") == (0, "chat=991 mode=off")
+    assert run_cli(plugin, "mode", "set", "999", "off") == (1, numeric)
+    assert run_cli(plugin, "mode", "set", "@bob", "off", "--owner", "3000") == (
+        0,
+        "warning: owner 3000 is not a known Business owner (known: 1000)\nchat=995 mode=off",
+    )
+    assert store.get(3000, 995).mode == "off"
+    assert store.get(OWNER, 995) is None
+
+    # Once business-b is recorded for owner 3000, its chats resolve to that owner.
+    store.bind_connection("business-b", 3000)
+    assert run_cli(plugin, "mode", "set", "@bob", "peer") == (0, "chat=995 mode=peer")
+    assert run_cli(plugin, "mode", "get", "995", "--connection", "business-b")[1].startswith("chat=995 mode=peer ")
+    assert store.get(3000, 995).mode == "peer"
+    assert run_cli(plugin, "mode", "set", "991", "own") == (0, "chat=991 mode=own")
+    assert store.get(OWNER, 991).mode == "own"
+    assert run_cli(plugin, "mode", "set", "999", "off") == (
+        1,
+        "error: multiple Business owners known (1000, 3000); pass --owner",
+    )
+
+
+def test_cli_owner_from_a_connection_binding_without_chats(plugin, modes):
+    empty = "No transcription modes set; every chat uses both (default)."
+    assert run_cli(plugin, "mode", "list") == (0, empty)
+    assert run_cli(plugin, "mode", "get", "991") == (0, "chat=991 mode=both (default)")
+
+    modes.default_store().bind_connection(BCID, OWNER)
+
+    assert run_cli(plugin, "mode", "list") == (0, empty)
+    assert run_cli(plugin, "mode", "get", "991") == (0, "chat=991 mode=both (default)")
+    assert run_cli(plugin, "mode", "set", "991", "off") == (0, "chat=991 mode=off")
+    assert modes.default_store().get(OWNER, CHAT).mode == "off"
+    assert run_cli(plugin, "mode", "list")[1].startswith("owner=1000 chat=991 mode=off via=cli ")
 
 
 @pytest.mark.asyncio

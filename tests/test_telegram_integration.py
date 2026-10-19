@@ -304,3 +304,40 @@ async def test_real_ptb_owner_command_falls_back_to_business_reply(plugin, teleg
     assert params["text"] == "/transcribe peer → Transcription: peer"
     assert json.loads(params["reply_parameters"])["message_id"] == 77
     assert "entities" not in params
+
+
+@pytest.mark.asyncio
+async def test_real_ptb_off_then_both_gates_media_download(plugin, telegram_app, monkeypatch):
+    app, request = telegram_app
+    request.responses["editMessageText"] = (200, {"ok": True, "result": True})
+    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    core = _register_native(plugin, app)
+    download = AsyncMock(side_effect=RuntimeError("stop at download"))
+    monkeypatch.setattr(plugin, "_download_voice", download)
+
+    def update(number, *, mode=None):
+        content = {"text": f"/transcribe {mode}"} if mode else {
+            "voice": {"file_id": "v", "file_unique_id": "v", "duration": 3},
+        }
+        message = _business_update(app, sender_id=1000, update_id=number, **content).to_dict()["business_message"]
+        message["message_id"] = number
+        return Update.de_json({"update_id": number, "business_message": message}, app.bot)
+
+    async def process(number, **kwargs):
+        await app.process_update(update(number, **kwargs))
+        if plugin._pending_tasks:
+            await asyncio.gather(*plugin._pending_tasks)
+
+    await process(1, mode="off")
+    await process(2)
+    download.assert_not_awaited()
+    assert "sendMessage" not in [method for method, _params in request.calls]
+
+    await process(3, mode="both")
+    await process(4)
+    download.assert_awaited_once()
+    assert core.await_count == 0
+    assert [params["text"] for method, params in request.calls if method == "editMessageText"] == [
+        "/transcribe off → Transcription: off",
+        "/transcribe both → Transcription: both",
+    ]

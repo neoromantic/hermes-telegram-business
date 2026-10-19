@@ -1879,7 +1879,7 @@ async def _transcription_policy_decision(*, message: Any, bot: Any) -> _transcri
             await _bind_business_connection(store, business_connection_id, owner_id)
         entry = store.get(owner_id, chat_id)
         mode = entry.mode if entry is not None else _transcription_modes.DEFAULT_MODE
-        decision = await _mode_decision(mode, message=message, bot=bot)
+        decision = await _mode_decision(mode, message=message, bot=bot, stored_owner=store.connection_owner)
         if owner_reason not in ("cached", "lookup"):
             return replace(decision, reason=f"{decision.reason}:owner_unknown:{owner_reason}")
         return decision
@@ -1888,17 +1888,32 @@ async def _transcription_policy_decision(*, message: Any, bot: Any) -> _transcri
 
 
 async def _bind_business_connection(store: Any, business_connection_id: Any, owner_id: str) -> None:
-    """Remember a connection's owner so a later failed lookup still finds its entries."""
+    """Remember a connection's owner so a later failed lookup still finds its entries.
+
+    Skipped while the modes file is corrupt or unreadable: the gateway never
+    rewrites a corrupt file, an unreadable one fails the write too, and the store
+    already logged it once, so retrying per message only spams.
+    """
     try:
+        if store.file_degraded():
+            return
         await asyncio.to_thread(store.bind_connection, business_connection_id, owner_id)
+    except _transcription_modes.ModesFileCorrupt:
+        # The file broke after the check; the next snapshot logs it once.
+        logger.debug("%s: Business connection owner not recorded (modes file corrupt)", _PLUGIN_NAME)
     except Exception as exc:  # noqa: BLE001 - the binding only backs up a failed lookup
         logger.warning("%s: could not record Business connection owner (%s)", _PLUGIN_NAME, type(exc).__name__)
 
 
-async def _mode_decision(mode: str, *, message: Any, bot: Any) -> _transcription_modes.PolicyDecision:
-    """Apply one stored mode; only own/peer need the message direction."""
+async def _mode_decision(
+    mode: str, *, message: Any, bot: Any, stored_owner: Callable[[str], str | None] | None = None
+) -> _transcription_modes.PolicyDecision:
+    """Apply one stored mode; only own/peer need the message direction.
+
+    ``stored_owner`` (connection id -> persisted owner) backs a failed live lookup.
+    """
     if mode in ("own", "peer"):
-        resolved = await _history_support.resolve_business_direction(message, bot=bot)
+        resolved = await _history_support.resolve_business_direction(message, bot=bot, stored_owner=stored_owner)
         decision = _transcription_modes.decide(mode, resolved.direction)
         if resolved.direction == "unknown":
             return replace(decision, reason=f"{decision.reason}:{resolved.reason}")
@@ -1969,7 +1984,12 @@ async def _handle_transcribe_command_update(update: Any, *, bot: Any, adapter: A
     chat_id = _get(_get(payload, "chat"), "id")
     if not business_connection_id or chat_id is None:
         return False
-    resolved = await _history_support.resolve_business_direction(payload, bot=bot)
+    store = _transcription_modes.default_store()
+    # A failed live lookup falls back to the owner persisted for this connection,
+    # which only a verified owner command or lookup ever recorded.
+    resolved = await _history_support.resolve_business_direction(
+        payload, bot=bot, stored_owner=store.connection_owner
+    )
     if resolved.direction != "own":
         # A contact's command, or one whose owner cannot be verified, is ordinary text.
         logger.debug("%s: transcribe command not from owner reason=%s", _PLUGIN_NAME, resolved.reason)
@@ -1989,7 +2009,6 @@ async def _handle_transcribe_command_update(update: Any, *, bot: Any, adapter: A
         command = _transcription_modes.parse_command(text)
         if command is None:
             return True
-        store = _transcription_modes.default_store()
         owner_id = resolved.owner_user_id
         try:
             if command.action == "show":
@@ -2010,7 +2029,8 @@ async def _handle_transcribe_command_update(update: Any, *, bot: Any, adapter: A
                 status = _transcription_modes.status_text(command, entry=None)
             else:
                 status = _transcription_modes.status_text(command, entry=None)
-        except (_transcription_modes.ModeStoreError, OSError) as exc:
+        except (_transcription_modes.ModeStoreError, _transcription_modes.ModesFileCorrupt, OSError) as exc:
+            # A corrupt modes file is never replaced from chat; only an explicit CLI write repairs it.
             logger.warning("%s: could not save transcription mode (%s)", _PLUGIN_NAME, type(exc).__name__)
             status = _transcription_modes.status_text(command, entry=None, error=True)
         logger.info(

@@ -2678,8 +2678,14 @@ async def resolve_business_owner(bot: Any, business_connection_id: Any) -> tuple
     return owner_id, "lookup"
 
 
-async def resolve_business_direction(message: Any, *, bot: Any) -> BusinessDirection:
-    """Classify a Business message as the owner's own, a peer's, or unknown."""
+async def resolve_business_direction(
+    message: Any, *, bot: Any, stored_owner: Callable[[str], str | None] | None = None
+) -> BusinessDirection:
+    """Classify a Business message as the owner's own, a peer's, or unknown.
+
+    ``stored_owner`` maps a connection id to the owner persisted for it; it is
+    consulted only when the live owner lookup fails and nothing is cached.
+    """
     business_connection_id = _get(message, "business_connection_id") or _get(message, "_hermes_business_connection_id")
     if _get(message, "sender_business_bot") is not None:
         return BusinessDirection("own", cached_business_owner(business_connection_id), "sender_business_bot")
@@ -2691,11 +2697,15 @@ async def resolve_business_direction(message: Any, *, bot: Any) -> BusinessDirec
     if bot is None:
         return BusinessDirection("unknown", None, "no_bot")
     owner_id, reason = await resolve_business_owner(bot, business_connection_id)
+    prefix = ""
+    if owner_id is None and stored_owner is not None:
+        owner_id = stored_owner(str(business_connection_id))
+        prefix = "stored_"
     if owner_id is None:
         return BusinessDirection("unknown", None, reason)
     if str(from_user_id) == owner_id:
-        return BusinessDirection("own", owner_id, "owner_match")
-    return BusinessDirection("peer", owner_id, "owner_mismatch")
+        return BusinessDirection("own", owner_id, f"{prefix}owner_match")
+    return BusinessDirection("peer", owner_id, f"{prefix}owner_mismatch")
 
 
 _HISTORY_DIRECTIONS = {"own": "outbound", "peer": "inbound", "unknown": "unknown"}
@@ -2707,6 +2717,12 @@ async def _resolve_direction(message: Any, *, bot: Any = None) -> str:
 
 # Mirrors the voice module's disable switch: no transcription, no `/transcribe` command.
 TRANSCRIBER_DISABLE_ENV = "TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE"
+
+# Transcription-mode vocabulary shared with transcription_modes.status_text.
+TRANSCRIBE_MODES = ("both", "own", "peer", "off")
+TRANSCRIBE_DEFAULT_MODE = "both"
+TRANSCRIBE_USAGE = f"Usage: /transcribe [{'|'.join((*TRANSCRIBE_MODES, 'reset'))}]"
+TRANSCRIBE_SAVE_ERROR = "Error: could not save transcription mode"
 
 # The one `/transcribe` predicate for the whole plugin. `/transcribeoff` and
 # `/transcribers` are ordinary text; any `@bot` suffix is accepted.
@@ -2720,9 +2736,13 @@ def is_transcribe_command_text(text: Any) -> bool:
 # The exact shape of the plugin's own status output (transcription_modes.status_text),
 # so other bot-sent text that merely starts with `/transcribe` stays history.
 TRANSCRIBE_STATUS_RE = re.compile(
-    r"^/transcribe(?: [^\n]*)? → (?:Transcription: (?:both|own|peer|off)(?: \(default\))?"
-    r"|Usage: /transcribe \[both\|own\|peer\|off\|reset\]"
-    r"|Error: could not save transcription mode)\Z"
+    r"^/transcribe(?: [^\n]*)? → (?:Transcription: (?:"
+    + "|".join(map(re.escape, TRANSCRIBE_MODES))
+    + r")(?: \(default\))?|"
+    + re.escape(TRANSCRIBE_USAGE)
+    + "|"
+    + re.escape(TRANSCRIBE_SAVE_ERROR)
+    + r")\Z"
 )
 
 
