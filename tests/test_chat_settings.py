@@ -964,10 +964,38 @@ def test_register_stores_the_rule_once_then_warns_on_each_start(cs, plugin, monk
     assert stored(cs)["legacy_scope"]["chats"] == ["992"]
 
 
-def test_without_the_variables_nothing_runs_or_is_recorded(cs, plugin):
-    assert cs.migrate_history_scope() == []
-    assert cs.warn_ignored_scope_env() == []
-    assert not cs.chat_settings_path().exists()
+@pytest.mark.asyncio
+async def test_without_the_variables_the_migration_is_a_no_op(cs, history_enabled, monkeypatch, caplog):
+    plugin = history_enabled  # the production case: none of the three variables is set
+    monkeypatch.setattr(plugin._history_support, "run_startup_maintenance",
+                        Mock(return_value=SimpleNamespace(cap_exceeded=False, warnings=[])))
+    ctx = SimpleNamespace(llm=None, get_config={}.get, register_telegram_handler=Mock(), register_hook=Mock(),
+                          register_cli_command=Mock(), register_skill=Mock())
+
+    def scope_logged() -> bool:
+        return any("history scope" in message or any(name in message for name in cs.SCOPE_ENV)
+                   for message in caplog.messages)
+
+    with caplog.at_level(logging.WARNING):
+        plugin.register(ctx)
+    assert not cs.chat_settings_path().exists() and not scope_logged()
+
+    cs.default_store().set_flag(OWNER, 993, "dossier", False, via="cli")  # an existing file stays as it is
+    before = cs.chat_settings_path().read_bytes()
+    cs.reset_in_memory_caches()  # the next start
+    with caplog.at_level(logging.WARNING):
+        plugin.register(ctx)
+        assert cs.migrate_history_scope() == [] and cs.warn_ignored_scope_env() == []
+    assert cs.chat_settings_path().read_bytes() == before and set(stored(cs)) == {"version", "owners"}
+    assert not scope_logged()
+
+    await capture(plugin, text_update(77))
+    await capture(plugin, text_update(78, chat_id=992, business_id=OTHER_BCID),
+                  test_history.FakeBot(owner_id=OTHER_OWNER))
+    assert len(test_history.load_records(plugin)) == 1
+    assert len(test_history.load_records(plugin, chat_id=992, business_id=OTHER_BCID)) == 1
+    assert cs.paused(BCID, CHAT, "dossier") is False and cs.paused(None, 992, "dossier") is False
+    assert cs.chat_state(OWNER, CHAT)[0] == "on" and cs.default_store().counts()["old_scope"] == 0
 
 
 def test_cli_shows_the_rule_turns_a_chat_on_and_clears_it(cs, plugin, monkeypatch):
