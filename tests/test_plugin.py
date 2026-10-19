@@ -333,7 +333,8 @@ def test_history_skill_documents_runtime_scheduler_and_defaults():
     assert "Update.ALL_TYPES" in skill
     assert "`source`" in skill
     assert "`classification_reason`" in skill
-    assert "are no longer read (since 0.13); never suggest them" in skill
+    assert "stores them as the old server scope rule (`legacy_scope` in `chat-settings.json`); never suggest them" in skill
+    assert "hermes telesec chat scope clear --yes" in skill
     assert "private Business chats only" in skill
     assert "contacts.json" in skill
     assert "TELESEC_HISTORY_NEARBY_BEFORE_SECONDS" in skill

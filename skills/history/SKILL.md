@@ -36,7 +36,7 @@ Use this plugin skill when you need to inspect or maintain the opt-in Telegram B
 - Capture is a stored switch, not a variable: the owner turns it on in Telegram Settings (`/telesec`) or with `hermes telesec settings set history on`. Check it with `hermes telesec settings --format json` (`history.enabled`). Change it only when the owner asks.
 - Capture after enablement covers private Business chats only. Groups, supergroups, and channels are never recorded.
 - The owner can stop one chat with **Don't save** in its owner panel or `hermes telesec chat set <chat> --history off`; what was saved stays. Check it with `hermes telesec chat get <chat> --format json` (`effective_history`, `history_state`). A gap in a chat's history can mean it was paused. Change it only when the owner asks.
-- `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` are no longer read (since 0.13); never suggest them. On the first start with one of them set, each chat they kept out was set to Don't save once (`updated_via: migration`). New chats are recorded unless the owner taps Don't save.
+- `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` are read only until the first 0.13 start stores them as the old server scope rule (`legacy_scope` in `chat-settings.json`); never suggest them. The rule still keeps the same chats out, new ones too, per connection and chat: `history_state` is `scope`. `hermes telesec chat scope` shows it with counts only. The owner turns one chat on with **Save history** in its panel or `hermes telesec chat set <chat> --history on`; `hermes telesec chat scope clear --yes` drops the rule, so every chat it kept out starts saving history. Run either only when the owner asks.
 - An update without a chat type uses the type history already has for that chat; with none, it is not recorded.
 - Optional controls:
   - `TELESEC_HISTORY_CORRECTION_WINDOW` seconds, default `120`; this is the post-delete candidate window and classification delay
@@ -118,6 +118,6 @@ hermes telesec history forget --chat <chat> --yes
 hermes telesec history forget --all --yes
 ```
 
-`history forget` erases one chat's saved history and its dossier (same selectors as `show`); `--all --yes` erases all history and every dossier, including the persona. The owner panel offers the same per-chat erase as **🗑 Erase saved history** while the chat is set to Don't save. Both cannot be undone: run them only when the owner explicitly asks, show the dry run first, and suggest `hermes telesec chat set <chat> --history off` first if the chat should stay out of history.
+`history forget` erases one chat's saved history and its dossier (same selectors as `show`); `--all --yes` erases all history and every dossier, including the persona. The owner panel offers the same per-chat erase as **🗑 Erase saved history** while the chat saves no history (Don't save, the old server scope, or history off in Settings). Both cannot be undone: run them only when the owner explicitly asks, show the dry run first, and suggest `hermes telesec chat set <chat> --history off` first if the chat should stay out of history.
 
 Human-readable CLI output escapes carriage returns, tabs, ESC/control bytes, and DEL in stored text while keeping Unicode readable. JSONL export remains the raw machine-readable stream.

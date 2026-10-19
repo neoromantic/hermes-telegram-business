@@ -32,18 +32,18 @@ hermes telesec chat list
 
 **Save history** or `--history on` turns it back on; it is the default, so nothing is stored for it. While a chat is set to Don't save, its new messages, edits, and deletions are not recorded, and its dossier pauses too. What was saved before stays until you [erase it](#erase-one-chat), and retention and the size cap still prune it. Edits and deletions of older messages that arrive in the meantime are not recorded, so turning history back on leaves a gap. The setting is stored per owner in `chat-settings.json` and never touches another owner's chat with the same contact. The check fails closed: if the file was never readable, or the chat id is paused by some owner and the owner of the update's connection cannot be found, nothing is recorded. See [per-chat history and dossier](../README.md#per-chat-history-and-dossier).
 
-Up to 0.12, `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` chose the recorded chats. Since 0.13 they are no longer read. On the first start with any of them set, each chat they kept out is set to Don't save once, and a chat whose owner is unknown is only counted in the log, so choose Don't save for it in its panel. New chats are recorded unless you tap Don't save. [Moving from the history environment variables](../README.md#moving-from-the-history-environment-variables) has the details.
+Up to 0.12, `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` chose the recorded chats. On the first 0.13 start with any of them set, the old filter is kept as a stored rule under `legacy_scope` in `chat-settings.json`, as 0.12 read it, and the variables are never read again; until it is stored, they keep applying. The rule works per connection and chat as before: a chat it keeps out, a new one too, saves no history, and its panel shows **Don't save** with "•" and `History: off by the old server scope`. To turn one chat on, tap **Save history** there or run `hermes telesec chat set 991 --history on`. `hermes telesec chat scope` shows the rule, and `hermes telesec chat scope clear --yes` drops it, so the chats it kept out start saving history, except those set to Don't save. [Moving from the history environment variables](../README.md#moving-from-the-history-environment-variables) has the details.
 
 ## Erase one chat
 
-While a chat is set to Don't save and history still holds messages from it, its panel shows **🗑 Erase saved history**. It asks first (`Erase 12 saved messages from this chat? Its dossier is deleted too. This cannot be undone.`), then deletes:
+While history holds messages from a chat that saves nothing now, its panel shows **🗑 Erase saved history**: the chat is set to Don't save, the old server scope keeps it out, or history is off in Settings (then the button is under the `History: off in Settings` line). It asks first (`Erase 12 saved messages from this chat? Its dossier is deleted too. This cannot be undone.`), then deletes:
 
 - every record of that chat on your Business connection, whatever wrote it (the whole chat directory),
 - the chat's entry in the contact catalog (`contacts.json`),
 - pending deletion classification for the chat,
-- the chat's dossier, after stopping a running dossier refresh.
+- then the chat's dossier. A running dossier refresh stops first, and history goes before the dossier, so nothing can rebuild the dossier from it.
 
-Stats then show no history for the chat. The chat stays at Don't save, so nothing new is recorded. The button refuses unless the chat is still set to Don't save, so a stale or repeated tap erases nothing, and only the verified owner of the chat's connection sees it. Another owner's chat with the same contact is never touched.
+Stats then show no history for the chat. The chat keeps its setting, so nothing new is recorded. The button refuses while the chat saves history or while chat settings can't be read, so a stale or repeated tap erases nothing, and only the verified owner of the chat's connection sees it. Another owner's chat with the same contact is never touched. If the history erase fails, nothing is forgotten and the button stays, so you can try again. If only the dossier step fails, `hermes telesec dossier forget` finishes it. When the contact catalog can't be rebuilt after an erase, the erased chat still leaves it and the catalog is marked for a rebuild.
 
 From the terminal:
 

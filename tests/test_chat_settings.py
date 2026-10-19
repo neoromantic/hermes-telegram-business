@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import stat
@@ -32,11 +33,14 @@ BCID = ttm.BCID
 OTHER_OWNER = 3000
 OTHER_BCID = "business-999"
 HISTORY_ROW = [("• Save history", "tb:f:991:h.on"), ("Don't save", "tb:f:991:h.off")]
+OFF_ROW = [("Save history", "tb:f:991:h.on"), ("• Don't save", "tb:f:991:h.off")]
+ERASE_ROW = [("🗑 Erase saved history", "tb:f:991:h.erase")]
 DOSSIER_ROW = [("• Keep dossier", "tb:f:991:d.on"), ("No dossier", "tb:f:991:d.off")]
 REFRESH_ROW = [("Refresh", "tb:p:991")]
 UNREADABLE = "Chat settings can't be read; history and dossiers are paused."
 SAVE_ERROR = "Error: could not save the chat setting"
 GARBAGE = b"{not json SECRET-CONTENT"
+SCOPE_LINE = "History: off by the old server scope"
 
 
 @pytest.fixture
@@ -58,6 +62,16 @@ def both_on(cs, plugin):
 
 def stored(cs) -> dict:
     return json.loads(cs.chat_settings_path().read_text(encoding="utf-8"))
+
+
+def store_scope(cs, monkeypatch, **env: str) -> None:
+    """Set the 0.12 TELESEC_HISTORY_<name> variables, store them as the old scope rule at a start, then
+    remove them: the stored rule applies on its own."""
+    for name, value in env.items():
+        monkeypatch.setenv(f"TELESEC_HISTORY_{name}", value)
+    assert cs.migrate_history_scope(now=NOW)
+    for name in env:
+        monkeypatch.delenv(f"TELESEC_HISTORY_{name}")
 
 
 def text_update(message_id: int = 77, *, chat_id: int = CHAT, business_id: str = BCID, edited: bool = False):
@@ -96,7 +110,7 @@ def test_store_keeps_only_off_values_and_a_chat_back_on_is_removed(cs):
         "dossier": "off", "updated_at": "2026-10-19T12:00:00Z", "updated_via": "cli"}
     assert store.set_flag(OWNER, CHAT, "dossier", True, via="cli").entry is None
     assert stored(cs) == {"version": 1, "owners": {}}
-    assert store.counts() == {"history": 0, "dossier": 0}
+    assert store.counts() == {"history": 0, "dossier": 0, "history_on": 0, "old_scope": 0}
 
 
 def test_unknown_fields_survive_a_write(cs):
@@ -257,7 +271,7 @@ async def test_capture_pauses_on_an_unreadable_store_or_a_failed_check(cs, histo
     def broken(*_args):
         raise OSError("disk")
 
-    monkeypatch.setattr(cs.ChatSettingsStore, "excluded_anywhere", broken)
+    monkeypatch.setattr(cs.ChatSettingsStore, "snapshot", broken)
     with caplog.at_level(logging.WARNING):
         await capture(plugin, text_update(78))
     assert test_history.load_records(plugin) == []
@@ -355,20 +369,34 @@ async def test_rows_hidden_by_settings_show_a_line_and_refuse_a_stale_tap(cs, pl
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("env", [{"TELESEC_HISTORY_CONNECTIONS": "some-other-connection"},
-                                 {"TELESEC_HISTORY_CHATS": "-5"}, {"TELESEC_HISTORY_CHAT_TYPES": "group"}])
-async def test_the_old_scope_variables_never_hide_the_rows(both_on, plugin, monkeypatch, env):
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    plugin._history_support.reset_in_memory_caches()
-    top.bind_owner(plugin, seen_chat=None)
+async def test_a_chat_the_old_scope_keeps_out_shows_dont_save_until_the_owner_saves_it(both_on, plugin, monkeypatch):
+    store_scope(both_on, monkeypatch, CHATS="992")
+    top.bind_owner(plugin)
     bot = top.PanelBot(business_owner_id=OWNER)
 
     assert await top.dispatch(plugin, top.start_update(), bot) is True
+    assert bot.calls[0]["text"].splitlines()[2:] == [SCOPE_LINE, "Dossier: needs history"]
+    assert top.keyboard(bot.calls[0]["reply_markup"]) == [top.MODE_ROW, OFF_ROW, REFRESH_ROW]
+    await capture(plugin, text_update(77))
+    assert test_history.load_records(plugin) == []
 
-    assert "server" not in bot.calls[0]["text"]
-    assert top.keyboard(bot.calls[0]["reply_markup"]) == [top.MODE_ROW, HISTORY_ROW, DOSSIER_ROW, REFRESH_ROW]
+    await tap(plugin, "tb:f:991:h.on", bot)  # Save history: an explicit on over the rule
+    assert bot.answers[-1]["text"] == "History: on for this chat"
+    text, rows = top.last_edit(bot)
+    assert SCOPE_LINE not in text and rows == [top.MODE_ROW, HISTORY_ROW, DOSSIER_ROW, REFRESH_ROW]
+    assert stored(both_on)["owners"]["1000"]["chats"]["991"]["history"] == "on"
+    await capture(plugin, text_update(78))
+    assert len(test_history.load_records(plugin)) == 1
     assert both_on.paused(BCID, CHAT, "dossier") is False
+
+    await tap(plugin, "tb:f:991:h.off", bot)  # the owner's own Don't save
+    text, rows = top.last_edit(bot)
+    assert SCOPE_LINE not in text and OFF_ROW in rows
+    await tap(plugin, "tb:f:991:h.on", bot)
+    assert stored(both_on)["owners"]["1000"]["chats"]["991"]["history"] == "on"
+
+    assert plugin._owner_panel.feature_rows(CHAT, ("scope", "needs_history"), "ru")[0] == [
+        "История: выключена старой настройкой сервера", "Досье: нужна история"]
 
 
 def test_a_group_chat_gets_history_but_no_dossier_row(both_on, plugin):
@@ -499,18 +527,21 @@ async def test_no_dossier_during_a_contact_call_writes_nothing(dossier_plugin, d
 
 
 @pytest.mark.asyncio
-async def test_the_old_scope_variables_no_longer_pause_dossier_work(dossier_plugin, dossiers, monkeypatch):
+async def test_dossier_and_persona_skip_a_chat_the_old_scope_keeps_out(dossier_plugin, dossiers, monkeypatch):
     plug, ds = dossier_plugin, dossiers
-    await seed(plug, 5504, "old_scope", [(1, "in", "SCOPE-TAG question", 90), (2, "out", "SCOPE-TAG reply", 85)])
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "5505")
-    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "some-other-connection")
+    await seed(plug, 5504, "kept_out", [(1, "in", "SCOPE-TAG question", 90), (2, "out", "SCOPE-TAG reply", 85)])
+    await seed(plug, 5505, "open_contact", [(1, "in", "OPEN-TAG question", 80), (2, "out", "OPEN-TAG reply", 75)])
+    store_scope(plug._chat_settings, monkeypatch, CHATS="5505")
     fake = FakeLlm(quote_first, quote_first)
 
     report = cycle(ds, fake)
 
-    assert report.refreshed == 1 and "SCOPE-TAG" in json.dumps(fake.payloads())
-    assert plug._chat_settings.paused(BUSINESS_ID, 5504, "dossier") is False
-    assert plug._chat_settings.paused(BUSINESS_ID, 5504, "history") is False
+    assert (report.refreshed, report.persona) == (1, "refreshed")
+    sent = json.dumps(fake.payloads())
+    assert "OPEN-TAG" in sent and "SCOPE-TAG" not in sent  # contact and persona calls alike
+    assert read_dossier(ds, 5504) is None
+    assert plug._chat_settings.paused(BUSINESS_ID, 5504, "dossier") is True
+    assert plug._chat_settings.paused(BUSINESS_ID, 5505, "dossier") is False
 
 
 @pytest.mark.asyncio
@@ -695,7 +726,7 @@ def test_chat_cli_without_a_known_owner_fails_closed_and_finds_the_holder(cs, pl
 
 
 @pytest.mark.asyncio
-async def test_cli_lists_apply_the_chat_type_and_ignore_the_old_scope(both_on, plugin, monkeypatch):
+async def test_cli_lists_apply_the_chat_type(both_on, plugin):
     await capture(plugin, text_update(77))
     raw(plugin, -100123, [(1, "in", "group text", 50)], business_id=BCID, chat_type="supergroup")  # kept from 0.12
     for chat in ("991", "-100123"):
@@ -706,11 +737,6 @@ async def test_cli_lists_apply_the_chat_type_and_ignore_the_old_scope(both_on, p
     listed = {item["chat_id"]: item for item in chats}
     assert listed["-100123"]["dossier_state"] == "private_only"
     assert (listed["991"]["history_state"], listed["991"]["dossier_state"]) == ("on", "off")
-
-    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "some-other-connection")
-    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", "group")
-    again = json.loads(ttm.run_cli(plugin, "chat", "list", "--format", "json")[1])["chats"]
-    assert again == chats
     (mode,) = json.loads(ttm.run_cli(plugin, "mode", "list", "--format", "json")[1])["chats"]
     assert (mode["chat_id"], mode["effective_history"], mode["effective_dossier"]) == ("991", "on", "off")
 
@@ -725,7 +751,7 @@ def test_mode_json_and_settings_show_the_chat_switches(cs, plugin):
     code, out = ttm.run_cli(plugin, "settings")
     assert code == 0 and "Chats with history off: 1; with the dossier off: 0" in out
     data = json.loads(ttm.run_cli(plugin, "settings", "--format", "json")[1])
-    assert data["chat_overrides"] == {"transcription": 0, "history": 1, "dossier": 0}
+    assert data["chat_overrides"] == {"transcription": 0, "history": 1, "dossier": 0, "history_on": 0, "old_scope": 0}
 
     cs.chat_settings_path().write_bytes(GARBAGE)
     assert "warning: chat-settings.json is unreadable" in ttm.run_cli(plugin, "settings")[1]
@@ -736,98 +762,189 @@ def test_agent_reference_names_the_chat_command(plugin):
     assert len(plugin.AGENT_REFERENCE) <= 2000
 
 
-# --- The 0.12 history scope moves to per-chat settings once -----------------------------------------
+# --- The 0.12 history scope becomes the stored old scope rule ---------------------------------------
 
 
-def seed_scope_chats(plugin) -> None:
-    """Chats 991 and 992 on the owner's connection, recorded before the upgrade."""
-    top.bind_owner(plugin, seen_chat=None)
-    for chat in (991, 992):
-        raw(plugin, chat, [(1, "in", "hello", 50)], business_id=BCID)
-
-
-def history_off_chats(cs, owner: int = OWNER) -> dict:
-    return {chat: item for chat, item in stored(cs)["owners"].get(str(owner), {}).get("chats", {}).items()
-            if item.get("history") == "off"}
-
-
-@pytest.mark.parametrize(("env", "off"), [
-    ({"TELESEC_HISTORY_CHATS": "992"}, {"991"}),
-    ({"TELESEC_HISTORY_CHATS": "991,992"}, set()),
-    ({"TELESEC_HISTORY_CONNECTIONS": "business-999"}, {"991", "992"}),
-    ({"TELESEC_HISTORY_CONNECTIONS": BCID}, set()),
-    ({"TELESEC_HISTORY_CHAT_TYPES": "group"}, {"991", "992"}),
-    ({"TELESEC_HISTORY_CHAT_TYPES": "private,group"}, set()),
-    ({"TELESEC_HISTORY_CONNECTIONS": BCID, "TELESEC_HISTORY_CHATS": "991"}, {"992"}),
+@pytest.mark.parametrize(("env", "rule"), [
+    ({"TELESEC_HISTORY_CHATS": "992"}, {"connections": None, "chats": ["992"], "chat_types": ["private"]}),
+    ({"TELESEC_HISTORY_CONNECTIONS": "*", "TELESEC_HISTORY_CHATS": "-5, 992"},
+     {"connections": "*", "chats": ["-5", "992"], "chat_types": ["private"]}),
+    ({"TELESEC_HISTORY_CONNECTIONS": OTHER_BCID}, {"connections": [OTHER_BCID], "chats": None,
+                                                  "chat_types": ["private"]}),
+    ({"TELESEC_HISTORY_CHAT_TYPES": "group"}, {"connections": None, "chats": None, "chat_types": ["group"]}),
+    ({"TELESEC_HISTORY_CHAT_TYPES": "privat"}, {"connections": None, "chats": None, "chat_types": []}),
 ])
-def test_the_old_scope_becomes_dont_save_for_the_chats_it_kept_out(cs, plugin, monkeypatch, caplog, env, off):
-    seed_scope_chats(plugin)
+def test_the_old_scope_is_stored_as_0_12_parsed_it(cs, plugin, monkeypatch, caplog, env, rule):
     for name, value in env.items():
         monkeypatch.setenv(name, value)
 
     with caplog.at_level(logging.WARNING):
-        moved = cs.migrate_history_scope(now=NOW)
+        assert set(cs.migrate_history_scope(now=NOW)) == set(env)
 
-    assert set(moved) == set(env)
-    chats = history_off_chats(cs)
-    assert set(chats) == off
-    assert all(item["updated_via"] == "migration" for item in chats.values())
-    record = stored(cs)["migrations"]["history_scope"]
-    assert record == {"at": plugin._transcription_modes._format_timestamp(NOW), "chats_off": len(off), "no_owner": 0}
-    for chat in ("991", "992"):
-        assert cs.paused(BCID, chat, "history") is (chat in off)
-    assert f"Don't save: {len(off)}." in caplog.text
-    assert "New chats are recorded unless you tap Manage Bot in the chat and choose Don't save." in caplog.text
+    data = stored(cs)
+    assert data["legacy_scope"] == rule and data["owners"] == {}
+    assert data["migrations"] == {"history_scope": {"at": plugin._transcription_modes._format_timestamp(NOW),
+                                                    "rule": True}}
+    assert "is now a stored rule in chat-settings.json" in caplog.text
+    assert "hermes telesec chat scope clear --yes" in caplog.text
     logged = "\n".join(caplog.messages)  # caplog.text also has the test module's random name
-    assert "991" not in logged and "992" not in logged and "hello" not in logged
+    assert "992" not in logged and OTHER_BCID not in logged
 
 
-def test_a_chat_without_a_known_owner_is_counted_and_never_named(cs, plugin, monkeypatch, caplog):
-    raw(plugin, 5601, [(1, "in", "hello", 50)], business_id="business-777", username="u5601")
+@pytest.mark.parametrize("env", [{"TELESEC_HISTORY_CHATS": "*"}, {"TELESEC_HISTORY_CHAT_TYPES": "private,group"},
+                                 {"TELESEC_HISTORY_CONNECTIONS": " , "}])
+def test_an_old_scope_that_kept_no_chat_out_stores_no_rule(cs, plugin, monkeypatch, caplog, env):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    with caplog.at_level(logging.WARNING):
+        assert cs.migrate_history_scope() == list(env)
+
+    assert "legacy_scope" not in stored(cs) and stored(cs)["migrations"]["history_scope"]["rule"] is False
+    assert "kept no private chat out, so no rule was stored" in caplog.text
+    assert cs.paused(BCID, CHAT, "history") is False
+
+
+@pytest.mark.asyncio
+async def test_an_allow_list_keeps_out_a_chat_with_no_saved_history(cs, history_enabled, monkeypatch):
+    plugin = history_enabled
+    store_scope(cs, monkeypatch, CHATS="992")
+
+    await capture(plugin, text_update(77))  # 991 was never recorded before
+    await capture(plugin, text_update(78, chat_id=992))
+
+    assert test_history.load_records(plugin) == []
+    assert len(test_history.load_records(plugin, chat_id=992)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_connection_list_keeps_out_a_new_chat_of_a_second_owner(cs, history_enabled, monkeypatch):
+    plugin = history_enabled
+    store_scope(cs, monkeypatch, CONNECTIONS=BCID)
+    top.bind_owner(plugin, OTHER_OWNER, OTHER_BCID, seen_chat=None)
+
+    await capture(plugin, text_update(77, chat_id=5601, business_id=OTHER_BCID),
+                  test_history.FakeBot(owner_id=OTHER_OWNER))
+    await capture(plugin, text_update(78))
+
+    assert test_history.load_records(plugin, business_id=OTHER_BCID, chat_id=5601) == []
+    assert len(test_history.load_records(plugin)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_chat_type_typo_records_nothing(cs, history_enabled, monkeypatch):
+    plugin = history_enabled
+    store_scope(cs, monkeypatch, CHAT_TYPES="privat")
+
+    await capture(plugin, text_update(77))
+    await capture(plugin, text_update(78, chat_id=992))
+
+    assert test_history.load_records(plugin) == [] and test_history.load_records(plugin, chat_id=992) == []
+    assert cs.paused(BCID, CHAT, "dossier") is True
+
+
+@pytest.mark.asyncio
+async def test_the_rule_applies_per_connection_and_an_explicit_on_covers_both(cs, history_enabled, monkeypatch):
+    plugin = history_enabled
+    second = "business-555"
+    store_scope(cs, monkeypatch, CONNECTIONS=BCID)
+    top.bind_owner(plugin, seen_chat=None)
+    top.bind_owner(plugin, OWNER, second, seen_chat=None)
+
+    await capture(plugin, text_update(77))
+    await capture(plugin, text_update(78, business_id=second))
+
+    assert len(test_history.load_records(plugin)) == 1
+    assert test_history.load_records(plugin, business_id=second) == []
+    assert cs.paused(BCID, CHAT, "dossier") is False and cs.paused(second, CHAT, "dossier") is True
+    assert cs.chat_state(OWNER, CHAT, connections=(BCID,))[0] == "on"
+    assert cs.chat_state(OWNER, CHAT, connections=(BCID, second))[0] == "scope"
+
+    cs.default_store().set_flag(OWNER, CHAT, "history", True, via="cli", connections=(BCID, second))
+    await capture(plugin, text_update(79, business_id=second))
+    assert len(test_history.load_records(plugin, business_id=second)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_corrupt_modes_file_and_a_torn_history_tail_still_fail_closed(cs, history_enabled, monkeypatch):
+    plugin = history_enabled
+    await capture(plugin, text_update(77, chat_id=992))
+    (path,) = chat_dir(plugin, 992).glob("*.jsonl")
+    with path.open("ab") as handle:
+        handle.write(b'{"torn": ')
+    ttm.modes_file(plugin).parent.mkdir(parents=True, exist_ok=True)
+    ttm.modes_file(plugin).write_bytes(GARBAGE)
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "992")
 
+    assert cs.migrate_history_scope() == ["TELESEC_HISTORY_CHATS"]
+    assert stored(cs)["legacy_scope"]["chats"] == ["992"]
+
+    await capture(plugin, text_update(78))
+    assert test_history.load_records(plugin) == []
+    assert cs.paused(BCID, CHAT, "dossier") is True
+
+
+@pytest.mark.asyncio
+async def test_until_the_rule_is_stored_the_variables_still_apply(cs, history_enabled, monkeypatch, caplog):
+    plugin = history_enabled
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "992")
+    write = plugin._transcription_modes._write_private_json_atomic
+
+    def broken(*_args):
+        raise OSError("disk")
+
+    monkeypatch.setattr(plugin._transcription_modes, "_write_private_json_atomic", broken)
     with caplog.at_level(logging.WARNING):
         assert cs.migrate_history_scope() == ["TELESEC_HISTORY_CHATS"]
+        assert cs.warn_ignored_scope_env() == []  # still read, so not "no longer read"
+    assert "could not store the old history scope (OSError); TELESEC_HISTORY_CHATS still apply" in caplog.text
+    assert not cs.chat_settings_path().exists()
+    await capture(plugin, text_update(77))
+    await capture(plugin, text_update(78, chat_id=992))
+    assert test_history.load_records(plugin) == []
+    assert len(test_history.load_records(plugin, chat_id=992)) == 1
 
-    assert stored(cs)["owners"] == {}
-    assert stored(cs)["migrations"]["history_scope"]["no_owner"] == 1
-    assert "with no known owner: 1. They are recorded from now on; tap Manage Bot" in caplog.text
-    for secret in ("5601", "business-777", "u5601"):
-        assert secret not in "\n".join(caplog.messages)
-
-
-def test_chats_known_only_from_modes_or_chat_settings_follow_the_old_scope(cs, plugin, monkeypatch):
-    top.bind_owner(plugin, seen_chat=None)
-    assert ttm.run_cli(plugin, "mode", "set", "993", "off", "--owner", "1000")[0] == 0
-    cs.default_store().set_flag(OWNER, 994, "dossier", False, via="cli")
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "992")
-
-    cs.migrate_history_scope()
-
-    assert set(history_off_chats(cs)) == {"993", "994"}
-    assert stored(cs)["owners"]["1000"]["chats"]["994"]["dossier"] == "off"  # the owner's own value stays
-
-
-def test_the_migration_runs_once_and_the_variables_are_ignored_afterwards(cs, plugin, monkeypatch, caplog):
-    seed_scope_chats(plugin)
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "992")
+    # A damaged chat-settings.json is never overwritten: everything stays paused until it is repaired.
+    monkeypatch.setattr(plugin._transcription_modes, "_write_private_json_atomic", write)
+    cs.chat_settings_path().write_bytes(GARBAGE)
+    cs.reset_in_memory_caches()
     assert cs.migrate_history_scope() == ["TELESEC_HISTORY_CHATS"]
-    cs.default_store().set_flag(OWNER, CHAT, "history", True, via="chat")  # the owner turns it back on
+    assert cs.chat_settings_path().read_bytes() == GARBAGE
+    assert cs.paused(BCID, 992, "history") is True
+
+    cs.chat_settings_path().unlink()
+    cs.reset_in_memory_caches()  # the next start
+    assert cs.migrate_history_scope() == ["TELESEC_HISTORY_CHATS"]
+    monkeypatch.delenv("TELESEC_HISTORY_CHATS")
+    assert cs.paused(BCID, CHAT, "history") is True and cs.paused(BCID, 992, "history") is False
+
+
+def test_the_rule_is_stored_once_across_restarts_and_processes(cs, plugin, monkeypatch):
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "992")
+    rule = cs.OldScope.from_env()
+    barrier = threading.Barrier(2)
+    results: list[bool] = []
+
+    def start() -> None:  # a process of its own: a separate store and cache
+        barrier.wait()
+        results.append(cs._store_scope(cs.ChatSettingsStore(), rule, now=NOW))
+
+    threads = [threading.Thread(target=start) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert sorted(results) == [False, True]
     before = cs.chat_settings_path().read_bytes()
 
-    with caplog.at_level(logging.WARNING):
-        assert cs.migrate_history_scope() == []
-        assert cs.warn_ignored_scope_env() == ["TELESEC_HISTORY_CHATS"]
-        assert cs.warn_ignored_scope_env() == []  # once per process
-
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")  # changed after the rule was stored: never read
+    cs.reset_in_memory_caches()  # the next start
+    assert cs.migrate_history_scope() == []
     assert cs.chat_settings_path().read_bytes() == before
-    assert cs.paused(BCID, CHAT, "history") is False
-    assert "history_scope" in stored(cs)["migrations"]
-    assert caplog.text.count("TELESEC_HISTORY_CHATS is no longer read; history is set per chat") == 1
+    assert cs.paused(BCID, CHAT, "history") is True and cs.paused(BCID, 992, "history") is False
 
 
-def test_register_migrates_once_then_warns_on_each_start(cs, plugin, monkeypatch, caplog):
-    seed_scope_chats(plugin)
+def test_register_stores_the_rule_once_then_warns_on_each_start(cs, plugin, monkeypatch, caplog):
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "992")
     monkeypatch.setattr(plugin._history_support, "run_startup_maintenance",
                         Mock(return_value=SimpleNamespace(cap_exceeded=False, warnings=[])))
@@ -836,47 +953,75 @@ def test_register_migrates_once_then_warns_on_each_start(cs, plugin, monkeypatch
 
     with caplog.at_level(logging.WARNING):
         plugin.register(ctx)
-    assert "Don't save: 1." in caplog.text and "history is set per chat" not in caplog.text
+    assert "is now a stored rule" in caplog.text and "is set but no longer read" not in caplog.text
 
     caplog.clear()
     cs.reset_in_memory_caches()  # the next start
     with caplog.at_level(logging.WARNING):
         plugin.register(ctx)
-    assert "Don't save:" not in caplog.text
-    assert caplog.text.count("TELESEC_HISTORY_CHATS is no longer read; history is set per chat") == 1
-    assert set(history_off_chats(cs)) == {"991"}
+    assert "is now a stored rule" not in caplog.text
+    assert caplog.text.count("TELESEC_HISTORY_CHATS is set but no longer read") == 1
+    assert stored(cs)["legacy_scope"]["chats"] == ["992"]
 
 
 def test_without_the_variables_nothing_runs_or_is_recorded(cs, plugin):
-    seed_scope_chats(plugin)
-
     assert cs.migrate_history_scope() == []
     assert cs.warn_ignored_scope_env() == []
     assert not cs.chat_settings_path().exists()
 
 
-def test_an_unreadable_settings_file_leaves_the_migration_for_the_next_start(cs, plugin, monkeypatch, caplog):
-    seed_scope_chats(plugin)
+def test_cli_shows_the_rule_turns_a_chat_on_and_clears_it(cs, plugin, monkeypatch):
+    top.bind_owner(plugin)
+    test_history.set_switch(plugin, "history", True)
+    store_scope(cs, monkeypatch, CHATS="992,993")
+    summary = "Old history scope (any connection, 2 chats listed, chat types: private): a stored rule in "
+
+    code, out = ttm.run_cli(plugin, "chat", "get", "991")
+    assert code == 0 and "in effect: history=scope dossier=settings" in out
+    assert "The old history scope rule keeps this chat out. Turn it on: 'hermes telesec chat set 991" in out
+    code, out = ttm.run_cli(plugin, "chat", "scope")
+    assert code == 0 and out.startswith(summary) and "992" not in out
+    assert ttm.run_cli(plugin, "chat", "list")[1].startswith(summary)
+    listed = json.loads(ttm.run_cli(plugin, "chat", "list", "--format", "json")[1])
+    assert listed["old_scope"] == {"stored": True, "connections": "any", "chats": 2, "chat_types": ["private"]}
+    assert "Old history scope rule: applies; chats it keeps out don't save history unless turned on (0 turned on)." \
+        in ttm.run_cli(plugin, "settings")[1]
+
+    code, out = ttm.run_cli(plugin, "chat", "set", "991", "--history", "on")
+    assert code == 0 and "History is on for this chat although the old history scope rule keeps it out." in out
+    assert stored(cs)["owners"]["1000"]["chats"]["991"]["history"] == "on"
+    assert cs.paused(BCID, CHAT, "history") is False and cs.paused(BCID, 994, "history") is True
+    got = json.loads(ttm.run_cli(plugin, "chat", "get", "991", "--format", "json")[1])
+    assert (got["history"], got["history_state"], got["old_scope"]["stored"]) == ("on", "on", True)
+    assert ttm.run_cli(plugin, "chat", "set", "992", "--history", "on")[0] == 0  # the rule lets 992 in
+    assert "992" not in stored(cs)["owners"]["1000"]["chats"]
+
+    code, out = ttm.run_cli(plugin, "chat", "scope", "clear")
+    assert code == 1 and "start saving history with their next message" in out
+    assert cs.paused(BCID, 994, "history") is True
+    code, out = ttm.run_cli(plugin, "chat", "scope", "clear", "--yes")
+    assert code == 0 and out.startswith("Dropped the old history scope rule. Chats it kept out start saving history")
+    data = stored(cs)
+    assert "legacy_scope" not in data and data["owners"] == {}  # the explicit on only mattered against the rule
+    assert "cleared_at" in data["migrations"]["history_scope"]
+    assert cs.paused(BCID, 994, "history") is False
+    assert ttm.run_cli(plugin, "chat", "scope") == (
+        0, "No old history scope rule; every chat follows its own setting and Settings.")
+    assert ttm.run_cli(plugin, "chat", "scope", "clear", "--yes") == (0, "No old history scope rule to drop.")
+
+
+def test_scope_clear_also_ends_variables_not_stored_yet(cs, plugin, monkeypatch):
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "992")
-    cs.chat_settings_path().parent.mkdir(parents=True, exist_ok=True)
-    cs.chat_settings_path().write_bytes(GARBAGE)
+    assert cs.paused(BCID, CHAT, "history") is True
 
-    with caplog.at_level(logging.WARNING):
-        assert cs.migrate_history_scope() == []
+    code, out = ttm.run_cli(plugin, "chat", "scope", "clear", "--yes")
 
-    assert "retrying at the next start" in caplog.text and "SECRET" not in caplog.text
-    assert cs.chat_settings_path().read_bytes() == GARBAGE
-    cs.chat_settings_path().unlink()
-    cs.reset_in_memory_caches()
-    assert cs.migrate_history_scope() == ["TELESEC_HISTORY_CHATS"]
-    assert set(history_off_chats(cs)) == {"991"}
+    assert code == 0 and "note: TELESEC_HISTORY_CHATS is set but no longer read" in out
+    assert cs.paused(BCID, CHAT, "history") is False
+    assert cs.migrate_history_scope() == []
 
 
 # --- Erase saved history --------------------------------------------------------------------------
-
-ERASE_ROW = [("🗑 Erase saved history", "tb:f:991:h.erase")]
-OFF_ROW = [("Save history", "tb:f:991:h.on"), ("• Don't save", "tb:f:991:h.off")]
-
 
 def chat_dir(plugin, chat: int = CHAT, connection: str = BCID):
     return plugin._history_support._history_chat_dir_path(connection, chat)
@@ -1021,6 +1166,139 @@ async def test_a_failed_erase_says_so_and_keeps_the_row(saved, plugin, monkeypat
     text, rows = top.last_edit(bot)
     assert "Error: could not erase the saved history" in text and ERASE_ROW in rows
     assert "could not erase saved history (OSError)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_erase_works_while_history_is_off_in_settings(saved, plugin):
+    saved.default_store().set_flag(OWNER, CHAT, "history", True, via="chat")
+    test_history.set_switch(plugin, "history", False)
+    plugin._history_support.reset_in_memory_caches()
+    bot = top.PanelBot(business_owner_id=OWNER)
+
+    assert await top.dispatch(plugin, top.start_update(), bot) is True
+    assert "History: off in Settings" in bot.calls[0]["text"]
+    assert top.keyboard(bot.calls[0]["reply_markup"]) == [top.MODE_ROW, ERASE_ROW, REFRESH_ROW]
+
+    await tap(plugin, "tb:f:991:h.erase.yes", bot)
+    assert bot.answers[-1]["text"] == "Saved history erased"
+    assert not chat_dir(plugin).exists()
+    assert len(test_history.load_records(plugin, chat_id=992)) == 1
+
+
+@pytest.mark.asyncio
+async def test_erase_works_for_a_chat_the_old_scope_keeps_out(saved, plugin, monkeypatch):
+    saved.default_store().set_flag(OWNER, CHAT, "history", True, via="chat")
+    store_scope(saved, monkeypatch, CHATS="992")
+    bot = top.PanelBot(business_owner_id=OWNER)
+
+    assert await top.dispatch(plugin, top.start_update(), bot) is True
+    assert SCOPE_LINE in bot.calls[0]["text"]
+    assert top.keyboard(bot.calls[0]["reply_markup"]) == [top.MODE_ROW, OFF_ROW, ERASE_ROW, REFRESH_ROW]
+
+    await tap(plugin, "tb:f:991:h.erase.yes", bot)
+    assert bot.answers[-1]["text"] == "Saved history erased"
+    assert not chat_dir(plugin).exists()
+
+
+@pytest.mark.asyncio
+async def test_erase_refuses_while_chat_settings_cant_be_read(saved, plugin):
+    saved.chat_settings_path().write_bytes(GARBAGE)
+    saved.reset_in_memory_caches()  # a cold start: nothing valid was read
+    bot = top.PanelBot(business_owner_id=OWNER)
+
+    await tap(plugin, "tb:f:991:h.erase.yes", bot)
+    assert bot.answers[-1]["text"] == "Chat settings can't be read; try again later"
+    await tap(plugin, "tb:f:991:h.erase", bot, lang="ru")
+    assert bot.answers[-1]["text"] == "Настройки чатов не читаются; попробуйте позже"
+    assert len(test_history.load_records(plugin)) == 3
+
+
+@pytest.mark.asyncio
+async def test_forget_erases_history_before_the_dossier_and_a_failed_erase_forgets_nothing(saved, plugin, monkeypatch):
+    history = plugin._history_support
+    calls = []
+
+    def forget_dossier(target):
+        calls.append((target[0], chat_dir(plugin).exists(), chat_dir(plugin, 992).exists()))
+        return {"existed": False, "contacts": 0, "persona": False}
+
+    monkeypatch.setattr(history, "_forget_dossier", forget_dossier)
+    erase = history.erase_chat_history
+
+    def broken(*_args):
+        raise OSError("disk")
+
+    monkeypatch.setattr(history, "erase_chat_history", broken)
+    with pytest.raises(OSError):
+        history.forget_chat(BCID, CHAT)
+    assert calls == [] and chat_dir(plugin).exists()  # nothing forgotten: a retry does it all
+
+    monkeypatch.setattr(history, "erase_chat_history", erase)
+    saved_before, _dossier = history.forget_chat(BCID, CHAT)
+    assert saved_before.messages == 3 and calls == [("contact", False, True)]
+
+    assert history._forget_all_cli(True) == 0
+    assert calls[-1] == ("all", False, False)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_catalog_rebuild_still_drops_the_erased_chat(saved, plugin, monkeypatch):
+    history = plugin._history_support
+    assert catalog_chats(plugin) == {(BCID, "991"), (BCID, "992")}
+    history._mark_catalog_dirty_locked("test")  # not fresh: the erase needs a rebuild
+    monkeypatch.setattr(history, "_rebuild_catalog_locked", Mock(side_effect=OSError("disk")))
+
+    assert history.erase_chat_history(BCID, CHAT).messages == 3
+
+    contacts = json.loads(history._catalog_path().read_text(encoding="utf-8"))["contacts"]
+    assert [(c["business_connection_id"], str(c["chat_id"])) for c in contacts] == [(BCID, "992")]
+    assert history._catalog_dirty_path().exists()
+
+    # A catalog that can't be parsed at all is left to the dirty marker alone.
+    history._catalog_path().write_bytes(GARBAGE)
+    history._catalog_dirty_path().unlink()
+    assert history.erase_chat_history(BCID, 992).messages == 1
+    assert history._catalog_path().read_bytes() == GARBAGE
+    assert history._catalog_dirty_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_erase_stops_a_running_dossier_refresh_and_keeps_other_dossiers(dossier_plugin, dossiers, panel):
+    plug, ds = dossier_plugin, dossiers
+    await seed(plug, tdp.CHAT, "erased", [(1, "in", "ERASE-TAG question", 90), (2, "out", "ERASE-TAG reply", 85)])
+    await seed(plug, 5505, "open_contact", [(1, "in", "OPEN-TAG question", 80), (2, "out", "OPEN-TAG reply", 75)])
+    assert cycle(ds, FakeLlm(quote_first, quote_first, quote_first)).refreshed == 2
+    other = read_dossier(ds, 5505)
+    await seed(plug, tdp.CHAT, "erased", [(3, "in", "ERASE-TAG later", 30), (4, "out", "ERASE-TAG ok", 25)])
+    release, entered = threading.Event(), threading.Event()
+    llm = FakeLlm(quote_first)
+
+    def hold(_payload) -> None:
+        entered.set()
+        release.wait(5)
+
+    llm.on_call = hold
+    ds.bind_llm(llm)
+    top.bind_owner(plug)
+    bot = top.PanelBot(business_owner_id=OWNER_ID)
+    try:
+        assert (await tdp.act(panel, "rf.c")).notice == "Refresh started. Open the dossier again in a minute."
+        assert await asyncio.to_thread(entered.wait, 5)
+        _thread, stop = panel._REFRESHES[panel._refresh_key(ds.chat_key(BUSINESS_ID, tdp.CHAT))]
+        plug._chat_settings.default_store().set_flag(OWNER_ID, tdp.CHAT, "history", False, via="cli")
+
+        await tap(plug, "tb:f:991:h.erase.yes", bot)
+
+        assert bot.answers[-1]["text"] == "Saved history erased"
+        assert stop.is_set()  # the erase stopped the refresh while its model call was running
+    finally:
+        release.set()
+        panel.join_refreshes(timeout=5)
+
+    assert len(llm.calls) == 1  # nothing after the stop
+    assert read_dossier(ds, tdp.CHAT) is None  # the refresh wrote nothing back
+    assert read_dossier(ds, 5505) == other
+    assert test_history.load_records(plug, chat_id=tdp.CHAT) == []
 
 
 def test_erase_callbacks_fit_for_the_longest_chat_id(plugin):

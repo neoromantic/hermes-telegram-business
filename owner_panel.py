@@ -88,6 +88,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "dossier.on": "Keep dossier",
         "dossier.off": "No dossier",
         "history.settings": "History: off in Settings",
+        "history.scope": "History: off by the old server scope",
         "history.unreadable": "Chat settings can't be read; history and dossiers are paused.",
         "history.erase": "🗑 Erase saved history",
         "erase.messages.one": "{n} saved message",
@@ -101,6 +102,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "erase.done": "Saved history erased",
         "erase.none": "No saved history for this chat",
         "erase.needs_off": "Choose Don't save for this chat first",
+        "erase.unreadable": "Chat settings can't be read; try again later",
         "erase.error": "Error: could not erase the saved history",
         "dossier.settings": "Dossier: off in Settings",
         "dossier.needs_history": "Dossier: needs history",
@@ -145,6 +147,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "dossier.on": "Вести досье",
         "dossier.off": "Не вести",
         "history.settings": "История: выключена в настройках",
+        "history.scope": "История: выключена старой настройкой сервера",
         "history.unreadable": "Настройки чатов не читаются; история и досье на паузе.",
         "history.erase": "🗑 Стереть сохранённую историю",
         "erase.messages.one": "{n} сохранённое сообщение",
@@ -158,6 +161,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "erase.done": "Сохранённая история стёрта",
         "erase.none": "Для этого чата нет сохранённой истории",
         "erase.needs_off": "Сначала выберите «Не сохранять» для этого чата",
+        "erase.unreadable": "Настройки чатов не читаются; попробуйте позже",
         "erase.error": "Ошибка: не удалось стереть сохранённую историю",
         "dossier.settings": "Досье: выключено в настройках",
         "dossier.needs_history": "Досье: нужна история",
@@ -404,8 +408,9 @@ def chat_label_text(chat_id: Any, label: str | None) -> str:
     return f"{label} · chat {chat_id}" if label else f"chat {chat_id}"
 
 
-# Row states with a status line of their own; any other hidden state shows no line.
-_HISTORY_LINES = frozenset({"settings", "unreadable"})
+# Row states with a status line of their own; any other hidden state shows no line. "scope" (the old scope
+# rule keeps the chat out) shows its line and the history row, as Don't save.
+_HISTORY_LINES = frozenset({"settings", "scope", "unreadable"})
 _DOSSIER_LINES = frozenset({"settings", "needs_history"})
 CHAT_DEFAULT_FEATURES = ("on", "on")
 
@@ -416,26 +421,28 @@ def feature_rows(
     """This chat's history and dossier controls in the transcription style: (status lines, button rows).
 
     ``features`` is (history, dossier) from ``chat_settings.chat_state``: "on" or "off" shows a choice
-    row with "•" on the value in effect; any other state hides the row, and some show a line instead.
-    ``erasable`` (the chat has saved history) adds "Erase saved history" under a history row set to off.
+    row with "•" on the value in effect, and history "scope" shows it as off with a line; any other state
+    hides the row, and some show a line instead. ``erasable`` (the chat has saved history and history is
+    not on for it) adds "Erase saved history" under the history row or line.
     """
     lines: list[str] = []
     rows: list[list[tuple[str, str]]] = []
     for (key, feature), state, with_line in zip(
         FLAG_FEATURES.items(), features, (_HISTORY_LINES, _DOSSIER_LINES), strict=True
     ):
-        if state in ("on", "off"):
+        shown = "off" if state == "scope" else state
+        if shown in ("on", "off"):
             rows.append(
                 [
-                    (("• " if value == state else "") + tr(f"{feature}.{value}", language_code),
+                    (("• " if value == shown else "") + tr(f"{feature}.{value}", language_code),
                      callback_data("f", chat_id, f"{key}.{value}"))
                     for value in ("on", "off")
                 ]
             )
-            if feature == "history" and state == "off" and erasable:
-                rows.append([(tr("history.erase", language_code), callback_data("f", chat_id, ERASE_ASK))])
-        elif state in with_line:
+        if state in with_line:
             lines.append(tr(f"{feature}.{state}", language_code))
+        if feature == "history" and state != "on" and erasable:
+            rows.append([(tr("history.erase", language_code), callback_data("f", chat_id, ERASE_ASK))])
     return lines, rows
 
 
@@ -464,7 +471,7 @@ def flag_unavailable(feature: str, features: tuple[str, str], language_code: str
     """The toast for a tap on a hidden history or dossier row (a stale button), else None."""
     history, dossier = features
     state = history if feature == "history" else dossier
-    if state in ("on", "off"):
+    if state in ("on", "off", "scope"):
         return None
     if feature == "dossier" and state == "no_history":
         state, feature = history, "history"

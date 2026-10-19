@@ -267,7 +267,7 @@ def test_cli_shows_and_sets_every_switch(gs, plugin, monkeypatch):
         False, True, True)
     assert data["transcription"]["updated_via"] == "cli" and data["dossiers"]["paused"] is False
     assert data["ignored_env"] == ["TELESEC_DISABLE"] and data["settings_file_unreadable"] is False
-    assert data["chat_overrides"] == {"transcription": 0, "history": 0, "dossier": 0}
+    assert data["chat_overrides"] == {"transcription": 0, "history": 0, "dossier": 0, "history_on": 0, "old_scope": 0}
     assert plugin._disabled() is True  # the stored switch, not TELESEC_DISABLE=0
 
 

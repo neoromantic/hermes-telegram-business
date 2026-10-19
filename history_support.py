@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "telesec"
 get_config = {}.get
-# The 0.12 history scope. Since 0.13 only chat_settings' one-time migration reads it.
+# The 0.12 history scope. Since 0.13 chat_settings reads it only until it stores it as the old scope rule.
 HISTORY_CONNECTIONS_ENV = "TELESEC_HISTORY_CONNECTIONS"
 HISTORY_CHATS_ENV = "TELESEC_HISTORY_CHATS"
 HISTORY_CHAT_TYPES_ENV = "TELESEC_HISTORY_CHAT_TYPES"
@@ -2453,22 +2453,37 @@ def _erase_chat_dir_locked(chat_dir: Path) -> SavedHistory:
 
 
 def _drop_catalog_entries_locked(keys: set[tuple[str, str]], base_source_signature: dict[str, Any]) -> None:
-    """Remove erased chats from contacts.json: in place when it was fresh, else a rebuild (dirty when that fails)."""
+    """Remove erased chats from contacts.json: in place when it was fresh, else a rebuild.
+
+    When the rebuild fails, the erased chats still leave a readable catalog, which is then marked dirty;
+    only a catalog that can't be parsed at all is left to the dirty marker alone.
+    """
     try:
-        catalog = None if _catalog_dirty_locked() else _read_catalog_locked()
+        catalog = _read_catalog_locked()
     except ValueError:
         catalog = None
+    remaining = None if catalog is None else {
+        key: entry for key, entry in _catalog_contacts_map(catalog).items() if key not in keys}
     try:
-        if catalog is not None and _catalog_source_signature(catalog) == base_source_signature:
-            entries = {key: entry for key, entry in _catalog_contacts_map(catalog).items() if key not in keys}
+        if (remaining is not None and not _catalog_dirty_locked()
+                and _catalog_source_signature(catalog) == base_source_signature):
             _write_catalog_locked(_catalog_from_entries(
-                entries, source_signature=_history_source_signature_locked(chat_lock=_chat_writer_lock)))
+                remaining, source_signature=_history_source_signature_locked(chat_lock=_chat_writer_lock)))
         else:
             _rebuild_catalog_locked(repair_tails=False)
+        return
     except Exception as exc:  # noqa: BLE001 - the erase stands; a dirty catalog is rebuilt on demand
         logger.warning("%s: contact catalog refresh after an erase failed (%s); %s", PLUGIN_NAME,
                        type(exc).__name__, _catalog_rebuild_instruction())
-        _mark_catalog_dirty_locked("history_erase")
+    if remaining is not None:
+        try:
+            # Its old source signature stays, and the dirty marker below: the catalog never reads as fresh.
+            _write_json_atomic(_catalog_path(), _catalog_from_entries(
+                remaining, source_signature=_catalog_source_signature(catalog)))
+        except OSError as exc:
+            logger.warning("%s: could not drop the erased chats from the contact catalog (%s)", PLUGIN_NAME,
+                           type(exc).__name__)
+    _mark_catalog_dirty_locked("history_erase")
 
 
 def erase_chat_history(business_connection_id: Any, chat_id: Any) -> SavedHistory | None:
@@ -2511,14 +2526,16 @@ def _forget_dossier(target: tuple[str, Any]) -> dict[str, Any]:
 
 
 def forget_chat(business_connection_id: Any, chat_id: Any) -> tuple[SavedHistory | None, bool]:
-    """Forget the chat's dossier, then erase its saved history: (history erased, a dossier was deleted).
+    """Erase the chat's saved history, then forget its dossier: (history erased, a dossier was deleted).
 
-    The dossier goes first: it is built from this history, and a failed erase can simply be retried.
-    Blocking.
+    History goes first, so no dossier refresh can rebuild the dossier from it once it is forgotten, and the
+    forget discards any refresh still in flight. A failed erase forgets nothing and can simply be retried;
+    when only the dossier step fails, ``hermes telesec dossier forget`` finishes it. Blocking.
     """
+    saved = erase_chat_history(business_connection_id, chat_id)
     dossier = _forget_dossier(("contact", {"business_connection_id": str(business_connection_id),
                                            "chat_id": chat_id}))
-    return erase_chat_history(business_connection_id, chat_id), bool(dossier.get("existed"))
+    return saved, bool(dossier.get("existed"))
 
 
 def _record_maintenance_run(now: datetime) -> None:
@@ -2929,19 +2946,19 @@ async def _maintain_if_due(current: datetime) -> None:
 
 
 async def _chat_capture_paused(bot: Any, business_connection_id: Any, chat_id: Any) -> bool:
-    """The owner set "Don't save" for this chat (chat_settings). Fails closed: an unknown owner of a chat id
-    that some owner paused, an unreadable chat-settings.json with nothing valid read before, or an error
-    all skip capture. Covers new messages, edits and deletions."""
+    """The owner set "Don't save" for this chat, or the old scope rule keeps it out and the owner did not turn
+    it on (chat_settings). Fails closed: an unknown owner of a chat that could be paused, an unreadable
+    chat-settings.json with nothing valid read before, or an error all skip capture. Covers new messages,
+    edits and deletions."""
     from . import chat_settings  # lazy: chat_settings imports this module
 
     try:
-        store = chat_settings.default_store()
-        if not store.excluded_anywhere("history", chat_id):
-            return False  # fast path: nobody paused this chat id, so no owner lookup
+        if not chat_settings.may_be_paused(business_connection_id, chat_id, "history"):
+            return False  # fast path: nothing can pause this chat, so no owner lookup
         owner = chat_settings.known_owner(business_connection_id)
         if owner is None:
             owner, _reason = await resolve_business_owner(bot, business_connection_id)
-        return store.is_off(owner, chat_id, "history")
+        return chat_settings.paused(business_connection_id, chat_id, "history", owner=owner)
     except Exception as exc:  # noqa: BLE001 - a broken check pauses capture rather than record a paused chat
         logger.warning("%s: chat settings check failed (%s); history not recorded", PLUGIN_NAME, type(exc).__name__)
         return True
@@ -3753,8 +3770,8 @@ def _forget_all_cli(confirmed: bool) -> int:
               "and every dossier (contacts and the owner persona).")
         print(FORGET_CONFIRM_HINT)
         return 1
+    saved = erase_all_history()  # history first, as in forget_chat
     dossiers = _forget_dossier(("all", None))
-    saved = erase_all_history()
     print(f"Erased all saved history: {_count_text(saved.chats, 'chat')}, {_saved_text(saved)}.")
     print(f"Forgot {_count_text(dossiers['contacts'], 'contact dossier')}"
           + (" and the owner persona." if dossiers["persona"] else "."))

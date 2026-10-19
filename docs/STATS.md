@@ -431,9 +431,9 @@ There is no `📈` line here because history starts inside the period.
 Other states. History off, connection not known, no history, and the read error are short plain-text messages; the paused and empty states are still the rich report:
 
 - **History is off.** `History is off. Turn it on in Settings (/telesec).`
-- **History paused for this chat.** The chat is set to Don't save in its panel ([per-chat history](../README.md#per-chat-history-and-dossier)). The report still shows what was saved, with `History is paused for this chat.` (Russian: `История этого чата сейчас не сохраняется.`) as its last line before the footer.
+- **History paused for this chat.** The chat is set to Don't save in its panel, or the [old server scope](../README.md#moving-from-the-history-environment-variables) keeps it out ([per-chat history](../README.md#per-chat-history-and-dossier)). The report still shows what was saved, with `History is paused for this chat.` (Russian: `История этого чата сейчас не сохраняется.`) as its last line before the footer.
 - **Connection not known yet.** The bot has not seen the Business connection for this chat yet.
-- **No history for this chat.** History records new text messages only, so a chat with no message since capture started has no report yet. It also shows when the chat is outside the history scope settings (see [HISTORY.md](HISTORY.md)); widen the scope to include it.
+- **No history for this chat.** History records new text messages only, so a chat with no message since capture started has no report yet. It also shows after the chat's saved history was [erased](HISTORY.md#erase-one-chat), and while the chat is set to Don't save (or the old server scope keeps it out) and nothing was saved before.
 - **No activity in the period.** The title, `no messages in this period`, and the footer. It is not an error, and the period buttons stay.
 - **History could not be read.** For example, a stale or damaged catalog, a torn final line, or a missing lock. The panel shows the `stats` command to run on the gateway host for details, and keeps the period buttons so you can retry. The gateway log gets a warning with only the error type: no names, paths, or error text.
 
