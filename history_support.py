@@ -20,14 +20,14 @@ import tempfile
 import threading
 import unicodedata
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, TypeVar
+from typing import Any, TypeVar
 
 try:
     import fcntl
@@ -89,8 +89,8 @@ VERIFY_REFERENCE_CLASSIFICATION_TEMP_DIR_PREFIX = ".verify-reference-classificat
 
 _OWNER_CACHE: dict[str, str] = {}
 _CACHE_LOCK = threading.RLock()
-_CHAT_STATE_CACHE: dict[str, "ChatStateCacheEntry"] = {}
-_DELETION_TIMERS: dict[tuple[str, str], "DeletionTimerEntry"] = {}
+_CHAT_STATE_CACHE: dict[str, ChatStateCacheEntry] = {}
+_DELETION_TIMERS: dict[tuple[str, str], DeletionTimerEntry] = {}
 _LAST_MAINTENANCE_AT: datetime | None = None
 MutationResult = TypeVar("MutationResult")
 
@@ -526,8 +526,8 @@ class _RetainedTombstoneReferenceTracker:
             if deleted_observed_at:
                 yield (
                     ordinal,
-                    f"{chat_label}: classification {event_id} refers to tombstone {deleted_event_id} "
-                    "outside the retained archive",
+                    (f"{chat_label}: classification {event_id} refers to tombstone {deleted_event_id} "
+                    "outside the retained archive"),
                 )
                 continue
             yield ordinal, f"{chat_label}: classification {event_id} refers to a missing tombstone"
@@ -597,22 +597,22 @@ def _path_key(value: Any) -> str:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _isoformat_utc(value: datetime | None) -> str | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
@@ -623,18 +623,18 @@ def _parse_datetime(value: Any) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _normalize_timestamp(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(value, tz=timezone.utc)
+            return datetime.fromtimestamp(value, tz=UTC)
         except (OSError, OverflowError, ValueError):
             return None
     return None
@@ -782,10 +782,7 @@ def _fsync_parent_directory(path: Path) -> bool:
     if os.name == "nt":
         return False
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    try:
-        descriptor = os.open(str(path.parent), flags)
-    except OSError:
-        raise
+    descriptor = os.open(str(path.parent), flags)
     try:
         try:
             os.fsync(descriptor)
@@ -1300,10 +1297,10 @@ def _read_catalog_locked() -> dict[str, Any] | None:
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid {path.name}: {exc}") from exc
     if not isinstance(raw, dict):
-        raise ValueError(f"invalid {path.name}: top-level value must be an object")
+        raise ValueError(f"invalid {path.name}: top-level value must be an object")  # noqa: TRY004 - bad file content
     contacts = raw.get("contacts")
     if not isinstance(contacts, list):
-        raise ValueError(f"invalid {path.name}: contacts must be a list")
+        raise ValueError(f"invalid {path.name}: contacts must be a list")  # noqa: TRY004 - bad file content
     if raw.get("schema_version") != CATALOG_SCHEMA_VERSION:
         raise ValueError(
             f"unsupported {path.name} schema_version {raw.get('schema_version')}"
@@ -1385,7 +1382,7 @@ def _rebuild_catalog_locked(*, repair_tails: bool) -> dict[str, Any]:
                 _scan_records(
                     chat_dir,
                     repair_tails=repair_tails,
-                    on_record=lambda record: _apply_record_to_catalog_entry(
+                    on_record=lambda record, entries=entries: _apply_record_to_catalog_entry(
                         entries.setdefault(
                             _catalog_contact_key(record.get("business_connection_id"), record.get("chat_id")),
                             _empty_catalog_entry(
@@ -1591,7 +1588,7 @@ def _known_chat_type_for_capture(
 
 
 def _month_filename(observed_at: datetime) -> str:
-    return observed_at.astimezone(timezone.utc).strftime("%Y-%m") + ".jsonl"
+    return observed_at.astimezone(UTC).strftime("%Y-%m") + ".jsonl"
 
 
 def _month_sort_key(path: Path) -> tuple[str, str]:
@@ -1736,7 +1733,7 @@ def _scan_history_file(path: Path, *, on_record: Callable[[dict[str, Any]], None
             except json.JSONDecodeError as exc:
                 raise ValueError(f"invalid JSON in {path.name}:{line_no}: {exc}") from exc
             if not isinstance(record, dict):
-                raise ValueError(f"non-object record in {path.name}:{line_no}")
+                raise ValueError(f"non-object record in {path.name}:{line_no}")  # noqa: TRY004 - bad file content
             on_record(record)
 
 
@@ -2140,7 +2137,7 @@ def _run_scheduled_deletion_timer(chat_dir_text: str, deleted_event_id: str, due
         if refresh_exc is not None:
             detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
             logger.warning("%s: scheduled deletion classification catalog refresh failed: %s%s", PLUGIN_NAME, refresh_exc, detail)
-    except Exception as exc:  # noqa: BLE001 - background classification must stay contained
+    except Exception as exc:
         logger.warning("%s: scheduled deletion classification failed: %s", PLUGIN_NAME, exc, exc_info=True)
 
 
@@ -2231,8 +2228,7 @@ def _iter_chat_dirs() -> Iterator[Path]:
     if not root.exists():
         return
     for connection_dir in sorted(path for path in root.iterdir() if path.is_dir()):
-        for chat_dir in sorted(path for path in connection_dir.iterdir() if path.is_dir()):
-            yield chat_dir
+        yield from sorted(path for path in connection_dir.iterdir() if path.is_dir())
 
 
 def _file_month(path: Path) -> tuple[int, int] | None:
@@ -2438,7 +2434,7 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
         total_bytes = inventory.total_bytes
         if config.retention_days > 0:
             cutoff = current - timedelta(days=config.retention_days)
-            retention_cutoff = datetime(cutoff.year, cutoff.month, 1, tzinfo=timezone.utc)
+            retention_cutoff = datetime(cutoff.year, cutoff.month, 1, tzinfo=UTC)
             for path in sorted(
                 inventory.unprotected_closed_files,
                 key=lambda candidate: (_file_month(candidate) or (9999, 99), str(candidate.parent)),
@@ -2448,7 +2444,7 @@ def maintain_history(*, now: datetime | None = None) -> MaintenanceResult:
                 month = _file_month(path)
                 if month is None:
                     continue
-                month_start = datetime(month[0], month[1], 1, tzinfo=timezone.utc)
+                month_start = datetime(month[0], month[1], 1, tzinfo=UTC)
                 if month_start >= retention_cutoff:
                     continue
                 try:
@@ -2557,7 +2553,7 @@ def verify_history(*, repair_tails: bool = False, now: datetime | None = None) -
                         paths = _iter_history_files(chat_dir)
                         file_count += len(paths)
                         try:
-                            def _consume(record: dict[str, Any]) -> None:
+                            def _consume(record: dict[str, Any], chat_dir: Path = chat_dir) -> None:
                                 nonlocal record_count
                                 ordinal = record_count
                                 record_count += 1
@@ -2908,7 +2904,7 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
             mutate=_mutate_message,
         )
 
-    if refresh_exc is not None:  # noqa: BLE001 - derived catalog failure must never block canonical history
+    if refresh_exc is not None:
         detail = f"; catalog dirty marker failed: {dirty_exc}" if dirty_exc is not None else "; derived catalog marked dirty"
         logger.warning(
             "%s: history contact catalog update failed for connection=%s chat=%s: %s%s",
@@ -2967,11 +2963,11 @@ def _month_bounds(path: Path) -> tuple[datetime, datetime] | None:
     if month is None:
         return None
     year, month_value = month
-    start = datetime(year, month_value, 1, tzinfo=timezone.utc)
+    start = datetime(year, month_value, 1, tzinfo=UTC)
     if month_value == 12:
-        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        end = datetime(year + 1, 1, 1, tzinfo=UTC)
     else:
-        end = datetime(year, month_value + 1, 1, tzinfo=timezone.utc)
+        end = datetime(year, month_value + 1, 1, tzinfo=UTC)
     return start, end
 
 
@@ -2982,9 +2978,7 @@ def _partition_intersects(path: Path, *, since: datetime | None, until: datetime
     start, end = bounds
     if since is not None and end <= since:
         return False
-    if until is not None and start > until:
-        return False
-    return True
+    return not (until is not None and start > until)
 
 
 def _iter_selected_history_files(chat_dir: Path, *, since: datetime | None, until: datetime | None) -> Iterator[Path]:
@@ -3003,9 +2997,7 @@ def _record_within_bounds(record: dict[str, Any], *, since: datetime | None, unt
         return False
     if since is not None and observed_at < since:
         return False
-    if until is not None and observed_at > until:
-        return False
-    return True
+    return not (until is not None and observed_at > until)
 
 
 def _normalize_search_text(value: Any) -> str:
@@ -3041,7 +3033,7 @@ def _streamed_records_locked(
                         except json.JSONDecodeError as exc:
                             raise ValueError(f"{chat_dir}: invalid JSON in {path.name}:{line_no}: {exc}") from exc
                         if not isinstance(record, dict):
-                            raise ValueError(f"{chat_dir}: non-object record in {path.name}:{line_no}")
+                            raise ValueError(f"{chat_dir}: non-object record in {path.name}:{line_no}")  # noqa: TRY004 - bad file content
                         if not _record_within_bounds(record, since=since, until=until):
                             continue
                         if normalized_text_query is not None and normalized_text_query not in _normalize_search_text(
@@ -3565,7 +3557,7 @@ def handle_cli(args: argparse.Namespace) -> int:
             entries = sorted(
                 _filter_catalog_entries(business_connection_id=getattr(args, "connection", None)),
                 key=lambda entry: (
-                    _parse_datetime(entry.get("last_seen_at")) or datetime.min.replace(tzinfo=timezone.utc),
+                    _parse_datetime(entry.get("last_seen_at")) or datetime.min.replace(tzinfo=UTC),
                     str(entry.get("business_connection_id")),
                     str(entry.get("chat_id")),
                 ),
@@ -3587,7 +3579,7 @@ def handle_cli(args: argparse.Namespace) -> int:
             entries = sorted(
                 entries,
                 key=lambda entry: (
-                    _parse_datetime(entry.get("last_seen_at")) or datetime.min.replace(tzinfo=timezone.utc),
+                    _parse_datetime(entry.get("last_seen_at")) or datetime.min.replace(tzinfo=UTC),
                     str(entry.get("business_connection_id")),
                     str(entry.get("chat_id")),
                 ),
