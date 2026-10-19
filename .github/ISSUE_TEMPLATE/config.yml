@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or setup help
+    url: https://github.com/neoromantic/hermes-telegram-business/discussions/categories/q-a
+    about: Ask how to install, configure, or use the plugin.
+  - name: Security problem
+    url: https://github.com/neoromantic/hermes-telegram-business/security/advisories/new
+    about: Report a vulnerability privately.

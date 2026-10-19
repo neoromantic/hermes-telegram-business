@@ -1,0 +1,118 @@
+name: Bug report
+description: Something in the plugin does not work as documented.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. This issue is public, so use synthetic or redacted details only.
+        Security problems go through a [private report](https://github.com/neoromantic/hermes-telegram-business/security/advisories/new), not here.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      description: Confirm the report is safe to publish.
+      options:
+        - label: I removed bot tokens, API keys, cookies, and session strings.
+          required: true
+        - label: I removed real Business connection, chat, user, and message IDs.
+          required: true
+        - label: I removed real messages, transcripts, captions, audio, video, and screenshots of real chats.
+          required: true
+        - label: I did not attach history or dossier files, provider logs, or full environment dumps.
+          required: true
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin version
+      description: From `hermes plugins list --user`.
+    validations:
+      required: true
+  - type: input
+    id: hermes_version
+    attributes:
+      label: Hermes version
+      description: From `hermes --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: feature
+    attributes:
+      label: Feature
+      options:
+        - Voice and video note transcription
+        - Attached audio file transcription
+        - Transcription modes (owner panel, /transcribe, or mode CLI)
+        - Correspondence history
+        - Correspondence stats
+        - Contact dossiers
+        - Install, update, or remove
+        - Other or not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Message direction
+      description: For transcription bugs.
+      options:
+        - Incoming (from the contact)
+        - Outgoing (from the account owner)
+        - Not sure or not relevant
+    validations:
+      required: false
+  - type: dropdown
+    id: cleanup
+    attributes:
+      label: Transcript cleanup
+      description: For transcription bugs.
+      options:
+        - conservative (default)
+        - enriched
+        - disabled (TG_BUSINESS_VOICE_CLEANUP_DISABLE=1)
+        - Not sure or not relevant
+    validations:
+      required: false
+  - type: dropdown
+    id: stt
+    attributes:
+      label: STT backend
+      description: The backend configured in Hermes. Do not name keys or paste provider logs.
+      options:
+        - Local
+        - External
+        - Not sure or not relevant
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence that shows the bug, with synthetic data.
+      placeholder: |
+        1. Set the chat mode to `own` in the owner panel.
+        2. Send a short voice note from the contact.
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted log lines or settings
+      description: Optional. Short gateway log lines and the plugin variables you set (names and values, no secrets).
+      render: text
+    validations:
+      required: false
