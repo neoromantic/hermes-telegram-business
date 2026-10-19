@@ -26,7 +26,6 @@ OWNER = ttm.OWNER
 PEER = ttm.PEER
 CHAT = ttm.CHAT
 BCID = ttm.BCID
-DISABLE_ENV = "TELESEC_DISABLE"
 
 
 class PanelBot(ttm.CommandBot):
@@ -294,7 +293,7 @@ async def test_unknown_connection_gets_one_hint_and_is_claimed(plugin, modes):
 
 @pytest.mark.asyncio
 async def test_unknown_connection_hint_works_without_transcription(plugin, modes, monkeypatch):
-    monkeypatch.setenv(DISABLE_ENV, "1")
+    test_history.set_switch(plugin, "transcription", False)
     bot = PanelBot(business_owner_id=OWNER)
 
     assert await dispatch(plugin, start_update(), bot) is True
@@ -306,7 +305,7 @@ async def test_unknown_connection_hint_works_without_transcription(plugin, modes
 @pytest.mark.asyncio
 async def test_any_business_message_in_the_chat_verifies_the_owner(plugin, modes, monkeypatch):
     # No binding, no history, no `business_connection` update: only a message in the chat.
-    monkeypatch.setenv(DISABLE_ENV, "1")
+    test_history.set_switch(plugin, "transcription", False)
     bot = PanelBot(business_owner_id=OWNER)
     business = ttm.registered_business_handler(plugin, ttm.command_adapter(bot))
 
@@ -881,18 +880,18 @@ def test_panel_value_is_not_a_stored_updated_via(plugin, modes):
 
 @pytest.mark.asyncio
 async def test_disabled_transcription_hides_mode_controls(plugin, modes, monkeypatch):
-    monkeypatch.setenv(DISABLE_ENV, "1")
+    test_history.set_switch(plugin, "transcription", False)
     bind_owner(plugin)
     bot = PanelBot(business_owner_id=OWNER)
 
     assert await dispatch(plugin, start_update(), bot) is True
     (call,) = bot.calls
-    assert call["text"] == "Owner panel: chat 991\nTranscription is disabled on this gateway."
+    assert call["text"] == "Owner panel: chat 991\nTranscription: off in Settings"
     assert keyboard(call["reply_markup"]) == [[("Refresh", "tb:p:991")]]
 
     assert await dispatch(plugin, callback_update("tb:m:991:off"), bot) is True
     assert modes.default_store().get(OWNER, CHAT) is None
-    assert bot.answers == [{"callback_query_id": "query-1", "text": "Transcription is disabled on this gateway."}]
+    assert bot.answers == [{"callback_query_id": "query-1", "text": "Transcription: off in Settings"}]
 
 
 @pytest.mark.asyncio
@@ -900,14 +899,14 @@ async def test_disabled_transcription_hides_mode_controls(plugin, modes, monkeyp
 async def test_mode_buttons_leave_a_stored_mode_while_transcription_is_disabled(plugin, modes, monkeypatch, data):
     bind_owner(plugin)
     ttm.seed(plugin, OWNER, CHAT, "off", label="Casey")
-    monkeypatch.setenv(DISABLE_ENV, "1")
+    test_history.set_switch(plugin, "transcription", False)
     bot = PanelBot(business_owner_id=OWNER)
 
     assert await dispatch(plugin, callback_update(data), bot) is True
 
     assert modes.default_store().get(OWNER, CHAT).mode == "off"
-    assert bot.answers == [{"callback_query_id": "query-1", "text": "Transcription is disabled on this gateway."}]
-    assert last_edit(bot) == ("Owner panel: Casey · chat 991\nTranscription is disabled on this gateway.",
+    assert bot.answers == [{"callback_query_id": "query-1", "text": "Transcription: off in Settings"}]
+    assert last_edit(bot) == ("Owner panel: Casey · chat 991\nTranscription: off in Settings",
                               [[("Refresh", "tb:p:991")]])
 
 
@@ -939,7 +938,8 @@ async def test_registered_section_opens_with_back_and_back_returns(plugin, modes
     assert text == "Stats for chat 991, page 1"
     assert rows == [[("Next", "tb:s:991:stats/2")], [("« Back", "tb:b:991")]]
     assert seen[0] == panel.PanelContext(
-        owner_user_id=str(OWNER), chat_id=str(CHAT), chat_label=None, business_connection_id=BCID, arg=None
+        owner_user_id=str(OWNER), chat_id=str(CHAT), chat_label=None, business_connection_id=BCID, arg=None,
+        owner_connections=(BCID,),
     )
 
     assert await dispatch(plugin, callback_update("tb:s:991:stats/2"), bot) is True

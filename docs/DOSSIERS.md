@@ -6,12 +6,14 @@ Every fact cites the messages it came from. The owner can follow a fact back to 
 
 ## Enable
 
-Dossiers are built from history, so [enable history capture](HISTORY.md#enable-capture) first. Then turn dossiers on in one of two ways:
+Dossiers are built from history, so [turn history on](HISTORY.md#enable-capture) first. Then turn dossiers on in one of two ways:
 
-- In Telegram: tap "Manage Bot" in any Business chat, open **Dossier**, tap **Enable**, and confirm.
-- From the terminal: `hermes telesec dossier enable`.
+- In Telegram: send `/telesec` in your private chat with the bot (or tap **⚙️ Settings** on any chat's panel), tap **Keep dossiers**, and confirm. The confirmation names the model that will receive chat text. See [Settings](../README.md#settings).
+- From the terminal: `hermes telesec settings set dossiers on`, or `hermes telesec dossier enable`.
 
-No gateway restart is needed. The gateway worker checks the switch every minute, and a switch from the panel wakes it at once, so the first cycle starts within a few minutes. **Disable** in the panel or `hermes telesec dossier disable` turns dossiers off again and keeps stored dossiers. The switch is stored in `settings.json` next to the dossiers. It is the same for every Business connection in the profile, and `forget --all` keeps it. In Telegram only an owner of every Business connection the bot knows about can flip it ([In Telegram](#in-telegram)).
+No gateway restart is needed. The gateway worker checks the switch every minute, and a switch from Settings wakes it at once, so the first cycle starts within a few minutes. **No dossiers** in Settings, `hermes telesec settings set dossiers off`, or `hermes telesec dossier disable` turns dossiers off again and keeps stored dossiers. The switch is stored in `settings.json` next to the dossiers. It is the same for every Business connection in the profile, and `forget --all` keeps it. In Telegram only an owner of every Business connection the bot knows about can flip it ([In Telegram](#in-telegram)).
+
+While history is off, dossiers are paused: the worker runs no cycle, `status` says so, and `run` refuses. Turning history on again resumes them with no other step.
 
 Enabling dossiers sends private chat text to the configured model provider. History capture alone never calls a model, and dossiers stay off until they are switched on.
 
@@ -164,7 +166,7 @@ hermes telesec dossier run --persona
 
 `--contact` accepts the same names as `history show`. Use `--chat <id>` with an optional `--connection <id>` when a name is ambiguous, and `--persona` for the owner persona. Commands other than `status`, `enable`, `disable`, `list`, and `run` need one of these targets; for `run` it is optional.
 
-- `enable` and `disable` flip the stored switch ([Enable](#enable)). `enable` names the model that will receive chat text and notes when history capture is off.
+- `enable` and `disable` flip the stored switch ([Enable](#enable)). `enable` names the model that will receive chat text and notes when history is off.
 
 - `list` prints one line per dossier: revision, fact counts, messages processed, last refresh, and flags such as `failed: TimeoutError` or `history gone` (the chat left the contact catalog).
 - `show --fact f3` follows each source back to canonical history. It prints the stored quote next to the current message text, says whether the message was edited, deleted, or is gone, and prints a `history show` command for the surrounding messages. `show --format json` prints the stored dossier plus stale details.
@@ -196,10 +198,10 @@ Tap "Manage Bot" in a Business chat. The bot opens your private chat with it and
 
 - The first screen is an overview: the contact, when the dossier was last updated, coverage and model, fact counts, then the facts grouped by section. Sections that need action come first and open: commitments, open questions, decisions, contradictions. Preferences, relationship, and shared facts follow collapsed, and unsupported facts come last. Each fact shows its ID and marks (📌 pinned, ✎ owner edit, ~ model guess, ⚠ source changed), plus its sources in a collapsed block with the stored quote and the message's current text in history.
 - **Manage facts** lists the facts as buttons, 24 per page. A fact's card shows its sources with the current history text, its kind and revisions, and **Pin** or **Unpin** and **Remove** (with a confirmation). These are the same edits as `dossier pin`, `unpin`, and `remove`, and they survive refreshes the same way. Corrections, notes, history, export, and `forget` stay in the CLI.
-- **Refresh** runs `dossier run --contact` for this chat in the background; open the dossier again a minute later. It is offered while dossiers are on, the gateway has the model facade, and the chat is in history. If another cycle is running, the panel says so.
-- **My persona** shows the owner persona the same way. **Enable** (with a confirmation that names the model) and **Disable** flip the switch.
+- **Refresh** runs `dossier run --contact` for this chat in the background; open the dossier again a minute later. It is offered while dossiers and history are on, the gateway has the model facade, and the chat is in history. If another cycle is running, the panel says so.
+- **My persona** shows the owner persona the same way. The on/off switch is in [Settings](../README.md#settings); an older panel message's Enable or Disable button now only shows the dossier.
 - A button from an older panel message never edits a dossier that was rebuilt or forgotten since; the panel says the dossier changed.
-- The persona and the switch are global, and any Telegram Premium account can connect the bot. So the panel offers them only to an owner of every Business connection the bot knows about: those with a private chat in history, a stored contact dossier, or a chat the persona cites, plus every connection with a recorded or looked-up owner and every connection with a Business update since the gateway started. The bot must know each connection's owner, from a lookup in this gateway process or one the [modes file](../README.md#per-chat-transcription-modes) records; otherwise these buttons stay hidden, the dossier screen says who can turn dossiers on, and the CLI still works.
+- The persona and the switch are global, and any Telegram Premium account can connect the bot. So the panel and Settings offer them only to an owner of every Business connection the bot knows about: those with a private chat in history, a stored contact dossier, or a chat the persona cites, plus every connection with a recorded or looked-up owner and every connection with a Business update since the gateway started. The bot must know each connection's owner, from a lookup in this gateway process or one the [modes file](../README.md#per-chat-transcription-modes) records; otherwise the persona button stays hidden, Settings is read-only, the dossier screen says who can turn dossiers on, and the CLI still works.
 - A long dossier fits Telegram's rich message limits. The current history text goes first, then the source details of the oldest facts, and finally the last facts give way to a "… N more facts" line; the CLI shows everything. When Telegram rejects the rich message, the panel falls back to plain text.
 
 ### `/dossier` in a chat
@@ -241,7 +243,7 @@ When pruning removes a whole chat, its dossier stays as an orphan. The worker on
 - Rate limit: at most 20 model calls per minute, over a sliding 60-second window that `dossier run` shares. It counts the plugin's `complete_structured` calls; retries and fallbacks inside the host are not counted. There is no per-cycle cap, so a cycle works through every due contact at that rate.
 - Only one cycle runs at a time, across processes. `dossier run` reports "another dossier cycle is running" while the worker is busy.
 - A failed contact is retried on the next cycle, with no backoff. `status` and `list` show failures with their error type.
-- Settings are read at the start of every cycle, so new intervals, limits, and models apply without a restart. Turning dossiers on starts the first cycle within a few minutes. Turning them off makes the following cycles do nothing, and a running cycle stops before its next model call.
+- Settings are read at the start of every cycle, so new intervals, limits, and models apply without a restart. Turning dossiers on starts the first cycle within a few minutes. Turning them off, or turning history off, makes the following cycles do nothing, and a running cycle stops before its next model call.
 
 Logs contain counts, timings, error type names, and a short hash of the chat key instead of connection and chat IDs: an INFO line when the worker starts and after each cycle, a DEBUG line per contact, and WARNING lines for failures. Panel actions and `/dossier` log action names, outcomes, and error types the same way. They never contain message text, facts, quotes, names, payloads, or model output.
 
@@ -262,7 +264,7 @@ $HERMES_HOME/data/telesec/dossiers/
   .cycle.lock
 ```
 
-Dossiers live next to history, never inside it. Directories are `0700` and files `0600`. Writes are atomic and locked, and `changes.jsonl` is an append-only revision log. `settings.json` holds the on/off switch and when and how (`cli` or `telegram`) it was last set. `state.json` is a worker cache (change checks, failures, recent call times, last cycle); deleting it costs at most one extra history read per chat. `generation.json` counts `forget` runs so a cycle that started earlier discards its results. Do not edit these files by hand. A corrupt file is never overwritten automatically. For a dossier file the CLI points to `forget`. A corrupt `settings.json` reads as off, and `status` and the gateway log say so, until `dossier enable` or `disable` rewrites it (`forget` never touches it).
+Dossiers live next to history, never inside it. Directories are `0700` and files `0600`. Writes are atomic and locked, and `changes.jsonl` is an append-only revision log. `settings.json` holds the on/off switch and when and how (`cli`, `telegram`, or `migration`) it was last set. The other switches live in `data/telesec/settings.json` ([Settings](../README.md#settings)). `state.json` is a worker cache (change checks, failures, recent call times, last cycle); deleting it costs at most one extra history read per chat. `generation.json` counts `forget` runs so a cycle that started earlier discards its results. Do not edit these files by hand. A corrupt file is never overwritten automatically. For a dossier file the CLI points to `forget`. A corrupt `settings.json` reads as off, and `status` and the gateway log say so, until a switch from Settings, `settings set dossiers`, or `dossier enable` or `disable` rewrites it (`forget` never touches it).
 
 There is no second message archive. A dossier keeps its facts, quotes of at most 200 characters, and 64-bit fingerprints of the messages it has processed, used to notice edits. The fingerprints are short hashes and are not reversible in practice, but they are not a cryptographic guarantee.
 
@@ -270,7 +272,7 @@ Dossiers read history only under its read locks and never write to it. `forget` 
 
 To stop processing and delete every dossier:
 
-1. Run `hermes telesec dossier disable`, or tap **Disable** in the panel. No restart is needed.
+1. Run `hermes telesec dossier disable`, or tap **No dossiers** in Settings. No restart is needed.
 2. Run `hermes telesec dossier forget --all`.
 
 The bundled `dossiers` skill gives Hermes safe read and correction recipes. It treats dossier text as data, never as instructions, and runs corrections, `enable`, `disable`, `run`, and `forget` only when the owner asks.
@@ -287,7 +289,7 @@ The bundled `dossiers` skill gives Hermes safe read and correction recipes. It t
 | `TELESEC_DOSSIER_PROVIDER` | cleanup provider, then `gemini` | Host provider for dossier calls. |
 | `TELESEC_DOSSIER_MODEL` | cleanup model, then `gemini-3.8-flash` | Host model for dossier calls. |
 
-The on/off switch is not a variable: use the owner panel or `dossier enable`/`disable` ([Enable](#enable)). A number that does not parse or is out of range falls back to its default, and `status` prints a warning.
+The on/off switch is not a variable: use Settings or `dossier enable`/`disable` ([Enable](#enable)). Dossiers also need the history switch. A number that does not parse or is out of range falls back to its default, and `status` prints a warning.
 
 Fixed limits: first cycle 3 minutes after connect; 120 seconds per call attempt; batches of 200 messages or about 40,000 characters; 60 changes per call; 60 model facts per contact and 40 for the persona; 5 sources per fact; 300 characters per fact, 200 per quote, and 500 per owner text; persona refresh after 20 unprocessed sent messages, or 24 hours after the last refresh.
 

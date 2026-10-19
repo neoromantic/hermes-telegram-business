@@ -31,7 +31,8 @@ REFRESH_THREAD_NAME = "telesec-dossier-refresh"
 COMMAND_IDENTITY = "dossier-command"
 _EDIT_NOTICES = {"pin": "pinned", "unpin": "unpinned", "remove_do": "removed"}
 
-_GLOBAL_ACTIONS = frozenset({"enable_ask", "enable_do", "disable"})
+# The global switch moved to Settings; old Enable/Disable buttons now open the overview.
+_MOVED_ACTIONS = frozenset({"enable_ask", "enable_do", "disable"})
 
 _REFRESH_LOCK = threading.Lock()
 # Business connections the gateway saw in updates this process (set by register_owner_panel_section).
@@ -126,7 +127,7 @@ def manages_global(owner_user_id: Any, business_connection_id: Any) -> bool:
 def _common(cfg: _ds.DossierConfig, now: datetime, manage_global: bool) -> dict[str, Any]:
     return {"now": now, "enabled": cfg.enabled, "llm_ready": llm_ready(), "cycle_busy": _cycle_busy(),
             "provider": cfg.provider, "model": cfg.model, "backfill_days": cfg.backfill_days,
-            "manage_global": manage_global, "history_enabled": _history.history_config_from_env().enabled}
+            "manage_global": manage_global, "history_enabled": _history.capture_enabled()}
 
 
 def _sources(dossier: dict[str, Any], now: datetime, cfg: _ds.DossierConfig) -> dict[str, Any]:
@@ -213,7 +214,7 @@ def start_refresh(business_connection_id: Any, chat_id: Any) -> str:
     """Start a forced contact cycle in a thread: started | running | busy | unavailable. Blocking."""
     cfg, llm = _ds.load_config(), _ds._LLM
     entry, private = contact_entry(business_connection_id, chat_id)
-    if not cfg.enabled or not llm_ready(llm) or not private:
+    if not cfg.enabled or not _history.capture_enabled() or not llm_ready(llm) or not private:
         return "unavailable"
     key = _refresh_key(_ds.chat_key(business_connection_id, chat_id))
     with _REFRESH_LOCK:
@@ -274,11 +275,17 @@ def stop_background(timeout: float = 0.0) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _switch(enabled: bool) -> None:
+def switch(enabled: bool) -> None:
+    """The global dossier switch from Telegram (Settings). Blocking."""
     _ds.set_enabled(enabled, via="telegram")
-    if enabled:  # the worker runs whenever the facade is bound; a wake starts the first cycle sooner
-        _ds.ensure_worker_started()
-        _ds.wake_worker()
+    if enabled:
+        wake()
+
+
+def wake() -> None:
+    """The worker runs whenever the facade is bound; a wake starts the next cycle sooner. Blocking."""
+    _ds.ensure_worker_started()
+    _ds.wake_worker()
 
 
 def _edit_target(target: str, business_connection_id: Any, chat_id: Any) -> tuple[str, Any]:
@@ -304,22 +311,17 @@ async def _panel_action(owner_user_id: Any, conn: Any, chat_id: Any, lang: str, 
         logger.info("%s: dossier panel without a known Business connection", _history.PLUGIN_NAME)
         return _view.render_state("no_connection", lang)
     action = (_view.parse_args(args) if args else None) or _view.Action("overview")  # malformed -> overview
+    if action.name in _MOVED_ACTIONS:
+        action = _view.Action("overview")
     name, target = action.name, action.target
     manage_global = await asyncio.to_thread(manages_global, owner_user_id, conn)
-    if not manage_global and (target == "persona" or name in _GLOBAL_ACTIONS):
+    if not manage_global and target == "persona":
         logger.info("%s: dossier panel %s refused target=%s reason=owner_scope", _history.PLUGIN_NAME, name, target)
         return _view.render_state("operator_only", lang)
 
     async def snapshot(kind: str = target) -> _view.DossierSnapshot:
         return await asyncio.to_thread(load_snapshot, kind, conn, chat_id, manage_global=manage_global)
 
-    if name == "enable_ask":
-        cfg = await asyncio.to_thread(_ds.load_config)
-        return _view.render_enable_confirm(lang, cfg.provider, cfg.model)
-    if name in ("enable_do", "disable"):
-        await asyncio.to_thread(_switch, name == "enable_do")
-        notice = _view.notice_text("enabled" if name == "enable_do" else "disabled", lang)
-        return replace(_view.render_overview(await snapshot("contact"), lang), notice=notice)
     if name == "refresh":
         outcome = await asyncio.to_thread(start_refresh, conn, chat_id)
         if outcome == "running":

@@ -27,9 +27,13 @@ The product connects readable Telegram voice messages with useful personal corre
 
 - Dossiers in Telegram ([#17](https://github.com/neoromantic/telesec/issues/17)): the panel's Dossier section (rich, Russian or English, with pin, unpin, remove, refresh, the persona, and the on/off switch), and the owner's `/dossier` that posts a contact's dossier into the chat (the one in-chat control besides the panel). Dossiers are switched only in the panel or with `dossier enable`/`disable`; the old environment variable and Desktop setting are moved into that switch once. [Dossiers in Telegram](DOSSIERS.md#in-telegram).
 
+## Unreleased
+
+- Settings in the private chat with the bot: `/telesec` or the ⚙️ Settings button turns transcription, history, and dossiers on or off for all chats, and `hermes telesec settings` does the same from the terminal. The old environment variables and the Desktop `history_enable` setting are moved into Settings once. [Settings](../README.md#settings).
+
 ## Next
 
-- Plugin settings in the private chat with the bot: global on/off for transcription, history, and dossiers, and the same per-chat controls for all three in the owner panel, in the style of transcription modes.
+- Per-chat history and dossier controls in the owner panel, in the style of transcription modes.
 
 - Known limit: claimed panel taps and Business updates stop propagation before Hermes' group-99 dispatch counter, so the core "ingress healthy but deaf" warning can show a stale gap after quiet periods. The fix belongs in Hermes core (count dispatch in a group before every plugin group).
 

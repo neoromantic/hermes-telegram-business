@@ -79,7 +79,7 @@ def dossier_history(
     dossier_env: Callable[..., None],
 ) -> ModuleType:
     """The plugin with history capture on (like ``test_history.enabled_history``) and dossiers off."""
-    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    test_history.set_switch(dossier_plugin, "history", True)
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     dossier_plugin._history_support.reset_in_memory_caches()
     return dossier_plugin

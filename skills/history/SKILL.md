@@ -33,7 +33,7 @@ Use this plugin skill when you need to inspect or maintain the opt-in Telegram B
 
 ## Environment
 
-- `TELESEC_HISTORY_ENABLE=1` enables capture.
+- Capture is a stored switch, not a variable: the owner turns it on in Telegram Settings (`/telesec`) or with `hermes telesec settings set history on`. Check it with `hermes telesec settings --format json` (`history.enabled`). Change it only when the owner asks.
 - Default capture after enablement is private Business chats only.
 - `TELESEC_HISTORY_CONNECTIONS` is an optional comma-separated Business-connection filter or `*`.
 - `TELESEC_HISTORY_CHATS` is an optional exact chat filter/override or `*`. Exact chat IDs may opt in those chats even when their type is not part of the default chat-type set.

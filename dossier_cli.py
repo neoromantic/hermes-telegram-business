@@ -26,10 +26,14 @@ COMMANDS = ("status", "enable", "disable", "list", "show", "preview", "correct",
             "note", "changes", "export", "forget", "run")
 USAGE = "Usage: hermes telesec dossier <" + "|".join(COMMANDS) + ">"
 MAX_CHANGES_LIMIT = 500
-ENABLE_HOW = f"'{_dossier.ENABLE_COMMAND}' or the owner panel in Telegram"
+ENABLE_HOW = f"'{_dossier.ENABLE_COMMAND}' or Settings (/telesec) in Telegram"
 DISABLE_COMMAND = _dossier.DISABLE_COMMAND
 FORGET_ALL_COMMAND = "hermes telesec dossier forget --all"
 DISABLED_RUN = f"error: dossiers are disabled; turn them on with {ENABLE_HOW}"
+HISTORY_ON_HOW = "'hermes telesec settings set history on' or /telesec"
+HISTORY_OFF = f"note: history is off; turn it on with {HISTORY_ON_HOW}"
+HISTORY_PAUSED = f"Dossiers are paused while history is off; turn it on with {HISTORY_ON_HOW}."
+HISTORY_OFF_RUN = f"error: dossiers are paused while history is off; turn it on with {HISTORY_ON_HOW}"
 DISABLED_PREVIEW = f"note: dossiers are disabled; nothing is sent until they are turned on with {ENABLE_HOW}"
 NO_FACADE = "error: Hermes host LLM facade is unavailable in this process"
 BUSY = "error: another dossier cycle is running (probably the gateway worker); try again later"
@@ -309,7 +313,10 @@ def _switch_line(settings: dict[str, Any]) -> str:
 def _cmd_status(args: argparse.Namespace) -> int:
     cfg = _dossier.load_config()
     lines = list(cfg.warnings)
-    lines.append(_switch_line(_dossier.load_settings()))
+    settings = _dossier.load_settings()
+    lines.append(_switch_line(settings))
+    if settings["enabled"] and not _history.capture_enabled():
+        lines.append(HISTORY_PAUSED)
     lines.append(f"Model: {cfg.provider} / {cfg.model} (timeout {_dossier.MODEL_TIMEOUT_SECONDS:g}s, "
                  f"max {cfg.max_calls_per_minute} calls/min)")
     lines.append(f"Worker: gateway only; checks the switch every {_minutes(_dossier.DISABLED_POLL_SECONDS)}; "
@@ -356,9 +363,8 @@ def _cmd_enable(args: argparse.Namespace) -> int:
                  else f"Dossiers are already enabled{_since(result)}.")
     lines.append("The gateway worker starts its first cycle within a few minutes; no gateway restart is needed.")
     lines.append(f"The text of all private Business chats is sent to {cfg.provider} / {cfg.model}.")
-    if not _history.history_config_from_env().enabled:
-        lines.append("note: history capture is off; dossiers are built from it (turn on the history_enable "
-                     f"setting or set {_history.HISTORY_ENABLE_ENV}=1).")
+    if not _history.capture_enabled():
+        lines.append(HISTORY_OFF)
     lines.append(f"Turn off with '{DISABLE_COMMAND}'.")
     _emit(lines)
     return 0
@@ -662,6 +668,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if not _dossier.load_config().enabled:
         print(DISABLED_RUN)
         return 1
+    if not _history.capture_enabled():
+        print(HISTORY_OFF_RUN)
+        return 1
     llm = _dossier._LLM
     if llm is None or not callable(getattr(llm, "complete_structured", None)):
         print(NO_FACADE)
@@ -670,6 +679,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     report = _dossier.run_cycle(llm=llm, trigger="cli", target=target)
     if report.outcome == "disabled":
         print(DISABLED_RUN)
+        return 1
+    if report.outcome == "history_off":  # turned off since the check above
+        print(HISTORY_OFF_RUN)
         return 1
     if report.outcome == "busy":
         print(BUSY)

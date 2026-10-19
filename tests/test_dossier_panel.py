@@ -258,13 +258,13 @@ async def test_contact_snapshot_corrupt(plug, ds, panel):
 
 
 @pytest.mark.asyncio
-async def test_disabled_without_dossier_explains_and_offers_enable(dossier_history, panel):
+async def test_disabled_without_dossier_explains_and_points_to_settings(dossier_history, panel):
     snap = panel.load_contact_snapshot(BUSINESS_ID, CHAT, now=NOW)
     view = await act(panel)
 
     assert (snap.enabled, snap.status, snap.missing_reason) == (False, "missing", None)
-    assert "Dossiers are off." in view.text
-    assert "ea" in args_of(view) and "rf.c" not in args_of(view)
+    assert "Dossiers are off. Turn them on in Settings." in view.text
+    assert args_of(view) == ["o.p"]  # the switch is in Settings
 
 
 @pytest.mark.asyncio
@@ -315,7 +315,7 @@ async def test_overview_in_english_and_russian(plug, ds, panel):
 
     assert COMMITMENT in en.html and NOTE in en.html and "Commitments" in en.html
     assert "Обязательства" in ru.html and COMMITMENT in ru.html
-    assert args_of(en) == ["m.c.0", "o.p", "ds"]  # no Refresh: the model is not bound here
+    assert args_of(en) == ["m.c.0", "o.p"]  # no Refresh: the model is not bound here
     assert all(len(args) <= 30 for args in args_of(en))
     assert prefix(dossier) not in args_of(en)
 
@@ -414,7 +414,7 @@ async def test_persona_overview_and_pin(plug, ds, panel):
 
 
 @pytest.mark.asyncio
-async def test_enable_through_the_panel_wakes_an_idle_worker(dossier_history, panel, monkeypatch):
+async def test_switch_wakes_an_idle_worker_and_old_switch_buttons_write_nothing(dossier_history, panel, monkeypatch):
     ds = dossier_history._dossier_support
     monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 0)
     outcomes = spy_worker_cycles(monkeypatch, ds)
@@ -422,30 +422,29 @@ async def test_enable_through_the_panel_wakes_an_idle_worker(dossier_history, pa
     assert ds.ensure_worker_started()
     assert not wait_until(lambda: outcomes, timeout=0.3)  # off: the worker idles
 
-    ask = await act(panel, "ea")
-    assert "ALL private chats" in ask.text and f"{ds.DEFAULT_PROVIDER} / {ds.DEFAULT_MODEL}" in ask.text
-    assert args_of(ask) == ["ed", "o.c"] and read_settings(ds) is None
+    for stale in ("ea", "ed", "ds"):  # Enable/Disable on a panel sent before the switch moved to Settings
+        view = await act(panel, stale)
+        assert view.notice is None and "Turn them on in Settings." in view.text
+    assert read_settings(ds) is None and not outcomes
 
-    on = await act(panel, "ed")
-    assert on.notice == "Dossiers are on. The first cycle starts within a few minutes."
+    panel.switch(True)  # what Settings calls after its confirm
     settings = read_settings(ds)
     assert (settings["enabled"], settings["updated_via"]) == (True, "telegram")
     assert wait_until(lambda: outcomes, timeout=5)  # well before the 60 s poll
-    assert "ds" in args_of(on)
 
 
 @pytest.mark.asyncio
 async def test_disable_keeps_stored_dossiers(plug, ds, panel):
     await build(plug, ds)
 
-    off = await act(panel, "ds", lang="ru")
+    panel.switch(False)
+    off = await act(panel, lang="ru")
 
-    assert off.notice == "Досье выключены. Сохранённые досье остаются."
     settings = read_settings(ds)
     assert (settings["enabled"], settings["updated_via"]) == (False, "telegram")
     assert read_dossier(ds, CHAT) is not None
-    assert COMMITMENT in off.html and "Обработка выключена" in off.text
-    assert "ea" in args_of(off)
+    assert COMMITMENT in off.html and "Обработка выключена: досье не обновляется. Включить можно в настройках." in off.text
+    assert args_of(off) == ["m.c.0", "o.p"]
 
 
 @pytest.mark.asyncio
@@ -458,7 +457,7 @@ async def test_refresh_refused_when_disabled_or_without_a_model(plug, ds, panel)
     disabled = await act(panel, "rf.c")
 
     for view in (no_model, disabled):
-        assert view.notice == "Refresh is unavailable: dossiers are off or the model is not connected."
+        assert view.notice == "Refresh is unavailable: dossiers or history are off, or the model is not connected."
     assert panel.load_contact_snapshot(BUSINESS_ID, CHAT).refreshing is False
 
 
@@ -549,7 +548,7 @@ async def test_persona_and_switch_need_every_connection_owned(plug, ds, panel):
     await seed(plug, 992, "boris", ROWS, business_id=other, first_name="Boris")
     cache = plug._history_support._OWNER_CACHE
     assert cache[other] == str(OWNER_ID)  # the operator owns both connections
-    assert args_of(await act(panel)) == ["m.c.0", "o.p", "ds"]
+    assert args_of(await act(panel)) == ["m.c.0", "o.p"]
     assert panel.manages_global(OWNER_ID, BUSINESS_ID) is True
 
     for owner in ("4242", None):  # another account connected the bot, or its owner is not known yet
@@ -559,11 +558,13 @@ async def test_persona_and_switch_need_every_connection_owned(plug, ds, panel):
             cache[other] = owner
         overview = await act(panel)
         assert args_of(overview) == ["m.c.0"] and PERSONA_FACT not in overview.html
-        for args in ("o.p", "m.p.0", "f.p.abcdef.1", "ea", "ed", "ds"):
+        for args in ("o.p", "m.p.0", "f.p.abcdef.1"):
             refused = await act(panel, args)
             assert refused.notice == ("Only the owner of every Business connection the bot knows about can open "
                                       "the persona or turn dossiers on and off.")
             assert PERSONA_FACT not in refused.html and args_of(refused) == ["o.c"]
+        for args in ("ea", "ed", "ds"):  # old switch buttons only show the overview
+            assert args_of(await act(panel, args)) == ["m.c.0"]
         assert ds.load_config().enabled is True and panel.manages_global(OWNER_ID, BUSINESS_ID) is False
     assert panel.manages_global(None, BUSINESS_ID) is False and panel.manages_global(OWNER_ID, None) is False
 
@@ -589,9 +590,10 @@ async def test_persona_and_switch_stay_closed_when_history_is_gone(plug, ds, pan
 
     assert panel.manages_global("4242", other) is False  # the persona and a contact dossier cite the operator
     assert args_of(await as_other(None)) == []
-    for args in ("o.p", "ed", "ds"):
-        refused = await as_other(args)
-        assert refused.notice.startswith("Only the owner") and PERSONA_FACT not in refused.html
+    refused = await as_other("o.p")
+    assert refused.notice.startswith("Only the owner") and PERSONA_FACT not in refused.html
+    for args in ("ed", "ds"):  # old switch buttons write nothing
+        assert (await as_other(args)).notice is None
     assert ds.load_config().enabled is True
 
     chat_dir = ds.dossier_root() / "chats" / history._path_key(BUSINESS_ID)
@@ -625,22 +627,26 @@ async def test_unreadable_persona_keeps_the_operator_in_control(plug, ds, panel)
     await build(plug, ds)
     (persona_dir(ds) / "dossier.json").write_text("{", encoding="utf-8")
 
-    assert args_of(await act(panel)) == ["m.c.0", "o.p", "ds"]
+    assert args_of(await act(panel)) == ["m.c.0", "o.p"]
     persona = await act(panel, "o.p")
     assert "The stored persona file can't be read." in persona.text and "dossier forget --persona" in persona.text
-    assert (await act(panel, "ds")).notice == "Dossiers are off. Stored dossiers are kept."
-    assert ds.load_config().enabled is False
+    assert panel.manages_global(OWNER_ID, BUSINESS_ID) is True  # so Settings can still turn dossiers off
 
 
 @pytest.mark.asyncio
 async def test_history_capture_off_is_explained(plug, ds, panel, monkeypatch):
     await build(plug, ds)
-    monkeypatch.delenv("TELESEC_HISTORY_ENABLE")
+    ds.bind_llm(FakeLlm())
+    assert "rf.c" in args_of(await act(panel))
+    test_history.set_switch(plug, "history", False)
 
     view = await act(panel)
 
-    assert "History capture is off, so dossiers get no new messages" in view.text
-    assert "Сбор истории выключен" in (await act(panel, lang="ru")).text
+    assert "History is off, so dossiers are paused. Turn it on in Settings." in view.text
+    assert "rf.c" not in args_of(view)  # start_refresh would refuse it
+    assert "История выключена, поэтому досье на паузе" in (await act(panel, lang="ru")).text
+    refused = await act(panel, "rf.c")
+    assert refused.notice == "Refresh is unavailable: dossiers or history are off, or the model is not connected."
 
 
 @pytest.mark.asyncio
@@ -730,7 +736,7 @@ async def test_panel_section_sends_a_rich_localized_dossier_with_panel_callbacks
     assert "Обязательства" in html and COMMITMENT in html and NOTE in html  # the owner sees owner notes
     rows = keyboard_of(kwargs["reply_markup"])
     assert rows == [[("Управлять фактами", f"tb:s:{CHAT}:dossier/m.c.0")],
-                    [("Моя персона", f"tb:s:{CHAT}:dossier/o.p"), ("Выключить", f"tb:s:{CHAT}:dossier/ds")],
+                    [("Моя персона", f"tb:s:{CHAT}:dossier/o.p")],
                     [("« Назад", f"tb:b:{CHAT}")]]
     for row in rows:
         for _label, data in row:

@@ -20,6 +20,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+import test_history
 from dossier_helpers import (
     BUSINESS_ID,
     NOW,
@@ -311,7 +312,7 @@ async def test_cycle_lock_prevents_concurrent_cycles(plug: ModuleType, dossiers:
 # Stored on/off switch
 # ---------------------------------------------------------------------------
 
-ENABLE_HINT = "Turn on with 'hermes telesec dossier enable' or the owner panel in Telegram."
+ENABLE_HINT = "Turn on with 'hermes telesec dossier enable' or Settings (/telesec) in Telegram."
 STAMP = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"
 
 
@@ -391,11 +392,10 @@ def test_set_enabled_api_validates_and_records_time_and_source(
     assert ds.set_enabled(False, via="cli", now=NOW)["changed"] is True  # an explicit switch repairs a bad file
     assert "error" not in ds.load_settings()
 
-    monkeypatch.delenv("TELESEC_HISTORY_ENABLE")
+    test_history.set_switch(plugin, "history", False)
     code, out, _err = cli(plugin, "dossier", "enable")
     assert code == 0
-    assert ("note: history capture is off; dossiers are built from it (turn on the history_enable setting or "
-            "set TELESEC_HISTORY_ENABLE=1).") in out
+    assert "note: history is off; turn it on with 'hermes telesec settings set history on' or /telesec" in out
 
 
 @pytest.mark.asyncio
@@ -1472,9 +1472,9 @@ async def test_capture_is_llm_free_with_dossier_enabled_and_history_separate(
     fake = FakeLlm(quote_first)
     ds.bind_llm(fake)
     connect_gateway(plug)  # the worker exists, but its first cycle is an hour away
-    monkeypatch.delenv("TELESEC_HISTORY_ENABLE")
+    test_history.set_switch(plug, "history", False)
     assert await seed(plug, 5552, "capture", [(1, "in", "CAPTURE off", 10)], check=False) == [False]
-    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    test_history.set_switch(plug, "history", True)
     await two_sided(plug, 5552, "CAPTURE", minutes=8, first_id=2)
     assert fake.calls == []
     assert ds.list_dossiers() == [] and not (ds.dossier_root() / "chats").exists()

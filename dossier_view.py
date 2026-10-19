@@ -44,7 +44,7 @@ ACTION_SECTIONS = frozenset(CONTACT_ORDER[:4])
 TARGETS = {"contact": "c", "persona": "p"}
 POST_BLOCKERS = ("persona", "disabled", "corrupt", "missing", "unchecked", "empty")
 POST_REASONS = (*POST_BLOCKERS, "send_failed")
-NOTICE_KEYS = ("changed", "busy", "refresh_started", "unavailable", "enabled", "disabled",
+NOTICE_KEYS = ("changed", "busy", "refresh_started", "unavailable",
                "pinned", "unpinned", "removed", "failed", "operator_only", "no_connection")
 
 Rows = tuple[tuple[tuple[str, str], ...], ...]
@@ -73,9 +73,8 @@ STRINGS: dict[str, dict[str, Any]] = {
         "model": "Model",
         "count_facts": "Facts", "count_stale": "stale", "count_unsupported": "unsupported",
         "count_contradictions": "contradictions",
-        "note_off": "Processing is off: this dossier is not updated.",
-        "note_history_off": "History capture is off, so dossiers get no new messages "
-                            "(the history_enable setting or TELESEC_HISTORY_ENABLE=1).",
+        "note_off": "Processing is off: this dossier is not updated. Turn dossiers on in Settings.",
+        "note_history_off": "History is off, so dossiers are paused. Turn it on in Settings.",
         "note_no_llm": "The model is not connected in this process, so refresh is unavailable.",
         "note_refreshing": "Refreshing now…",
         "note_busy": "A processing cycle is running; the dossier may change shortly.",
@@ -96,7 +95,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "state_old": "Older than the tracking window, not re-read", "state_gone": "No longer in history",
         "state_replaced": "Replaced by another message",
         "source_gone": "source gone", "conf": {"low": "low", "medium": "medium", "high": "high"},
-        "off_title": "Dossiers are off.",
+        "off_title": "Dossiers are off. Turn them on in Settings.",
         "off_explain": "When they are on, the bot keeps a private dossier for each private chat: commitments, "
                        "decisions, open questions and more, each linked to the messages it comes from.",
         "off_privacy": "Turning them on sends the text of all private chats to {model}.",
@@ -111,8 +110,8 @@ STRINGS: dict[str, dict[str, Any]] = {
         "corrupt": {"contact": "The stored dossier file can't be read.",
                     "persona": "The stored persona file can't be read."},
         "corrupt_fix": "Reset it from the terminal:",
-        "b_manage": "Manage facts", "b_refresh": "Refresh", "b_persona": "My persona", "b_enable": "Enable",
-        "b_disable": "Disable", "b_back_dossier": "‹ Dossier", "b_back_persona": "‹ My persona", "b_back_facts": "‹ Facts", "b_pin": "Pin", "b_unpin": "Unpin", "b_remove": "Remove",
+        "b_manage": "Manage facts", "b_refresh": "Refresh", "b_persona": "My persona",
+        "b_back_dossier": "‹ Dossier", "b_back_persona": "‹ My persona", "b_back_facts": "‹ Facts", "b_pin": "Pin", "b_unpin": "Unpin", "b_remove": "Remove",
         "b_remove_yes": "Remove", "b_cancel": "Cancel", "b_enable_yes": "Enable", "b_dossier": "Open dossier",
         "b_prev": "‹ {n}", "b_next": "{n} ›",
         "kind_observed": "Observed in messages", "kind_inferred": "Model guess, {conf} confidence",
@@ -133,9 +132,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "notice": {"changed": "This dossier changed. Open it again.",
                    "busy": "Another dossier cycle is running. Try again in a minute.",
                    "refresh_started": "Refresh started. Open the dossier again in a minute.",
-                   "unavailable": "Refresh is unavailable: dossiers are off or the model is not connected.",
-                   "enabled": "Dossiers are on. The first cycle starts within a few minutes.",
-                   "disabled": "Dossiers are off. Stored dossiers are kept.",
+                   "unavailable": "Refresh is unavailable: dossiers or history are off, or the model is not connected.",
                    "pinned": "{fid} pinned.", "unpinned": "{fid} unpinned.", "removed": "{fid} removed.",
                    "failed": "That did not work ({error}).",
                    "operator_only": "Only the owner of every Business connection the bot knows about can open "
@@ -170,9 +167,8 @@ STRINGS: dict[str, dict[str, Any]] = {
         "model": "Модель",
         "count_facts": "Фактов", "count_stale": "устарели", "count_unsupported": "без подтверждения",
         "count_contradictions": "противоречий",
-        "note_off": "Обработка выключена: досье не обновляется.",
-        "note_history_off": "Сбор истории выключен, поэтому досье не получают новых сообщений "
-                            "(настройка history_enable или TELESEC_HISTORY_ENABLE=1).",
+        "note_off": "Обработка выключена: досье не обновляется. Включить можно в настройках.",
+        "note_history_off": "История выключена, поэтому досье на паузе. Включите её в настройках.",
         "note_no_llm": "Модель не подключена в этом процессе, поэтому обновление недоступно.",
         "note_refreshing": "Идёт обновление…",
         "note_busy": "Сейчас идёт цикл обработки, досье может скоро измениться.",
@@ -194,7 +190,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "state_old": "Старше окна отслеживания, не перечитывалось", "state_gone": "Больше нет в истории",
         "state_replaced": "Заменено другим сообщением",
         "source_gone": "нет источника", "conf": {"low": "низкая", "medium": "средняя", "high": "высокая"},
-        "off_title": "Досье выключены.",
+        "off_title": "Досье выключены. Включить можно в настройках.",
         "off_explain": "Когда они включены, бот ведёт закрытое досье по каждому личному чату: обязательства, "
                        "решения, открытые вопросы и другое, со ссылками на сообщения.",
         "off_privacy": "После включения текст всех личных чатов отправляется в {model}.",
@@ -210,7 +206,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "corrupt": {"contact": "Файл досье не читается.", "persona": "Файл персоны не читается."},
         "corrupt_fix": "Сбросить его можно в терминале:",
         "b_manage": "Управлять фактами", "b_refresh": "Обновить", "b_persona": "Моя персона",
-        "b_enable": "Включить", "b_disable": "Выключить", "b_back_dossier": "‹ Досье", "b_back_persona": "‹ Моя персона", "b_back_facts": "‹ Факты", "b_pin": "Закрепить",
+        "b_back_dossier": "‹ Досье", "b_back_persona": "‹ Моя персона", "b_back_facts": "‹ Факты", "b_pin": "Закрепить",
         "b_unpin": "Открепить", "b_remove": "Удалить", "b_remove_yes": "Да, удалить", "b_cancel": "Отмена",
         "b_enable_yes": "Включить", "b_dossier": "Открыть досье", "b_prev": "‹ {n}", "b_next": "{n} ›",
         "kind_observed": "Прямо сказано в сообщениях", "kind_inferred": "Догадка модели, уверенность {conf}",
@@ -233,9 +229,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "notice": {"changed": "Досье изменилось. Откройте его заново.",
                    "busy": "Сейчас идёт другой цикл обработки. Попробуйте через минуту.",
                    "refresh_started": "Обновление запущено. Откройте досье через минуту.",
-                   "unavailable": "Обновление недоступно: досье выключены или модель не подключена.",
-                   "enabled": "Досье включены. Первый цикл начнётся в течение нескольких минут.",
-                   "disabled": "Досье выключены. Сохранённые досье остаются.",
+                   "unavailable": "Обновление недоступно: досье или история выключены, либо модель не подключена.",
                    "pinned": "{fid} закреплён.", "unpinned": "{fid} откреплён.", "removed": "{fid} удалён.",
                    "failed": "Не получилось ({error}).",
                    "operator_only": "Персона и включение досье доступны только владельцу всех бизнес-подключений, "
@@ -988,13 +982,12 @@ def _overview_buttons(cx: _Cx, has_facts: bool) -> Rows:
         return _rows([(s["b_manage"], build_args("manage", "persona"))] if has_facts else [],
                      [(s["b_back_dossier"], build_args("overview"))])
     first = [(s["b_manage"], build_args("manage"))] if has_facts else []
-    if (snap.enabled and snap.llm_ready and snap.in_history and not snap.refreshing and snap.status != "corrupt"
-            and not (snap.dossier is None and snap.missing_reason == "unqualified")):
+    if (snap.enabled and snap.history_enabled and snap.llm_ready and snap.in_history and not snap.refreshing
+            and snap.status != "corrupt" and not (snap.dossier is None and snap.missing_reason == "unqualified")):
         first.append((s["b_refresh"], build_args("refresh")))
     if not snap.manage_global:
         return _rows(first)
-    switch = (s["b_disable"], build_args("disable")) if snap.enabled else (s["b_enable"], build_args("enable_ask"))
-    return _rows(first, [(s["b_persona"], build_args("overview", "persona")), switch])
+    return _rows(first, [(s["b_persona"], build_args("overview", "persona"))])
 
 
 def _missing_reason_html(cx: _Cx) -> str:
@@ -1211,13 +1204,12 @@ def render_remove_confirm(snap: DossierSnapshot, lang: str, fact_id: str, *, pre
                               (s["b_cancel"], build_args("fact", target, prefix=pfx, fact_id=fid))]))
 
 
-def render_enable_confirm(lang: str, provider: str, model: str) -> View:
+def enable_confirm(lang: str, provider: str, model: str) -> tuple[str, str, str]:
+    """Plain (text, confirm label, cancel label) for turning dossiers on; Settings adds its own callbacks."""
     s = _s(lang)
-    name = _e(f"{provider} / {model}" if provider and model else model or provider or "?", 120)
-    html = (f"<h3>{s['enable_q']}</h3><p>{s['enable_explain'].format(model=f'<b>{name}</b>')}</p>"
-            f"<p>{s['enable_keep']}</p>")
-    return _view(html, _rows([(s["b_enable_yes"], build_args("enable_do")),
-                              (s["b_cancel"], build_args("overview"))]))
+    name = _ds.clip(f"{provider} / {model}" if provider and model else model or provider or "?", 120)
+    text = f"{s['enable_q']}\n\n{s['enable_explain'].format(model=name)}\n\n{s['enable_keep']}"
+    return text, s["b_enable_yes"], s["b_cancel"]
 
 
 def notice_text(key: str, lang: str, *, fact_id: str | None = None, error: str | None = None) -> str:
