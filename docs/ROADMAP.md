@@ -57,4 +57,4 @@ Capture and deterministic queries do not use an LLM. Dossier generation, draftin
 
 Telegram's Business scope and delivery permissions remain authoritative. Ordinary bot messages are a different channel; blocked Business sending must not fall back to them. Telegram-side deletion preserves an event in local history; actual archive removal and derived-data forgetting are explicit operations.
 
-The official Nous reply-drafting plugin is a useful reference, not a dependency or this project's runtime identity. Keep the public repository install source explicit and the runtime plugin ID `telegram-business-voice-transcriber` stable.
+Keep the public repository install source explicit and the runtime plugin ID `telegram-business-voice-transcriber` stable.
