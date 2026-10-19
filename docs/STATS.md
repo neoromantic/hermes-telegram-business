@@ -379,7 +379,7 @@ The report speaks the language of your Telegram app: Russian for a Russian app, 
 - **Balance.** One bar of 10 squares with each side's share around it, such as `58% 🟦🟦🟦🟦🟦🟦🟩🟩🟩🟩 42%`. A side with any messages gets one square at least. Left out when a side's share is not known.
 - **Table.** Per side: messages with the share, ⚡ median reply time, p90 reply time, messages per turn, median text length, and edits (only when there are edits). `–` means there is no data.
 - **⏳ Waiting.** Who is still waiting for a reply, and for how long. Left out when nobody is waiting. It shows no clock time, since Telegram may show the message in another time zone.
-- **🗓 When.** Heat maps of activity over the period, then weekdays and three-hour blocks of the day (0, 3, …, 21). The period map depends on its length: a calendar of weeks for days (it then shows the weekdays itself), a row of weeks per month, a row of months per year, a row of quarters per year, or the years. Cells outside the period are empty.
+- **🗓 When.** Heat maps of activity over the period, then weekdays and three-hour blocks of the day (0, 3, …, 21). The period map depends on its length: a calendar of weeks for days (it then shows the weekdays itself), a row of weeks per month, a row of months per year, a row of quarters per year, or the years. Cells outside the period are empty. When history starts after the period does, the map starts at history's first day (or at an earlier imported message), so days with no history do not look like days without messages.
 - **🎯 Peak.** The busiest weekday and hour.
 - **Tiles.** 🔥 the current streak of active days, 🏆 the longest one, 💤 the longest pause, 🗣 sessions, 👋 who starts sessions more often and how often, and 🗑 deletions with ❓ the unexplained ones (only when there are deletions).
 - **📈 Previous period.** The change in messages and in each side's median reply time against the same number of days right before the period. Left out when retained history does not cover the previous period, and for `All`.
@@ -408,9 +408,7 @@ Example (synthetic): Alice from the [example above](#example-synthetic), period 
 <h4>🗓 When</h4>
 <table compact>
 <tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr>
-<tr><td></td><td></td><td></td><td></td><td></td><td></td><td>·</td></tr>
-<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td></tr>
-<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td><td>🟨</td></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td>🟥</td><td>🟨</td></tr>
 <tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td><td>·</td></tr>
 <tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟧</td><td>·</td></tr>
 <tr><td>🟨</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>

@@ -27,7 +27,7 @@ from __future__ import annotations
 import html
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, tzinfo
 
 from . import correspondence_stats as _stats
@@ -420,9 +420,28 @@ def _hours(stats: _stats.ContactStats) -> list[int]:
     return [sum(stats.hours[index * size : (index + 1) * size]) for index in range(_HOUR_BUCKETS)]
 
 
+def _covered(stats: _stats.ContactStats, fmt: _Format) -> _stats.Activity | None:
+    """The activity from the first day history covers, so days before it are not shown as days without messages.
+
+    History covers the period from its first observation, or from an earlier message (an imported one).
+    """
+    activity, retained = stats.activity, stats.missing.retained_from
+    if activity is None or retained is None:
+        return activity
+    bucket = activity.bucket
+    origin = _stats._bucket_index(activity.start, bucket)
+    covered = _stats._bucket_index(fmt.local(retained).date(), bucket) - origin
+    earliest = next((index for index, value in enumerate(activity.counts) if value), covered)
+    first = min(covered, earliest)
+    if first <= 0 or first >= len(activity.counts):
+        return activity
+    start = _stats._bucket_start(origin + first, bucket)
+    return replace(activity, start=start, counts=activity.counts[first:], first_day=max(activity.first_day, start))
+
+
 def _when(stats: _stats.ContactStats, fmt: _Format) -> str:
     """The "When" heading and its heat maps: the period, weekdays (unless the period is a calendar), hours."""
-    activity = stats.activity
+    activity = _covered(stats, fmt)
     tables: list[str] = []
     if activity is not None:
         if activity.bucket == "day":
