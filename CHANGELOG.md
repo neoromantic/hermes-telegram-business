@@ -11,6 +11,7 @@
 - Never guess a chat's Business connection in the panel: sections get one only when history lists it for the chat or a message was seen on it.
 - Show the owner panel in Russian to a Telegram client set to Russian (`ru*`) and in English otherwise. All panel strings live in one catalog in `owner_panel.py`; sections get `PanelContext.language_code` and add their own strings with `owner_panel.register_strings`, and a `section.<key>` string localizes a section's button.
 - Always end the panel header with `chat <id>`, so a reply to a panel message tells the agent which chat it is about.
+- Ignore the Business copies of the owner's own chat with the bot (the panel and the agent chat): they are no longer captured into history, transcribed, or counted, and history, stats, dossiers, and the panel skip such a chat that an older version captured. The bot's id comes from the running bot or from `TELEGRAM_BOT_TOKEN`.
 
 ## 0.9.0 - 2026-10-19
 

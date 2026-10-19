@@ -3106,6 +3106,33 @@ def _latest_records_across_entries(
     return [item[2] for item in sorted(heap)]
 
 
+BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
+
+
+def own_bot_ids(bot: Any = None) -> set[str]:
+    """This gateway's bot id: ``bot.id`` when known, and the digits before ':' in TELEGRAM_BOT_TOKEN."""
+    ids: set[str] = set()
+    head, sep, _ = os.environ.get(BOT_TOKEN_ENV, "").partition(":")
+    if sep and head.isdigit():
+        ids.add(head)
+    try:
+        bot_id = getattr(bot, "id", None) if bot is not None else None
+    except Exception:  # noqa: BLE001 - PTB raises until the bot is initialized
+        bot_id = None
+    if isinstance(bot_id, int):
+        ids.add(str(bot_id))
+    return ids
+
+
+def is_own_bot_chat(chat_id: Any, bot: Any = None) -> bool:
+    """True for the owner's private chat with this bot.
+
+    Telegram mirrors that chat as Business updates, but it is the bot's own DM,
+    not a Business chat: it is never captured, transcribed, counted, or summarized.
+    """
+    return chat_id is not None and str(chat_id) in own_bot_ids(bot)
+
+
 def _catalog_entries_for_cli() -> list[dict[str, Any]]:
     catalog, _ = _load_contact_catalog(
         rebuild_on_missing=False,
@@ -3115,7 +3142,12 @@ def _catalog_entries_for_cli() -> list[dict[str, Any]]:
         allow_missing_empty=True,
         repair_tails=False,
     )
-    return [entry for entry in catalog.get("contacts", []) if isinstance(entry, dict)]
+    # History captured before the own-bot-chat guard stays on disk but is never read.
+    return [
+        entry
+        for entry in catalog.get("contacts", [])
+        if isinstance(entry, dict) and not is_own_bot_chat(entry.get("chat_id"))
+    ]
 
 
 def _normalize_contact_lookup(text: str) -> str:
