@@ -1,6 +1,6 @@
 # Correspondence history
 
-History records new Telegram Business text events without an agent turn or an LLM call. It is the source for future persona and correspondence features; those derived features are not enabled by capturing history.
+History records new Telegram Business text events without an agent turn or an LLM call. It is the source for [contact dossiers and the owner persona](DOSSIERS.md) and for future correspondence features; capturing history does not enable them. Dossiers have their own opt-in.
 
 ![Actual history CLI output from fictional Business events.](images/history-search.png)
 
@@ -96,10 +96,12 @@ Telegram-side deletion does **not** erase the archive. The archive deliberately 
 
 Automatic retention and size pruning remove whole closed monthly partitions. The current month and partitions needed for pending deletion classification are preserved, so a configured target is not a hard storage ceiling. The contact catalog is rebuilt from retained evidence after pruning.
 
-No record-level erasure command ships in this version. To remove an entire local archive, disable capture, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Future dossiers and reply state must support scoped forgetting before those features ship.
+No record-level erasure command ships in this version. To remove an entire local archive, disable capture, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history does not remove dossiers; use `hermes telegram-business dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
 
 ## Runtime boundary
 
 The native Telegram observer records eligible Business text before ordinary Hermes handlers. It also receives deleted-message updates, which have no effective message. Capture does not change the ordinary Hermes authorization or agent routing of text messages. Disable history to stop capturing new messages; use Hermes's normal configuration to control agent replies.
+
+Dossiers read history only through its read locks and never modify it. `dossier forget` deletes dossier data only and never touches history. When retention or size pruning removes a message a dossier cites, the dossier drops that source. A fact with no sources left becomes unsupported, or `source gone` if the owner pinned or corrected it ([source changes](DOSSIERS.md#source-changes)).
 
 The separate voice module still deletes transient audio after processing. This version does not insert voice transcripts into the text archive automatically.

@@ -1964,7 +1964,7 @@ def test_cli_usage_and_routing(plugin, modes):
     assert excinfo.value.code == 2
 
     assert run_cli(plugin, "mode") == (1, modes.MODE_USAGE)
-    assert run_cli(plugin) == (1, "Usage: hermes telegram-business <history|stats|mode> ...")
+    assert run_cli(plugin) == (1, "Usage: hermes telegram-business <history|stats|dossier|mode> ...")
     exit_code, output = run_cli(plugin, "history", "stats")
     assert exit_code == 0
     assert output.startswith("enabled=False")

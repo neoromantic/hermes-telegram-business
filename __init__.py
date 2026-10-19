@@ -74,6 +74,7 @@ else:
     )
 
 
+from . import dossier_support as _dossier_support
 from . import history_support as _history_support
 from . import transcription_modes as _transcription_modes
 
@@ -445,6 +446,7 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
             )
 
     app.add_handler(BusinessHandler(on_business_update, block=True), group=_RAW_HISTORY_HANDLER_GROUP)
+    _dossier_support.ensure_worker_started()
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -2090,7 +2092,7 @@ def _handle_cli(args: Any) -> int:
     if getattr(args, "_mode_action", None) or command == "mode":
         return _transcription_modes.handle_mode_cli(args)
     if command is None:
-        print("Usage: hermes telegram-business <history|stats|mode> ...")
+        print("Usage: hermes telegram-business <history|stats|dossier|mode> ...")
         return 1
     return _history_support.handle_cli(args)
 
@@ -2230,6 +2232,7 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
 def register(ctx: Any) -> None:
     global _llm_facade
     _llm_facade = ctx.llm
+    _dossier_support.bind_llm(_llm_facade)
     ctx.register_telegram_handler(_register_telegram_handlers)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
     ctx.register_cli_command(
@@ -2244,6 +2247,14 @@ def register(ctx: Any) -> None:
         _history_support.skill_path(),
         "Telegram Business history schema, safe read recipes, and maintenance guidance.",
     )
+    ctx.register_skill(
+        "dossiers",
+        _dossier_support.skill_path(),
+        "Telegram Business contact dossiers and owner persona: safe read and correction recipes.",
+    )
+    on_unload = getattr(ctx, "on_unload", None)
+    if callable(on_unload):
+        on_unload(_dossier_support.stop_workers)
     try:
         result = _history_support.run_startup_maintenance()
     except Exception as exc:  # noqa: BLE001 - plugin load must stay available
