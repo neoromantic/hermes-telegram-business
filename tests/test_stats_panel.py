@@ -166,9 +166,7 @@ ALICE_MONTH = """
 <h4>🗓 When</h4>
 <table compact>
 <tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr>
-<tr><td></td><td></td><td></td><td></td><td></td><td></td><td>·</td></tr>
-<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td></tr>
-<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td><td>🟨</td></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td>🟥</td><td>🟨</td></tr>
 <tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td><td>·</td></tr>
 <tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟧</td><td>·</td></tr>
 <tr><td>🟨</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>

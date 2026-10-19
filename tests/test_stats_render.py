@@ -613,6 +613,36 @@ def test_every_activity_bucket_has_its_grid(cs, render, activity, expected: str)
     _check(view)
 
 
+def test_grids_start_where_history_does(cs, render):
+    """Days before history starts are unknown, not days without messages; an imported earlier message still shows."""
+    fmt = render._format(_window(cs, None), "en")
+    days = _grid_stats(cs, "day", date(2026, 9, 20), date(2026, 9, 20), date(2026, 10, 19), (0,) * 28 + (2, 1))
+
+    def covered(stats, retained):
+        return render._covered(replace(stats, missing=cs.MissingHistory(retained_from=retained)), fmt)
+
+    late = covered(days, _utc(2026, 10, 18, 9, 0))
+    assert (late.start, late.first_day, late.counts) == (date(2026, 10, 18), date(2026, 10, 18), (2, 1))
+    assert render._calendar(late, fmt) == [
+        """<table compact>
+<tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td><td>🟥</td></tr>
+<tr><td>🟧</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+</table>"""
+    ]
+    imported = replace(days, activity=replace(days.activity, counts=(0,) * 10 + (4,) + (0,) * 17 + (2, 1)))
+    assert covered(imported, _utc(2026, 10, 18, 9, 0)).start == date(2026, 9, 30)
+    # History from before the period, or none known: the whole period.
+    assert covered(days, _utc(2026, 9, 1, 9, 0)) == days.activity
+    assert covered(days, None) == days.activity
+    months = _grid_stats(cs, "month", date(2025, 11, 1), date(2025, 11, 15), date(2026, 2, 10), (0, 0, 1, 2))
+    late_months = covered(months, _utc(2026, 1, 5, 9, 0))
+    assert (late_months.start, late_months.counts) == (date(2026, 1, 1), (1, 2))
+    assert "<td>2025</td>" not in render._when(
+        replace(months, missing=cs.MissingHistory(retained_from=_utc(2026, 1, 5, 9, 0))), fmt
+    )
+
+
 def test_heat_scale(render):
     assert [render.heat(value, 9) for value in (0, 1, 3, 4, 6, 7, 9)] == ["·", "🟨", "🟨", "🟧", "🟧", "🟥", "🟥"]
     assert render.heat(1, 1000) == "🟨" and render.heat(5, 0) == "·" and render.heat(-1, 3) == "·"

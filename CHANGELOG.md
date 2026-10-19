@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The stats heat map of the period starts where history starts, so the days before it are no longer shown as `·`, days without messages. An imported message from before the first capture still counts as history. In the example in [owner panel stats](docs/STATS.md#in-telegram-owner-panel), the calendar no longer shows its first two weeks as empty.
+
 ## 0.13.0 - 2026-10-20
 
 - Add `hermes telesec history import <result.json> --chat <id> [--connection <id>] [--dry-run]`. It imports the earlier text messages of one private chat from a Telegram Desktop export ("Export chat history", JSON), so stats, the 📊 panel, history search, and new dossiers see the time before capture started. Only messages older than the chat's first captured record are imported, and a message already in history is never added again, so re-running is safe. Voice messages, round videos, audio, other media, service messages, the owner's `/stats` and `/dossier`, and a bot's posts are skipped and counted in the summary; nothing is transcribed. Imported records carry `"source":"import"` and live in the chat's normal monthly files. The command refuses while history is off or the chat is set to Don't save, and skips messages older than the retention period. [Import past messages](docs/HISTORY.md#import-past-messages).
