@@ -778,7 +778,8 @@ def test_the_old_scope_becomes_dont_save_for_the_chats_it_kept_out(cs, plugin, m
         assert cs.paused(BCID, chat, "history") is (chat in off)
     assert f"Don't save: {len(off)}." in caplog.text
     assert "New chats are recorded unless you tap Manage Bot in the chat and choose Don't save." in caplog.text
-    assert "991" not in caplog.text and "992" not in caplog.text and "hello" not in caplog.text
+    logged = "\n".join(caplog.messages)  # caplog.text also has the test module's random name
+    assert "991" not in logged and "992" not in logged and "hello" not in logged
 
 
 def test_a_chat_without_a_known_owner_is_counted_and_never_named(cs, plugin, monkeypatch, caplog):
@@ -792,7 +793,7 @@ def test_a_chat_without_a_known_owner_is_counted_and_never_named(cs, plugin, mon
     assert stored(cs)["migrations"]["history_scope"]["no_owner"] == 1
     assert "with no known owner: 1. They are recorded from now on; tap Manage Bot" in caplog.text
     for secret in ("5601", "business-777", "u5601"):
-        assert secret not in caplog.text
+        assert secret not in "\n".join(caplog.messages)
 
 
 def test_chats_known_only_from_modes_or_chat_settings_follow_the_old_scope(cs, plugin, monkeypatch):
