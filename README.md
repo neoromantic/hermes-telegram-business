@@ -175,7 +175,7 @@ hermes telesec history search --contact @alice --text estimate --since 30d --lim
 hermes telesec history deletions --status unexplained --limit 20
 ```
 
-History captures new text messages, edits, and deletions as Telegram delivers them. It preserves deleted text and distinguishes likely corrections, duplicates, unexplained deletions, and missing originals. It does not import old conversations. Contact names and observed aliases are searchable; ambiguous names require an explicit choice.
+History captures new text messages, edits, and deletions as Telegram delivers them. It preserves deleted text and distinguishes likely corrections, duplicates, unexplained deletions, and missing originals. It does not fetch old conversations, but you can import one chat's earlier messages from a Telegram Desktop export with `hermes telesec history import result.json --chat 991` ([import past messages](docs/HISTORY.md#import-past-messages)). Contact names and observed aliases are searchable; ambiguous names require an explicit choice.
 
 Canonical storage is profile-local JSONL with a rebuildable contact catalog. Capture and search require no LLM. Media and captions are excluded from history in this version. [History configuration, retention, and CLI](docs/HISTORY.md).
 

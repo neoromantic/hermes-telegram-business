@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `hermes telesec history import <result.json> --chat <id> [--connection <id>] [--dry-run]`. It imports the earlier text messages of one private chat from a Telegram Desktop export ("Export chat history", JSON), so stats, the 📊 panel, history search, and new dossiers see the time before capture started. Only messages older than the chat's first captured record are imported, and a message already in history is never added again, so re-running is safe. Voice messages, round videos, audio, other media, service messages, the owner's `/stats` and `/dossier`, and a bot's posts are skipped and counted in the summary; nothing is transcribed. Imported records carry `"source":"import"` and live in the chat's normal monthly files. The command refuses while history is off or the chat is set to Don't save, and skips messages older than the retention period. [Import past messages](docs/HISTORY.md#import-past-messages).
+
 ## 0.12.2 - 2026-10-20
 
 - Transcribe Business voice messages, round videos, and audio from every contact, with no variable. The ordinary DM allowlist no longer applies to Business media; per-chat modes and Settings decide what is transcribed. `TELESEC_VOICE_BYPASS_AUTH` is removed and ignored.
