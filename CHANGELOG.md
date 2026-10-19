@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 - Unreleased
+## 0.9.0 - 2026-10-19
 
 - Add per-chat transcription modes (`both` default, `own`, `peer`, `off`) for voice messages, round videos, and attached audio, keyed by Business owner and chat ([#7](https://github.com/neoromantic/hermes-telegram-business/issues/7)).
 - Add the owner-only in-chat `/transcribe [both|own|peer|off|reset]` command. The bot edits the command into a short status, with a Business reply as fallback, and deletes the command and its status about 5 seconds later (needs the bot's "Delete messages" Business permission; without it the status stays and a hint is logged). Commands are kept out of history and away from the ordinary Hermes path, and a contact's, forwarded, or inline-bot `/transcribe` stays ordinary text. Only the plugin's own status line is kept out of history, not other bot-sent text that starts with `/transcribe`.
