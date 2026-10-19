@@ -39,21 +39,27 @@ class PanelBot(ttm.CommandBot):
         return True
 
 
-def start_update(text: str = f"/start bizChat{CHAT}", *, from_user_id: int = OWNER, chat_type: str = "private"):
+def start_update(
+    text: str = f"/start bizChat{CHAT}",
+    *,
+    from_user_id: int = OWNER,
+    chat_type: str = "private",
+    language_code: str | None = None,
+):
     message = SimpleNamespace(
         message_id=5,
         text=text,
         chat=SimpleNamespace(id=from_user_id, type=chat_type),
-        from_user=SimpleNamespace(id=from_user_id),
+        from_user=SimpleNamespace(id=from_user_id, language_code=language_code),
     )
     return SimpleNamespace(update_id=1, message=message, callback_query=None, effective_message=message)
 
 
-def callback_update(data: str, *, from_user_id: int = OWNER, message_id: int = 500):
+def callback_update(data: str, *, from_user_id: int = OWNER, message_id: int = 500, language_code: str | None = None):
     query = SimpleNamespace(
         id="query-1",
         data=data,
-        from_user=SimpleNamespace(id=from_user_id),
+        from_user=SimpleNamespace(id=from_user_id, language_code=language_code),
         message=SimpleNamespace(chat=SimpleNamespace(id=from_user_id, type="private"), message_id=message_id),
     )
     return SimpleNamespace(update_id=2, message=None, callback_query=query, effective_message=query.message)
@@ -256,7 +262,7 @@ async def test_panel_shows_the_stored_mode_label_and_reset(plugin, modes):
     assert await dispatch(plugin, start_update(), bot) is True
 
     (call,) = bot.calls
-    assert call["text"] == "Owner panel: Casey (@casey)\nTranscription: peer"
+    assert call["text"] == "Owner panel: Casey (@casey) · chat 991\nTranscription: peer"
     rows = keyboard(call["reply_markup"])
     assert rows[0] == [("both", "tb:m:991:both"), ("own", "tb:m:991:own"), ("• peer", "tb:m:991:peer"),
                        ("off", "tb:m:991:off")]
@@ -281,7 +287,7 @@ async def test_unknown_connection_gets_one_hint_and_is_claimed(plugin, modes):
     assert await dispatch(plugin, start_update(), bot) is True
     assert await dispatch(plugin, start_update(), bot) is True  # claimed again, but no second hint
 
-    assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.UNKNOWN_CONNECTION}]
+    assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.tr("unknown_connection")}]
     assert bot.business_connection_calls == []
     assert not ttm.modes_file(plugin).exists()
 
@@ -293,7 +299,7 @@ async def test_unknown_connection_hint_works_without_transcription(plugin, modes
 
     assert await dispatch(plugin, start_update(), bot) is True
 
-    assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.UNKNOWN_CONNECTION}]
+    assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.tr("unknown_connection")}]
     assert "/transcribe" not in bot.calls[0]["text"]
 
 
@@ -305,7 +311,7 @@ async def test_any_business_message_in_the_chat_verifies_the_owner(plugin, modes
     business = ttm.registered_business_handler(plugin, ttm.command_adapter(bot))
 
     assert await dispatch(plugin, start_update(), bot) is True
-    assert bot.calls[-1]["text"] == plugin._owner_panel.UNKNOWN_CONNECTION
+    assert bot.calls[-1]["text"] == plugin._owner_panel.tr("unknown_connection")
 
     with pytest.raises(ApplicationHandlerStop):  # Business text is consumed, never an agent turn
         await business(ttm.make_text_update("hello", from_user_id=PEER), SimpleNamespace(bot=bot))
@@ -570,7 +576,7 @@ async def test_real_history_catalog_names_the_chat_and_scopes_the_section(histor
     seen = probe_section(plugin)
 
     assert await dispatch(plugin, start_update(), bot) is True
-    assert bot.calls[-1]["text"].startswith("Owner panel: @casey\n")
+    assert bot.calls[-1]["text"].startswith("Owner panel: @casey · chat 991\n")
     assert await dispatch(plugin, callback_update("tb:s:991:probe"), bot) is True
     assert seen[0].business_connection_id == "business-456"
     assert await dispatch(plugin, callback_update("tb:m:991:off"), bot) is True
@@ -596,7 +602,7 @@ async def test_panel_keeps_the_chat_command_label(plugin, modes, monkeypatch):
 
     entry = modes.default_store().get(OWNER, CHAT)
     assert (entry.mode, entry.label) == ("peer", "Casey Customer (@casey)")
-    assert last_edit(bot)[0] == "Owner panel: Casey Customer (@casey)\nTranscription: peer"
+    assert last_edit(bot)[0] == "Owner panel: Casey Customer (@casey) · chat 991\nTranscription: peer"
 
 
 @pytest.mark.asyncio
@@ -608,11 +614,11 @@ async def test_header_prefers_the_stored_label_then_the_catalog_then_the_chat_id
     bot = PanelBot(business_owner_id=OWNER)
 
     assert await dispatch(plugin, start_update(), bot) is True
-    assert bot.calls[-1]["text"].startswith("Owner panel: Stored name\n")
+    assert bot.calls[-1]["text"].startswith("Owner panel: Stored name · chat 991\n")
 
     modes.default_store().reset(str(OWNER), str(CHAT))
     assert await dispatch(plugin, start_update(), bot) is True
-    assert bot.calls[-1]["text"].startswith("Owner panel: @other\n")
+    assert bot.calls[-1]["text"].startswith("Owner panel: @other · chat 991\n")
 
     catalog.clear()
     assert await dispatch(plugin, start_update(), bot) is True
@@ -663,7 +669,7 @@ async def test_cross_owner_chat_is_never_scoped_to_another_owners_connection(plu
 
     assert await dispatch(plugin, start_update(from_user_id=other), bot) is True
     assert bot.calls[-1]["chat_id"] == other
-    assert bot.calls[-1]["text"].startswith("Owner panel: @victim\n")
+    assert bot.calls[-1]["text"].startswith("Owner panel: @victim · chat 991\n")
     assert await dispatch(plugin, callback_update("tb:s:991:probe", from_user_id=other), bot) is True
     assert seen[-1].business_connection_id == "B"
 
@@ -728,7 +734,7 @@ async def test_reset_button_returns_to_default_and_keeps_the_label_rule(plugin, 
     assert modes.default_store().get(OWNER, CHAT) is None
     assert bot.answers[-1] == {"callback_query_id": "query-1", "text": "Transcription: both (default)"}
     text, rows = last_edit(bot)
-    assert text == "Owner panel: Casey\nTranscription: both (default)"
+    assert text == "Owner panel: Casey · chat 991\nTranscription: both (default)"
     assert rows == [MODE_ROW, [("Refresh", "tb:p:991")]]
 
 
@@ -796,7 +802,7 @@ async def test_corrupt_modes_file_after_restart_explains_the_cause(plugin, modes
     bot = PanelBot(business_owner_id=OWNER)
 
     assert await dispatch(plugin, start_update(), bot) is True
-    assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.UNKNOWN_CONNECTION_MODES_UNREADABLE}]
+    assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.tr("unknown_connection_modes_unreadable")}]
     assert bot.calls[0]["text"].startswith("Error: could not save transcription mode\n")
     assert await dispatch(plugin, callback_update("tb:m:991:off"), bot) is True
     assert bot.answers == [{"callback_query_id": "query-1", "text": "Not allowed", "show_alert": True}]
@@ -904,7 +910,7 @@ async def test_mode_buttons_leave_a_stored_mode_while_transcription_is_disabled(
 
     assert modes.default_store().get(OWNER, CHAT).mode == "off"
     assert bot.answers == [{"callback_query_id": "query-1", "text": "Transcription is disabled on this gateway."}]
-    assert last_edit(bot) == ("Owner panel: Casey\nTranscription is disabled on this gateway.",
+    assert last_edit(bot) == ("Owner panel: Casey · chat 991\nTranscription is disabled on this gateway.",
                               [[("Refresh", "tb:p:991")]])
 
 
@@ -1188,3 +1194,75 @@ async def test_real_ptb_start_and_button_never_reach_core(plugin, modes, telegra
     assert (edit["chat_id"], edit["message_id"]) == (str(OWNER), "700")
     assert edit["text"] == "Owner panel: chat 991\nTranscription: off"
     assert modes.default_store().get(OWNER, CHAT).updated_via == "chat"
+
+
+# --- Localization --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [("ru", "ru"), ("ru-RU", "ru"), ("RU", "ru"), ("en", "en"), ("en-US", "en"), ("uk", "en"), ("", "en"), (None, "en")],
+)
+def test_language_is_russian_for_any_ru_client_else_english(plugin, code, expected):
+    assert plugin._owner_panel.language(code) == expected
+
+
+def test_catalog_falls_back_to_english_and_needs_an_english_string(plugin):
+    panel = plugin._owner_panel
+    panel.register_strings({"en": {"probe.only_en": "Only {what}"}})
+    assert panel.tr("probe.only_en", "ru", what="English") == "Only English"
+    panel.register_strings({"ru": {"probe.only_en": "Только {what}"}})
+    assert panel.tr("probe.only_en", "ru-RU", what="русский") == "Только русский"
+    with pytest.raises(ValueError, match="no English string"):
+        panel.register_strings({"ru": {"probe.missing": "Нет"}})
+    with pytest.raises(ValueError, match="language"):
+        panel.register_strings({"de": {"title": "Panel"}})
+    with pytest.raises(KeyError):
+        panel.tr("probe.unknown")
+
+
+@pytest.mark.asyncio
+async def test_panel_speaks_russian_to_a_russian_client(plugin, modes):
+    bind_owner(plugin)
+    seen = probe_section(plugin)
+    plugin._owner_panel.register_strings({"en": {"section.probe": "Probe"}, "ru": {"section.probe": "Проба"}})
+    bot = PanelBot(business_owner_id=OWNER)
+
+    assert await dispatch(plugin, start_update(language_code="ru"), bot) is True
+    (call,) = bot.calls
+    assert call["text"] == "Панель владельца: chat 991\nРасшифровка: все (по умолчанию)"
+    assert keyboard(call["reply_markup"]) == [
+        [("• все", "tb:m:991:both"), ("мои", "tb:m:991:own"), ("собеседника", "tb:m:991:peer"), ("выкл", "tb:m:991:off")],
+        [("Проба", "tb:s:991:probe")],
+        [("Обновить", "tb:p:991")],
+    ]
+
+    assert await dispatch(plugin, callback_update("tb:m:991:off", language_code="ru-RU"), bot) is True
+    assert bot.answers[-1] == {"callback_query_id": "query-1", "text": "Расшифровка: выкл"}
+    text, buttons = last_edit(bot)
+    assert text == "Панель владельца: chat 991\nРасшифровка: выкл"
+    assert buttons[1] == [("Сбросить", "tb:r:991")]
+    assert modes.default_store().get(OWNER, CHAT).mode == "off"  # stored by mode id, not by label
+
+    assert await dispatch(plugin, callback_update("tb:s:991:probe", language_code="ru"), bot) is True
+    assert bot.answers[-1] == {"callback_query_id": "query-1", "text": "Проба"}
+    assert last_edit(bot)[1][-1] == [("« Назад", "tb:b:991")]
+    assert seen[-1].language_code == "ru"
+
+    assert await dispatch(plugin, callback_update("tb:p:991", from_user_id=PEER, language_code="ru"), bot) is True
+    assert bot.answers[-1] == {"callback_query_id": "query-1", "text": "Нет доступа", "show_alert": True}
+
+    # English for everyone else, including a client with no language.
+    assert await dispatch(plugin, callback_update("tb:r:991", language_code="de"), bot) is True
+    assert bot.answers[-1] == {"callback_query_id": "query-1", "text": "Transcription: both (default)"}
+    assert last_edit(bot)[0] == "Owner panel: chat 991\nTranscription: both (default)"
+
+
+@pytest.mark.asyncio
+async def test_unknown_connection_hint_in_russian(plugin, modes):
+    bot = PanelBot(business_owner_id=OWNER)
+
+    assert await dispatch(plugin, start_update(language_code="ru"), bot) is True
+
+    assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.tr("unknown_connection", "ru")}]
+    assert bot.calls[0]["text"].startswith("Пока не могу подтвердить")

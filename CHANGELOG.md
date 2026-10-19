@@ -7,6 +7,8 @@
 - Add a small section registry (`owner_panel.register_section`) so stats and dossiers can show per-chat views in the panel.
 - Verify the panel owner from any Business message seen in the chat since the gateway started, so `/transcribe` is no longer needed to unlock Manage Bot. A cached "not the owner" answer is dropped as soon as a new connection is seen.
 - Never guess a chat's Business connection in the panel: sections get one only when history lists it for the chat or a message was seen on it.
+- Show the owner panel in Russian to a Telegram client set to Russian (`ru*`) and in English otherwise. All panel strings live in one catalog in `owner_panel.py`; sections get `PanelContext.language_code` and add their own strings with `owner_panel.register_strings`, and a `section.<key>` string localizes a section's button.
+- Always end the panel header with `chat <id>`, so a reply to a panel message tells the agent which chat it is about.
 
 ## 0.9.0 - 2026-10-19
 
