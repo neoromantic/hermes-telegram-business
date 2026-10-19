@@ -16,9 +16,14 @@ The product connects readable Telegram voice messages with useful personal corre
 - [Correspondence stats #4](https://github.com/neoromantic/hermes-telegram-business/issues/4), first slice: the deterministic [`stats` command](STATS.md).
 - Opt-in contact dossiers and owner persona ([#17](https://github.com/neoromantic/hermes-telegram-business/issues/17)), built in the gateway background. [Dossier guide](DOSSIERS.md).
 
+## Unreleased
+
+- Owner panel: Telegram's "Manage Bot" button in a Business chat opens the bot's private chat with that chat's transcription mode as buttons, visible only to the owner. Other features add per-chat views with `owner_panel.register_section`.
+
 ## Next
 
-- Show stats and dossiers to the owner from a Business chat without the contact seeing them ([#4](https://github.com/neoromantic/hermes-telegram-business/issues/4), [#17](https://github.com/neoromantic/hermes-telegram-business/issues/17)).
+- Stats ([#4](https://github.com/neoromantic/hermes-telegram-business/issues/4)) and dossiers ([#17](https://github.com/neoromantic/hermes-telegram-business/issues/17)) as owner panel sections, so the owner sees them per chat without the contact seeing anything.
+- Known limit: claimed panel taps, `/transcribe` commands, and voice updates stop propagation before Hermes' group-99 dispatch counter, so the core "ingress healthy but deaf" warning can show a stale gap after quiet periods. The fix belongs in Hermes core (count dispatch in a group before every plugin group).
 
 ## Priorities and requirements
 

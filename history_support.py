@@ -2670,6 +2670,9 @@ async def resolve_business_owner(bot: Any, business_connection_id: Any) -> tuple
         connection = await _maybe_await(get_connection(business_connection_id))
     except Exception as exc:  # noqa: BLE001 - owner uncertainty is reported, never raised
         return None, f"lookup_failed:{type(exc).__name__}"
+    if _get(connection, "is_enabled") is False:
+        # A disconnected bot: Telegram still names the owner, but it no longer is one.
+        return None, "connection_disabled"
     owner = _get(_get(connection, "user"), "id")
     if owner is None:
         return None, "owner_missing"

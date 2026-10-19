@@ -136,7 +136,7 @@ def registered_business_handler(plugin, adapter):
     handlers = []
     app = SimpleNamespace(add_handler=lambda handler, group: handlers.append((handler, group)))
     plugin._register_telegram_handlers(app, adapter)
-    (handler, _group), = handlers
+    (handler,) = [handler for handler, _group in handlers if type(handler).__name__ == "BusinessHandler"]
     return handler.callback
 
 
