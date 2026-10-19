@@ -21,7 +21,22 @@ Before production cutover:
 - In a separate temporary profile on `baus`, the real `PluginContext.set_config` persisted all five settings and `get_config` returned them to the registered plugin. History, dossier enablement, cleanup style, timezone, and agent passthrough used the saved values; an explicit environment value overrode the form. The config stayed `0600`; production config was untouched.
 - A private copy of the current production data/config migrated to `telesec`: all 13 file SHA-256 hashes stayed identical, every file was `0600`, and the second migration left config bytes unchanged. History, the contact catalog, transcription modes, and any dossier/state files share the same directory migration.
 
-Production cutover and live Telegram acceptance are recorded after the final merge.
+Production cutover and live Telegram acceptance are recorded below.
+
+## Telesec production cutover: 2026-10-19
+
+[PR #42](https://github.com/neoromantic/telesec/pull/42) installed `fe29e489bd8559699ed353e068ed07b1b742469c` as `telesec` on `baus`; the GitHub repository and local origin now use `neoromantic/telesec`. No tag or release was created in this cutover. The Python code passed all **714 tests**, and CI passed on Python 3.11–3.14 before the final docs-only rebase.
+
+- With the gateway stopped, all **13 data files** had identical SHA-256 hashes before and immediately after migration. Canonical history stayed at **13 events**, and dossiers at **one file**. Migrated files remained `0600`. The complete old config entry, including LLM grants, moved unchanged to `plugins.entries.telesec`; the enabled list retained the same selections under the new name.
+- The supported remove/install path was used. Hermes's launcher automatically completed pending dependency/runtime preparation without changing core `818c13be1dc4fd28987e1e881a9408224afd4535` (0.21.6); no core update or maintenance wrapper was invoked. The first headless install declined dependency consent; retrying with `--yes-deps` succeeded. The upgrade script now includes this flag.
+- First startup connected Telegram at **15:35:59 UTC** with both old systemd drop-ins byte-for-byte unchanged. The legacy history/dossier flags enabled the dossier worker and history verification. Then the drop-ins and three cleanup variables moved to `TELESEC_*`; after the immediate restart, all three platforms connected by **15:38:36 UTC**. The gateway's initial environment contained no old plugin variable names, and its session store reported `ok`.
+- `hermes telesec mode list --format json` read the migrated owner modes. The real owner opened `/start bizChat<id>`, saw the mode controls and Stats section, and selected `both`. A six-second synthetic owner voice received its complete transcript in its original caption at **15:39:32 UTC** (`cleaned=True`, `caption_outcome=attached`). The voice and the two bot-DM fixtures were deleted; the controlled chat returned to stored/effective `off`.
+- A **natural incoming contact text** at **15:37:34.969446 UTC** was captured in canonical history. The exact Telegram update appeared in the plugin's consume log, and `state.db` contained **zero new Telegram user/assistant messages for that chat since cutover**. This closes the earlier fresh-contact isolation check. No incoming contact message was fabricated for this check.
+- The owner also confirmed a real Telegram **Manage Bot** tap: its panel chat ID matched the Business chat ID in the gateway log. The real-payload question from the earlier smoke is closed.
+- After live traffic and deletion of the voice fixture, `history verify` returned `ok=True chats=3 files=3 records=17 repaired_files=0 errors=0 warnings=0`. The increase from 13 to 17 happened after migration during normal capture and smoke cleanup.
+- Exactly four install-path literals in the two host maintenance scripts changed to `plugins/telesec`; Bash/Python syntax checks passed. Source and private backup paths are recorded in the baus Vault note.
+
+Evidence is content-free here: no contact names, message text, or raw contact IDs are included. Private before/after manifests, config/drop-in backups, and the natural-contact history/log/database receipt remain on the owner host.
 
 ## Production Business text investigation: 2026-10-19
 
@@ -79,7 +94,7 @@ Plugin `0b4ea66` (main after #40, #43–#46) ran on the owner's gateway with Her
 - `hermes telegram-business mode get <chat_id> --format json` returned the mode, `effective_mode`, `source: stored`, the label, and `business_connection_id`. `mode list --format json` returned the default mode, `transcription_enabled`, and the chats. On this host the history opt-in is set only in the gateway's service unit, so the CLI run needed it in its environment too.
 - The host rendered the plugin's `telegram-business.reference` system prompt section (1218 characters).
 
-Still open: whether a real "Manage Bot" tap sends the same chat id as `business_message.chat.id`. This smoke typed the `/start` text by hand.
+This earlier smoke typed `/start` by hand. The owner later confirmed the real Manage Bot payload; see the [Telesec cutover](#telesec-production-cutover-2026-10-19).
 
 No message text, contact names, or raw contact IDs are included here.
 
