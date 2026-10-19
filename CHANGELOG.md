@@ -1,11 +1,10 @@
 # Changelog
 
+## Unreleased
+
 ## 0.12.2 - 2026-10-20
 
 - Transcribe Business voice messages, round videos, and audio from every contact, with no variable. The ordinary DM allowlist no longer applies to Business media; per-chat modes and Settings decide what is transcribed. `TELESEC_VOICE_BYPASS_AUTH` is removed and ignored.
-
-## Unreleased
-
 - Add conversation metrics to `stats`: each side's share, turns and messages per turn, reply times with median and p90 ([#28](https://github.com/neoromantic/telesec/issues/28)), who is waiting for a reply, median message length, edits, messages per hour and weekday with the peak, activity over the range, streaks, the longest silence, and a comparison with the previous period of the same length when retained history covers it (as many whole days when the range starts at midnight). JSON `schema_version` is now 2; the new keys come after `missing_history`, and the existing keys are unchanged. Message text is read only to count its characters.
 - Remove `TELESEC_TIMEZONE` and the plugin's `timezone` setting: stats use the Hermes time zone (`HERMES_TIMEZONE` or `timezone` in `config.yaml`), else UTC, and `--tz` still overrides it in the CLI.
 - Redesign the 📊 Stats view in the owner panel as a compact Telegram HTML report for a phone screen: share bars, a per-side table (messages, reply median and p90, messages per turn, length, edits), who is waiting for a reply, the peak, sparklines for hours, weekdays, and activity, streaks, the longest pause, sessions, deletions, the change against the previous period, and what history is missing. The bars and table share one monospace block, and the sparklines and summary another, so Telegram shows two copy bars, not four. It is in Russian for a Russian Telegram app and in English otherwise, period buttons, error states, and the paused-history line included. In a chat set to Don't save, the report still shows what was saved, with that line last; the `/stats` card shows no such line. Periods are now whole local days with today, so `7d` shows 7 days instead of 7 × 24 hours over 8 dates. An empty period now shows one line instead of zeros. Link previews are off, and contact names are escaped and cut to 64 characters in the title and 8 columns in the monospace blocks (wide CJK and emoji characters count two, so columns stay aligned). Names with right-to-left letters are wrapped in left-to-right marks, so they cannot flip a line. [Owner panel stats](docs/STATS.md#in-telegram-owner-panel).
