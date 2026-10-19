@@ -10,7 +10,7 @@ uv run ruff check .
 
 CI runs the suite on Python 3.11–3.14. Telegram, STT, and LLM network calls are simulated. Real PTB objects and request serialization are exercised separately from the lightweight unit fixtures.
 
-History checks must cover one-time opt-in, private-chat defaults, the stored old scope rule (per connection and chat, fail closed until stored, an owner's explicit on, `chat scope clear`), create/edit/delete capture, correction classification, restart/retry behavior, partial final writes, contact renames and ambiguity, bounded date/text queries, retention, catalog rebuilds, and CLI failure exits.
+History checks must cover one-time opt-in, private-chat defaults, the stored old scope rule (per connection and chat, fail closed until stored, variables still set applying with it, empty variables as unset, an owner's explicit on, a repair keeping it, `chat scope clear`), create/edit/delete capture, correction classification, restart/retry behavior, partial final writes, contact renames and ambiguity, bounded date/text queries, retention, catalog rebuilds, and CLI failure exits.
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 

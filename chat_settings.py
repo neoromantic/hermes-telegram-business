@@ -15,8 +15,9 @@ Stdlib-only; the file never holds message text or names.
 Up to 0.13, TELESEC_HISTORY_CONNECTIONS, _CHATS and _CHAT_TYPES decided which chats history recorded.
 ``migrate_history_scope()`` stores that filter once, as 0.13 parsed it, under "legacy_scope": the old
 scope rule. It still keeps chats out of history per (connection, chat), and their dossiers pause, unless
-the owner turns a chat on: that one value is stored as an explicit "on". Until the rule is stored the
-variables apply as before; after that they are never read. ``hermes telesec chat scope clear`` drops it.
+the owner turns a chat on: that one value is stored as an explicit "on". While the variables stay set
+they apply too (fail closed: a rollback to 0.13 may have changed them), so either keeps a chat out.
+``hermes telesec chat scope clear`` drops the stored rule.
 """
 
 from __future__ import annotations
@@ -52,6 +53,8 @@ LEGACY_SCOPE_KEY = "legacy_scope"
 SCOPE_MIGRATION = "history_scope"
 TURN_ON_HINT = "Manage Bot > Save history in the chat, or 'hermes telesec chat set <chat> --history on'"
 SCOPE_CLEAR_COMMAND = "hermes telesec chat scope clear --yes"
+DOWNGRADE_NOTE = ("Telesec 0.13 or older reads only the variables, so keep them set while you may go back to it, "
+                  "and remove them after that.")
 
 _OWNER_KEY_RE = re.compile(r"^\d+$")
 _CHAT_KEY_RE = re.compile(r"^-?\d+$")
@@ -153,7 +156,7 @@ class ChatSnapshot:
     # The file can't be read and no earlier read was valid: history and dossiers pause for every chat.
     blind: bool = False
     scope: OldScope | None = None  # the stored old scope rule
-    scope_recorded: bool = False  # migrate_history_scope ran: the variables are no longer read
+    scope_recorded: bool = False  # migrate_history_scope ran: a later start never stores the variables again
 
 
 _EMPTY = ChatSnapshot()
@@ -165,6 +168,8 @@ class ChatWriteResult:
     entry: ChatEntry | None  # None: nothing is off for the chat any more
     changed: bool
     backup_path: Path | None = None
+    # A repair's old scope rule: "kept" from the damaged file, "variables" stored again, "lost" with the backup.
+    scope_repair: str | None = None
 
 
 def _check_feature(feature: str) -> None:
@@ -370,7 +375,7 @@ class ChatSettingsStore:
         entries = [entry for chats in snapshot.owners.values() for entry in chats.values()]
         counts = {feature: sum(1 for entry in entries if not entry.on(feature)) for feature in FEATURES}
         counts["history_on"] = sum(1 for entry in entries if "history" in entry.explicit_on)
-        counts["old_scope"] = int(active_scope(snapshot) is not None)
+        counts["old_scope"] = int(bool(active_scopes(snapshot)))
         return counts
 
     def set_flag(self, owner: Any, chat: Any, feature: str, on: bool, *, via: str, now: datetime | None = None,
@@ -389,7 +394,7 @@ class ChatSettingsStore:
         chat_key = _modes._validate_chat(chat)
         path = self._path_fn()
         with _modes._writer_lock(path):
-            raw, backup = self._read_for_write(path, now=now, repair_corrupt=repair_corrupt)
+            raw, backup, scope_repair = self._read_for_write(path, now=now, repair_corrupt=repair_corrupt)
             owners = raw.setdefault("owners", {})
             owner_value = owners.setdefault(owner_key, {"chats": {}})
             chats = owner_value.setdefault("chats", {})
@@ -420,7 +425,7 @@ class ChatSettingsStore:
             raw["version"] = SCHEMA_VERSION
             _modes._write_private_json_atomic(path, raw)
             self._remember_write(path, raw)
-        return ChatWriteResult(entry=entry, changed=True, backup_path=backup)
+        return ChatWriteResult(entry=entry, changed=True, backup_path=backup, scope_repair=scope_repair)
 
     def _remember_write(self, path: Path, raw: dict[str, Any]) -> None:
         try:
@@ -437,15 +442,16 @@ class ChatSettingsStore:
                 self._valid[key] = (signature, _parse_payload(raw))
 
     def _read_for_write(self, path: Path, *, now: datetime | None,
-                        repair_corrupt: bool) -> tuple[dict[str, Any], Path | None]:
+                        repair_corrupt: bool) -> tuple[dict[str, Any], Path | None, str | None]:
+        """(the file's JSON, the backup of a repaired file, what the repair did with the old scope rule)."""
         try:
             data = path.read_bytes()
         except FileNotFoundError:
-            return {"version": SCHEMA_VERSION, "owners": {}}, None
+            return {"version": SCHEMA_VERSION, "owners": {}}, None, None
         try:
             raw = _decode(data)
             _parse_payload(raw)
-            return raw, None
+            return raw, None, None
         except ChatSettingsFileCorrupt as exc:
             if not repair_corrupt:
                 # Telegram never overwrites a damaged file: the pauses in it may be the only copy.
@@ -453,7 +459,43 @@ class ChatSettingsStore:
             backup = _modes._backup_corrupt_file(path, now)
             logger.warning("%s: chat settings file %s was corrupt (%s); backed up to %s and started empty",
                            _history.PLUGIN_NAME, path, exc, backup)
-            return {"version": SCHEMA_VERSION, "owners": {}}, backup
+            raw, scope_repair = _repaired_scope(data, now=now)
+            if scope_repair == "lost":
+                logger.warning("%s: the old history scope rule was lost with the backup; chats it kept out now "
+                               "save history", _history.PLUGIN_NAME)
+            return raw, backup, scope_repair
+
+
+def _repaired_scope(data: bytes, *, now: datetime | None) -> tuple[dict[str, Any], str | None]:
+    """A repaired file's start and what it did with the old scope rule (None: there was none).
+
+    It keeps the rule and its migration record from the damaged file when both still parse, else stores the
+    rule again from the variables when they are set, else reports the rule lost when the file named one.
+    """
+    raw: dict[str, Any] = {"version": SCHEMA_VERSION, "owners": {}}
+    try:
+        damaged = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        damaged = None
+    if isinstance(damaged, dict) and _scope_recorded(damaged):
+        try:
+            rule = damaged.get(LEGACY_SCOPE_KEY)
+            if rule is not None:
+                OldScope.from_json(rule)
+        except ChatSettingsFileCorrupt:
+            pass
+        else:
+            raw["migrations"] = damaged["migrations"]
+            if rule is not None:
+                raw[LEGACY_SCOPE_KEY] = rule
+            return raw, "kept" if rule is not None else None
+    if _scope_env_names():
+        rule = OldScope.from_env()
+        if not rule.admits_all():
+            raw[LEGACY_SCOPE_KEY] = rule.to_json()
+        raw["migrations"] = {SCOPE_MIGRATION: {"at": _modes._format_timestamp(now), "rule": not rule.admits_all()}}
+        return raw, "variables" if not rule.admits_all() else None
+    return raw, "lost" if LEGACY_SCOPE_KEY.encode() in data else None
 
 
 def _drop_chat(owners: dict[str, Any], owner_key: str, chat_key: str) -> None:
@@ -491,6 +533,11 @@ _SCOPE_WARNED: set[str] = set()
 _ENV_SCOPE: tuple[tuple[str | None, ...], OldScope | None] = ((None, None, None), None)
 
 
+def _scope_env_names() -> list[str]:
+    """The old scope variables that hold a value; an empty one was no filter in 0.13."""
+    return [name for name in SCOPE_ENV if os.environ.get(name, "").replace(",", " ").strip()]
+
+
 def _env_scope() -> OldScope | None:
     """The variables as 0.13 read them, while they are set; parsed again only when they change."""
     global _ENV_SCOPE
@@ -504,17 +551,22 @@ def _env_scope() -> OldScope | None:
     return rule
 
 
-def active_scope(snapshot: ChatSnapshot) -> OldScope | None:
-    """The old scope rule in effect: the stored one, else the variables until the rule is stored (fail closed)."""
-    return snapshot.scope if snapshot.scope_recorded else _env_scope()
+def active_scopes(snapshot: ChatSnapshot) -> tuple[OldScope, ...]:
+    """The old scope rules in effect: the stored one, and the variables while they are set (fail closed: a
+    rollback to 0.13 may have changed them after the rule was stored)."""
+    return tuple(rule for rule in (snapshot.scope, _env_scope()) if rule is not None)
 
 
-def scope_keeps_out(snapshot: ChatSnapshot, connections: Iterable[Any], chat: Any) -> bool:
-    """Does the old scope rule keep this private chat out of history on one of ``connections`` (none: unknown)?"""
-    rule = active_scope(snapshot)
-    if rule is None:
+def scope_keeps_out(snapshot: ChatSnapshot, connections: Iterable[Any], chat: Any, *,
+                    everywhere: bool = False) -> bool:
+    """Does an old scope rule keep this private chat out of history on one of ``connections`` (on every one
+    with ``everywhere``; none: unknown)?"""
+    rules = active_scopes(snapshot)
+    if not rules:
         return False
-    return any(not rule.allows(connection, chat) for connection in (tuple(connections) or (None,)))
+    found = all if everywhere else any
+    return found(any(not rule.allows(connection, chat) for rule in rules)
+                 for connection in (tuple(connections) or (None,)))
 
 
 def _turned_on(snapshot: ChatSnapshot, owner: Any, chat: Any) -> bool:
@@ -552,26 +604,42 @@ def paused(business_connection_id: Any, chat_id: Any, feature: str, owner: Any =
     connection out and the owner did not turn it on. No live lookup: the owner comes from ``owner``,
     the cache or a binding, and an unknown owner counts as paused when either could apply (fail closed).
     """
+    return pause_reason(business_connection_id, chat_id, feature, owner) is not None
+
+
+def pause_reason(business_connection_id: Any, chat_id: Any, feature: str, owner: Any = None) -> str | None:
+    """Why ``paused`` is True: "unreadable" (everything paused), "off" (Don't save or No dossier) or "scope"
+    (the old scope rule); None when ``feature`` runs for the chat."""
     features = _features(feature)
     snapshot = default_store().snapshot()
     if snapshot.blind:
-        return True
+        return "unreadable"
     kept_out = scope_keeps_out(snapshot, (business_connection_id,), chat_id)
     if not kept_out and not any(str(chat_id) in snapshot.off[name] for name in features):
-        return False
+        return None
     owner = owner if owner is not None else known_owner(business_connection_id)
-    if kept_out and not _turned_on(snapshot, owner, chat_id):
-        return True
-    return not all(_stored_on(snapshot, owner, chat_id, name) for name in features)
+    if not all(_stored_on(snapshot, owner, chat_id, name) for name in features):
+        return "off"
+    return "scope" if kept_out and not _turned_on(snapshot, owner, chat_id) else None
+
+
+def cli_owner(business_connection_id: Any, chat_id: Any) -> str | None:
+    """The chat's owner for a CLI command without --owner, found as ``chat set`` finds it: the connection's
+    binding (or the one known owner), else the one owner holding a setting for the chat. None when unknown,
+    so ``paused`` fails closed."""
+    try:
+        return _resolve_owner(default_store(), None, str(chat_id), str(business_connection_id), "check")
+    except (OSError, ValueError):
+        return None
 
 
 def chat_state(owner: Any, chat: Any, *, chat_type: Any = None, connections: Iterable[Any] = (),
                snapshot: ChatSnapshot | None = None) -> tuple[str, str]:
     """(history, dossier) for one owner's chat, as the panel shows them. Blocking.
 
-    history: "on" | "off" (this chat) | "scope" (the old scope rule keeps the chat out on one of
-    ``connections``, none: unknown) | "settings" (off for all chats) | "unreadable" (chat-settings.json
-    can't be read, everything paused).
+    history: "on" | "off" (this chat) | "scope" (the old scope rule keeps the chat out on every one of
+    ``connections``, the ones it is captured through; none: unknown) | "settings" (off for all chats) |
+    "unreadable" (chat-settings.json can't be read, everything paused).
     dossier: "on" | "off" (this chat) | "settings" (dossiers off for all chats) | "needs_history" (this
     chat's history is off) | "no_history" (history is not on for the chat) | "private_only".
     """
@@ -582,7 +650,7 @@ def chat_state(owner: Any, chat: Any, *, chat_type: Any = None, connections: Ite
         history = "unreadable"
     elif not _stored_on(snapshot, owner, chat, "history"):
         history = "off"
-    elif scope_keeps_out(snapshot, connections, chat) and not _turned_on(snapshot, owner, chat):
+    elif scope_keeps_out(snapshot, connections, chat, everywhere=True) and not _turned_on(snapshot, owner, chat):
         history = "scope"
     else:
         history = "on"
@@ -648,7 +716,7 @@ def _store_scope(store: ChatSettingsStore, rule: OldScope, *, now: datetime | No
     """
     path = store.path
     with _modes._writer_lock(path):
-        raw, _backup = store._read_for_write(path, now=now, repair_corrupt=False)
+        raw, _backup, _repair = store._read_for_write(path, now=now, repair_corrupt=False)
         if _scope_recorded(raw):
             return False
         if not rule.admits_all():
@@ -666,10 +734,10 @@ def migrate_history_scope(*, now: datetime | None = None) -> list[str]:
     """Store the old TELESEC_HISTORY_* filter once, as 0.13 parsed it, as the old scope rule.
 
     Runs while one of the variables is set and chat-settings.json has no record of this migration.
-    When the write fails the variables keep applying in this process (``active_scope``) and the next start
+    When the write fails the variables keep applying in this process (``active_scopes``) and the next start
     retries. Returns the variables it logged about, for ``warn_ignored_scope_env``.
     """
-    names = [name for name in SCOPE_ENV if name in os.environ]
+    names = _scope_env_names()
     if not names:
         return []
     store = default_store()
@@ -684,13 +752,13 @@ def migrate_history_scope(*, now: datetime | None = None) -> list[str]:
         return names
     # WARNING, not INFO: register() runs before the gateway configures logging. Counts only, never ids.
     if rule.admits_all():
-        logger.warning("%s: %s no longer read; the old history scope kept no private chat out, so no rule was "
-                       "stored.", _history.PLUGIN_NAME, listed + (" is" if len(names) == 1 else " are"))
+        logger.warning("%s: the old history scope in %s kept no private chat out, so no rule was stored. %s",
+                       _history.PLUGIN_NAME, listed, DOWNGRADE_NOTE)
     else:
-        logger.warning("%s: the old history scope (%s) is now a stored rule in %s, and %s no longer read. Chats it "
-                       "keeps out don't save history until you turn them on: %s. '%s' drops the rule.",
-                       _history.PLUGIN_NAME, rule.summary(), SETTINGS_FILENAME,
-                       listed + (" is" if len(names) == 1 else " are"), TURN_ON_HINT, SCOPE_CLEAR_COMMAND)
+        logger.warning("%s: the old history scope (%s) is now a stored rule in %s. Chats it keeps out don't save "
+                       "history until you turn them on: %s. '%s' drops the rule. While %s stay set they apply "
+                       "too. %s", _history.PLUGIN_NAME, rule.summary(), SETTINGS_FILENAME, TURN_ON_HINT,
+                       SCOPE_CLEAR_COMMAND, listed, DOWNGRADE_NOTE)
     return names
 
 
@@ -698,30 +766,33 @@ def warn_ignored_scope_env(skip: Iterable[str] = ()) -> list[str]:
     """One WARNING per process for each old scope variable still set once the rule is stored; ``skip`` names
     the ones the migration just logged."""
     if not default_store().snapshot().scope_recorded:
-        return []  # not stored yet: the variables still apply
+        return []  # not stored yet: the migration logs about them
     warned = []
-    for name in SCOPE_ENV:
-        if name not in os.environ or name in _SCOPE_WARNED:
+    for name in _scope_env_names():
+        if name in _SCOPE_WARNED:
             continue
         _SCOPE_WARNED.add(name)
         if name in skip:
             continue
-        logger.warning("%s: %s is set but no longer read; the old history scope is stored in %s. See "
-                       "'hermes telesec chat scope'.", _history.PLUGIN_NAME, name, SETTINGS_FILENAME)
+        logger.warning("%s: %s is still set, so it keeps chats out of history together with the old history scope "
+                       "rule stored in %s. %s See 'hermes telesec chat scope'.", _history.PLUGIN_NAME, name,
+                       SETTINGS_FILENAME, DOWNGRADE_NOTE)
         warned.append(name)
     return warned
 
 
 def clear_scope(store: ChatSettingsStore | None = None, *, now: datetime | None = None) -> bool:
-    """Drop the old scope rule, and the explicit "on" values that only overrode it. True when a rule applied.
+    """Drop the stored old scope rule. True when one was stored.
 
-    Also records the migration, so the variables, if still set, are never read again.
+    Also records the migration, so a later start never stores the variables again. The explicit "on" values
+    that only overrode the rule go too, unless a variable is still set: they override it as well.
     """
     store = store or default_store()
     path = store.path
+    keep_on = bool(_scope_env_names())
     with _modes._writer_lock(path):
-        raw, _backup = store._read_for_write(path, now=now, repair_corrupt=False)
-        applied = active_scope(_parse_payload(raw)) is not None
+        raw, _backup, _repair = store._read_for_write(path, now=now, repair_corrupt=False)
+        applied = raw.get(LEGACY_SCOPE_KEY) is not None
         raw.pop(LEGACY_SCOPE_KEY, None)
         if not isinstance(raw.get("migrations"), dict):
             raw["migrations"] = {}
@@ -732,7 +803,7 @@ def clear_scope(store: ChatSettingsStore | None = None, *, now: datetime | None 
         owners = raw.setdefault("owners", {})
         for owner_key, owner_value in list(owners.items()):
             for chat_key, item in list((owner_value.get("chats") or {}).items()):
-                if isinstance(item, dict) and item.get("history") == ON:
+                if not keep_on and isinstance(item, dict) and item.get("history") == ON:
                     item.pop("history")
                     if not any(name in item for name in FEATURES):
                         _drop_chat(owners, owner_key, chat_key)
@@ -846,26 +917,35 @@ def _entry_text(entry: ChatEntry | None) -> str:
 
 
 def _scope_json(snapshot: ChatSnapshot) -> dict[str, Any] | None:
-    """The old scope rule in effect, counts only; None when there is none."""
-    rule = active_scope(snapshot)
-    if rule is None:
+    """The old scope rules in effect, counts only: the stored one and the variables; None when neither applies."""
+    env = _env_scope()
+    if snapshot.scope is None and env is None:
         return None
 
-    def count(value: _history.Scope | None) -> Any:
-        return "any" if value is None or value.wildcard else len(value.values)
+    def rule_json(rule: OldScope | None) -> dict[str, Any] | None:
+        def count(value: _history.Scope | None) -> Any:
+            return "any" if value is None or value.wildcard else len(value.values)
 
-    return {"stored": snapshot.scope_recorded, "connections": count(rule.connections), "chats": count(rule.chats),
-            "chat_types": sorted(rule.chat_types)}
+        return None if rule is None else {"connections": count(rule.connections), "chats": count(rule.chats),
+                                          "chat_types": sorted(rule.chat_types)}
+
+    return {"stored": rule_json(snapshot.scope), "variables": rule_json(env)}
 
 
-def _scope_line(snapshot: ChatSnapshot) -> str | None:
-    rule = active_scope(snapshot)
-    if rule is None:
-        return None
-    where = (f"a stored rule in {SETTINGS_FILENAME}" if snapshot.scope_recorded
-             else f"read from {', '.join(n for n in SCOPE_ENV if n in os.environ)} until the next start stores it")
-    return (f"Old history scope ({rule.summary()}): {where}. Chats it keeps out don't save history until "
-            f"turned on; see 'hermes telesec chat scope'.")
+def _scope_lines(snapshot: ChatSnapshot) -> list[str]:
+    """The old scope rules in effect, counts only; none when neither applies."""
+    lines = []
+    if snapshot.scope is not None:
+        lines.append(f"Old history scope ({snapshot.scope.summary()}): a stored rule in {SETTINGS_FILENAME}.")
+    env = _env_scope()
+    if env is not None:
+        also = (": the next start stores it as the rule" if not snapshot.scope_recorded
+                else ", with the stored rule" if snapshot.scope is not None else "")
+        lines.append(f"Old history scope from {', '.join(_scope_env_names())} ({env.summary()}): applies while "
+                     f"they stay set{also}.")
+    if lines:
+        lines.append("Chats it keeps out don't save history until turned on; see 'hermes telesec chat scope'.")
+    return lines
 
 
 def _list(args: argparse.Namespace, store: ChatSettingsStore) -> int:
@@ -882,12 +962,12 @@ def _list(args: argparse.Namespace, store: ChatSettingsStore) -> int:
                      "old_scope": _scope_json(snapshot),
                      "chats": [_entry_json(o, c, e, scope=scope, snapshot=snapshot) for o, c, e in rows]})
         return 0
-    scope_line = _scope_line(snapshot)
-    if scope_line:
-        print(scope_line)
+    scope_lines = _scope_lines(snapshot)
+    for line in scope_lines:
+        print(line)
     if not rows:
         print("No chat has history or the dossier off; every chat follows Settings"
-              + (" and the old history scope." if scope_line else "."))
+              + (" and the old history scope." if scope_lines else "."))
     for owner_key, chat, entry in rows:
         print(f"owner={owner_key} chat={chat} {_entry_text(entry)} via={entry.updated_via} "
               f"updated_at={entry.updated_at}")
@@ -896,35 +976,54 @@ def _list(args: argparse.Namespace, store: ChatSettingsStore) -> int:
 
 def _scope_cli(store: ChatSettingsStore) -> int:
     snapshot = store.read_strict()
-    line = _scope_line(snapshot)
-    if line is None:
+    lines = _scope_lines(snapshot)
+    if not lines:
         print("No old history scope rule; every chat follows its own setting and Settings.")
         return 0
     turned_on = sum(1 for chats in snapshot.owners.values() for entry in chats.values()
                     if "history" in entry.explicit_on)
-    print(line)
+    for line in lines:
+        print(line)
     print(f"Its dossiers pause too. Turn a chat on: {TURN_ON_HINT}. Chats turned on: {turned_on}.")
-    print(f"Drop the rule: '{SCOPE_CLEAR_COMMAND}'.")
+    if snapshot.scope is not None:
+        print(f"Drop the stored rule: '{SCOPE_CLEAR_COMMAND}'.")
+    if _scope_env_names():
+        print(f"note: {DOWNGRADE_NOTE}")
     return 0
 
 
 def _scope_clear_cli(store: ChatSettingsStore, confirmed: bool) -> int:
     snapshot = store.read_strict()
-    if active_scope(snapshot) is None:
+    names = _scope_env_names()
+    if not active_scopes(snapshot):
         print("No old history scope rule to drop.")
         return 0
+    if snapshot.scope is None:
+        done = "No stored old history scope rule; a later start won't store one from the variables."
+        ask = "No old history scope rule is stored yet. This makes sure a later start never stores one."
+    else:
+        done = ("Dropped the stored old history scope rule. Chats it kept out start saving history with their next "
+                "message, except chats set to Don't save; their dossiers resume too.")
+        ask = (f"This drops the stored old history scope rule ({snapshot.scope.summary()}). Chats it keeps out "
+               f"start saving history with their next message, except chats set to Don't save.")
     if not confirmed:
-        print(f"This drops the old history scope rule ({active_scope(snapshot).summary()}). Chats it keeps out "
-              f"start saving history with their next message, except chats set to Don't save. Run "
-              f"'{SCOPE_CLEAR_COMMAND}' to drop it.")
-        return 1
-    clear_scope(store)
-    print("Dropped the old history scope rule. Chats it kept out start saving history with their next message, "
-          "except chats set to Don't save; their dossiers resume too.")
-    for name in SCOPE_ENV:
-        if name in os.environ:
-            print(f"note: {name} is set but no longer read; remove it from the environment.")
-    return 0
+        print(f"{ask} Run '{SCOPE_CLEAR_COMMAND}' to do it.")
+    else:
+        clear_scope(store)
+        print(done)
+    if names:
+        print(f"note: while {', '.join(names)} stay set, they keep chats out too. {DOWNGRADE_NOTE} Then restart "
+              f"the gateway.")
+    return 0 if confirmed else 1
+
+
+_SCOPE_REPAIR_NOTES = {
+    "kept": "The old history scope rule was kept from the damaged file.",
+    "variables": "The old history scope rule was stored again from the TELESEC_HISTORY_* variables.",
+    "lost": ("warning: the old history scope rule was lost with the backup, so the chats it kept out now save "
+             "history. Set them to Don't save, or set the TELESEC_HISTORY_* variables again and restart the "
+             "gateway to store it again."),
+}
 
 
 def handle_chat_cli(args: argparse.Namespace, *, store: ChatSettingsStore | None = None) -> int:
@@ -971,6 +1070,8 @@ def handle_chat_cli(args: argparse.Namespace, *, store: ChatSettingsStore | None
                                         repair_corrupt=owner_arg is not None, connections=connections)
                 if result.backup_path is not None:
                     print(f"warning: corrupt {SETTINGS_FILENAME} backed up to {result.backup_path}")
+                    if result.scope_repair:
+                        print(_SCOPE_REPAIR_NOTES[result.scope_repair])
                 entry = result.entry
             print(f"chat={chat} {_entry_text(entry)}")
             if entry is not None and "history" in entry.explicit_on:

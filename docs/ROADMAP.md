@@ -47,7 +47,7 @@ The product connects readable Telegram voice messages with useful personal corre
 
 ## Unreleased
 
-- History is switched per chat in Telegram, not by environment variables: the owner taps **Save history** or **Don't save**. `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` are kept once as a stored rule that still keeps the same chats out until the owner turns one on or runs `hermes telesec chat scope clear --yes`; the variables are then ignored. While a chat saves no history, **🗑 Erase saved history** deletes its saved history and its dossier after a confirmation; `hermes telesec history forget` does the same from the terminal, and `--all` erases everything. [Moving from the history environment variables](../README.md#moving-from-the-history-environment-variables), [erase one chat](HISTORY.md#erase-one-chat).
+- History is switched per chat in Telegram, not by environment variables: the owner taps **Save history** or **Don't save**. `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` are kept once as a stored rule that still keeps the same chats out until the owner turns one on or runs `hermes telesec chat scope clear --yes`; while the variables stay set they apply too, so going back to 0.13 keeps working. While a chat saves no history, **🗑 Erase saved history** deletes its saved history and its dossier after a confirmation; `hermes telesec history forget` does the same from the terminal, and `--all` erases everything. [Moving from the history environment variables](../README.md#moving-from-the-history-environment-variables), [erase one chat](HISTORY.md#erase-one-chat).
 
 ## Next
 

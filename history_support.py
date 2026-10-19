@@ -2501,7 +2501,13 @@ def erase_chat_history(business_connection_id: Any, chat_id: Any) -> SavedHistor
             return None
         base_source_signature = _history_source_signature_locked(chat_lock=_chat_writer_lock)
         saved = _erase_chat_dir_locked(chat_dir)
-        _drop_catalog_entries_locked({_catalog_contact_key(business_connection_id, chat_id)}, base_source_signature)
+        try:
+            _drop_catalog_entries_locked({_catalog_contact_key(business_connection_id, chat_id)},
+                                         base_source_signature)
+        except (OSError, ValueError) as exc:
+            # The history is gone, so the erase stands: a catalog left behind no longer matches the files.
+            logger.warning("%s: contact catalog cleanup after an erase failed (%s); %s", PLUGIN_NAME,
+                           type(exc).__name__, _catalog_rebuild_instruction())
     return saved if saved.files else None
 
 
@@ -2513,8 +2519,14 @@ def erase_all_history() -> SavedHistory:
     with _root_writer_lock():
         for chat_dir in list(_iter_chat_dirs()):
             total += _erase_chat_dir_locked(chat_dir)
-        _write_catalog_locked(_catalog_from_entries(
-            {}, source_signature=_history_source_signature_locked(chat_lock=_chat_writer_lock)))
+        try:
+            _write_catalog_locked(_catalog_from_entries(
+                {}, source_signature=_history_source_signature_locked(chat_lock=_chat_writer_lock)))
+        except OSError as exc:
+            logger.warning("%s: contact catalog cleanup after an erase failed (%s); %s", PLUGIN_NAME,
+                           type(exc).__name__, _catalog_rebuild_instruction())
+            with suppress(OSError):
+                _mark_catalog_dirty_locked("history_erase")
     return total
 
 
@@ -2529,13 +2541,18 @@ def forget_chat(business_connection_id: Any, chat_id: Any) -> tuple[SavedHistory
     """Erase the chat's saved history, then forget its dossier: (history erased, a dossier was deleted).
 
     History goes first, so no dossier refresh can rebuild the dossier from it once it is forgotten, and the
-    forget discards any refresh still in flight. A failed erase forgets nothing and can simply be retried;
-    when only the dossier step fails, ``hermes telesec dossier forget`` finishes it. Blocking.
+    forget discards any refresh still in flight. An erase that fails while the chat's history is still there
+    forgets nothing and can simply be retried; once the history is gone the dossier is always forgotten. When
+    only the dossier step fails, ``hermes telesec dossier forget`` finishes it. Blocking.
     """
-    saved = erase_chat_history(business_connection_id, chat_id)
-    dossier = _forget_dossier(("contact", {"business_connection_id": str(business_connection_id),
-                                           "chat_id": chat_id}))
-    return saved, bool(dossier.get("existed"))
+    target = ("contact", {"business_connection_id": str(business_connection_id), "chat_id": chat_id})
+    try:
+        saved = erase_chat_history(business_connection_id, chat_id)
+    except Exception:
+        if not _history_chat_dir_path(business_connection_id, chat_id).exists():
+            _forget_dossier(target)  # the history is gone, so the dossier built from it goes too
+        raise
+    return saved, bool(_forget_dossier(target).get("existed"))
 
 
 def _record_maintenance_run(now: datetime) -> None:
@@ -3755,7 +3772,8 @@ def _still_recorded_note(business_connection_id: Any, chat_id: Any) -> str | Non
     """A note when new messages of this chat are still saved after an erase."""
     from . import chat_settings  # lazy: chat_settings imports this module
 
-    if not capture_enabled() or chat_settings.paused(business_connection_id, chat_id, "history"):
+    owner = chat_settings.cli_owner(business_connection_id, chat_id)
+    if not capture_enabled() or chat_settings.paused(business_connection_id, chat_id, "history", owner=owner):
         return None
     return (f"History is still on for this chat, so new messages are saved again. "
             f"'hermes telesec chat set {chat_id} --history off' stops that.")

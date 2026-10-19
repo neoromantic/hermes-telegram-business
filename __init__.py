@@ -2267,6 +2267,10 @@ def _panel_state(
             profile = item.get("current_profile")
             chat_type = item.get("chat_type")
             break
+    # The owner's connections the chat is captured through, else all of them: the old scope rule shows as
+    # keeping the chat out only when it does so on every one.
+    listed = {str(item.get("business_connection_id") or "") for item in catalog if str(item.get("chat_id")) == chat_id}
+    captured = tuple(c for c in owner.connections if c in listed or (c, chat_id) in _PANEL_SEEN_CHATS) or owner.connections
     if connection is None:
         # Only a connection this chat was seen on; never guess, so a section
         # cannot read or change another connection's data for this chat.
@@ -2278,7 +2282,7 @@ def _panel_state(
     store_label = _transcription_modes.build_chat_label(profile) if isinstance(profile, dict) else None
     label = (entry.label if entry is not None else None) or store_label
     try:
-        features = _chat_settings.chat_state(owner_id, chat_id, chat_type=chat_type, connections=owner.connections)
+        features = _chat_settings.chat_state(owner_id, chat_id, chat_type=chat_type, connections=captured)
     except Exception as exc:  # noqa: BLE001 - hide the rows rather than show a wrong state
         logger.warning("%s: chat settings state failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         features = ("unreadable", "no_history")

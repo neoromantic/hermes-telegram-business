@@ -650,7 +650,7 @@ async def test_enable_only_private_capture_spans_multiple_connections_and_chats(
 
 
 @pytest.mark.asyncio
-async def test_old_scope_variables_narrow_capture_until_the_rule_is_dropped(plugin, monkeypatch: pytest.MonkeyPatch):
+async def test_old_scope_variables_narrow_capture_while_they_are_set(plugin, monkeypatch: pytest.MonkeyPatch):
     set_switch(plugin, "history", True)
     monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
@@ -664,9 +664,15 @@ async def test_old_scope_variables_narrow_capture_until_the_rule_is_dropped(plug
         make_business_text_update(business_id="business-456", chat_id=992, text="kept out"),
         bot=FakeBot(),
     )
-    plugin._chat_settings.clear_scope()
+    plugin._chat_settings.clear_scope()  # no stored rule: the variables apply while they are set
     await plugin._history_support.observe_ptb_update(
-        make_business_text_update(business_id="business-456", chat_id=992, message_id=2, text="kept now"),
+        make_business_text_update(business_id="business-456", chat_id=992, message_id=2, text="still out"),
+        bot=FakeBot(),
+    )
+    for name in ("CONNECTIONS", "CHATS", "CHAT_TYPES"):
+        monkeypatch.delenv(f"TELESEC_HISTORY_{name}")
+    await plugin._history_support.observe_ptb_update(
+        make_business_text_update(business_id="business-456", chat_id=992, message_id=3, text="kept now"),
         bot=FakeBot(),
     )
 
