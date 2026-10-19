@@ -95,9 +95,21 @@ hermes telegram-business stats --contact @alice --format json
 
 Messages are placed by Telegram send time. Only text messages are counted. The report needs no LLM, stores nothing new, and never prints message text. [Counting rules, options, and a synthetic example](docs/STATS.md).
 
+## Contact dossiers (opt-in)
+
+With history enabled, add `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1` to the profile's `.env` and restart the gateway. A gateway-only background worker then builds an evidence-backed dossier for every private Business contact, plus one owner writing persona, and refreshes them incrementally through the host `ctx.llm` facade. Every fact cites its source messages. You can trace, correct, pin, or remove facts, and owner edits survive refreshes.
+
+```bash
+hermes telegram-business dossier list
+hermes telegram-business dossier show --contact @alice --fact f3
+hermes telegram-business dossier correct --contact @alice --fact f3 --text "Prefers calls after 18:00."
+```
+
+Enabling dossiers sends private chat text to the configured model provider; history capture alone never does. Nothing is sent to contacts. [Dossiers, privacy, and a synthetic example](docs/DOSSIERS.md).
+
 ## Planned assistant
 
-The next layer uses opted-in history to build an editable, evidence-backed owner persona and per-contact context. It will support contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover. These features are requirements, not runtime capabilities in 0.9.0.
+The first layer is implemented: opt-in [contact dossiers and an owner persona](docs/DOSSIERS.md) build editable, evidence-backed context from history. Contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover, are planned. Drafts and automatic replies are requirements, not runtime capabilities yet.
 
 See the [roadmap](docs/ROADMAP.md) and [assistant design](docs/ASSISTANT.md). This project complements Nous Research's [official reply-drafting plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/telegram-business); it is a separate community integration.
 
@@ -176,6 +188,14 @@ All plugin variables are optional.
 | `TG_BUSINESS_AUDIO_FILE_MAX_BYTES` | `20971520` | Maximum attached-audio size; bounded to 1024–104857600 bytes. Missing or zero metadata is rejected before download. |
 | `TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS` | `10` | Prefix duration extracted locally for speech probing; bounded to 1–60 seconds and capped at the configured maximum duration. |
 | `TG_BUSINESS_AUDIO_FILE_MIN_WORDS` | `3` | Minimum lexical words in the probe transcript; bounded to 1–20. Continuous-script text uses an equivalent conservative letter threshold. |
+| `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE` | false | Turn on [contact dossiers](docs/DOSSIERS.md) and the owner persona. |
+| `HERMES_TELEGRAM_BUSINESS_DOSSIER_INTERVAL_MINUTES` | `30` | Pause between dossier cycles; bounded to 5–1440. |
+| `HERMES_TELEGRAM_BUSINESS_DOSSIER_QUIET_MINUTES` | `10` | Minutes a chat must be quiet before a dossier refresh; bounded to 0–1440. |
+| `HERMES_TELEGRAM_BUSINESS_DOSSIER_BACKFILL_DAYS` | `90` | First-pass and tracking window for dossiers, in days; bounded to 1–3650. |
+| `HERMES_TELEGRAM_BUSINESS_DOSSIER_BACKFILL_MESSAGES` | `500` | First-pass message cap per contact (for the persona, across all chats); bounded to 10–5000. |
+| `HERMES_TELEGRAM_BUSINESS_DOSSIER_MAX_CALLS_PER_MINUTE` | `20` | Dossier model calls per minute; bounded to 1–600. |
+| `HERMES_TELEGRAM_BUSINESS_DOSSIER_PROVIDER` | cleanup provider | Host provider for dossiers; falls back to `TG_BUSINESS_VOICE_CLEANUP_PROVIDER`, then `gemini`. |
+| `HERMES_TELEGRAM_BUSINESS_DOSSIER_MODEL` | cleanup model | Host model for dossiers; falls back to `TG_BUSINESS_VOICE_CLEANUP_MODEL`, then `gemini-3.8-flash`. |
 
 Boolean values accept `1`, `true`, `yes`, or `on` (case-insensitive).
 
@@ -198,13 +218,22 @@ plugins:
 
 The default is [Gemini 3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash). Cleanup does not pass sampling parameters, following [current Gemini guidance](https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.8). Select another model through `TG_BUSINESS_VOICE_CLEANUP_MODEL` and update the allowlist to match; there is no automatic provider/model switch.
 
-If the trust gate, provider, or model is unavailable, the plugin logs the cleanup failure and posts the raw STT transcript. To use different environment values, update the allowlists to match. To avoid any LLM call, set `TG_BUSINESS_VOICE_CLEANUP_DISABLE=1`.
+If the trust gate, provider, or model is unavailable, the plugin logs the cleanup failure and posts the raw STT transcript. To use different environment values, update the allowlists to match. To avoid any cleanup LLM call, set `TG_BUSINESS_VOICE_CLEANUP_DISABLE=1`.
+
+Contact dossiers use the same facade and allowlist. By default they request the cleanup provider and model, so the allowlist above covers them; if you set `HERMES_TELEGRAM_BUSINESS_DOSSIER_PROVIDER` or `HERMES_TELEGRAM_BUSINESS_DOSSIER_MODEL`, allow those values too. A trust-gate denial stops the dossier cycle, and `hermes telegram-business dossier status` reports it. `TG_BUSINESS_VOICE_CLEANUP_DISABLE` does not affect dossiers; they make model calls only while `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE` is set.
 
 `conservative` preserves conversational wording and accepts almost exclusively punctuation, paragraphing, and obvious ASR fixes. `enriched` actively edits ASR errors and filler, structures topics into paragraphs or real enumerations into lists, and adds a short title to long notes. Its prompt asks the model to preserve the complete meaning, but the runtime deliberately does not attempt token-level semantic proof: any non-empty result between 20% and 200% of the source word count is usable. Output outside that broad structural range gets one feedback retry; raw STT is used only when both candidates are structurally unusable or the cleanup call fails.
 
 ## Current module architecture
 
-The plugin registers native Telegram handlers, a `pre_gateway_dispatch` hook, and a history CLI/skill. Business text observations are persisted before normal dispatch; supported media is consumed directly before Hermes downloads it. The voice pipeline normalizes Telegram Business updates before its module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. Direction remains `unknown` when Telegram supplies no outgoing marker; the voice module retains its existing asynchronous Business-owner lookup before editing a caption.
+The plugin registers native Telegram handlers, a `pre_gateway_dispatch` hook, the `telegram-business` CLI, and the `history` and `dossiers` skills. Business text observations are persisted before normal dispatch; supported media is consumed directly before Hermes downloads it. The voice pipeline normalizes Telegram Business updates before its module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. Direction remains `unknown` when Telegram supplies no outgoing marker; the voice module retains its existing asynchronous Business-owner lookup before editing a caption.
+
+Source files:
+
+- `__init__.py`: registration, the Telegram handlers and dispatch hook, and the voice pipeline.
+- `history_support.py`: history capture and storage, the contact catalog, and the `history` CLI.
+- `dossier_support.py`: the opt-in dossier worker, model calls, output validation, and dossier storage.
+- `dossier_cli.py`: the `dossier` CLI.
 
 Modules are a small ordered tuple. Each module has its own enable check, declares whether it may receive the host-owned LLM facade, and explicitly returns `handled` or `pass_through`. A pass-through result leaves the ordinary Hermes path untouched. A handled result returns `action: skip` immediately and schedules any slow work outside gateway dispatch:
 
@@ -238,6 +267,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - Error replies are disabled by default. When enabled, the first line of an exception may be sent to the Business chat.
 - Voice transcription uses an in-process duplicate key for 24 hours; it resets with the gateway. History uses durable event identities in its JSONL log.
 - History is disabled until explicitly enabled. Once enabled, retained text includes earlier edits and deleted messages. Telegram deletion is not erasure of the local archive; [retention and removal](docs/HISTORY.md#retention-and-removal) are separate controls.
+- Contact dossiers are disabled until explicitly enabled. Once enabled, private chat text from the backfill window and later messages goes to the configured host model; groups are never processed. Dossiers keep derived facts, quotes of at most 200 characters, and short message fingerprints, not a second archive. Their logs carry counts, IDs, and error types only. `dossier forget` deletes a dossier and its owner edits without touching history ([storage and privacy](docs/DOSSIERS.md#storage-and-privacy)).
 - Existing Hermes/Telegram media caches are outside this plugin's ownership and are never scanned or deleted.
 
 ## Failure behavior

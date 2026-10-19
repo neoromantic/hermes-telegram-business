@@ -11,6 +11,10 @@
 - Add `hermes telegram-business stats`: deterministic per-contact text-message counts, active days, sessions, latest activity, deletions, and missing-history notes over retained history, by Telegram send time, as text or JSON. No LLM and no new stored state.
 - Add `HERMES_TELEGRAM_BUSINESS_TIMEZONE` as the default `--tz` for `stats`; `history stats` is now described as storage stats.
 - Document stats in `docs/STATS.md` and add stats recipes to the bundled `history` skill.
+- Add opt-in contact dossiers for private Business chats and an owner writing persona, built and refreshed incrementally by a gateway-only background worker through the host LLM facade (`HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1`).
+- Add `hermes telegram-business dossier` commands to inspect, trace facts to source messages, preview, correct, pin, remove, note, review changes, export, run and forget dossiers; owner edits survive refreshes.
+- Validate model output deterministically (chat-local references, exact quotes of at most 200 characters, fixed sections, caps) and track edits, deletions and retention pruning as source changes; keep message content out of logs.
+- Add the bundled `dossiers` skill and docs/DOSSIERS.md with a synthetic example.
 
 ## 0.8.0 - 2026-10-18
 

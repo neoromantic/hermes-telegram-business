@@ -722,7 +722,7 @@ def _op_text(op: dict[str, Any]) -> str:
     if name in ("update", "correct"):
         return f"{name} {fid}: {_quoted(op.get('before'))} -> {_quoted(op.get('after'))}{reason}"
     if name in ("add", "note"):
-        return f"{name} {fid} {op.get('section')}: {_quoted(op.get('text'))}"
+        return f"{name} {fid} {op.get('section')}: {_quoted(op.get('text'))}{reason}"
     if name == "invalidate":
         return f"invalidate {fid} {op.get('ref')}: {op.get('why')}"
     if name in ("retire", "remove", "unsupported", "remove_unsupported"):

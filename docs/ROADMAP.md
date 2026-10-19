@@ -16,16 +16,22 @@ The product connects readable Telegram voice messages with useful personal corre
 
 The 0.9.0 section is branch implementation status, not a claim that 0.9.0 has been published or installed in a running gateway. [Verification boundaries](VERIFY.md).
 
+## Unreleased
+
+- Opt-in contact dossiers and owner persona ([#17](https://github.com/neoromantic/hermes-telegram-business/issues/17)), built in the gateway background. [Dossier guide](DOSSIERS.md).
+
 ## Priorities and requirements
 
 | Order | Work | Result |
 |---|---|---|
 | 1 | [History #2](https://github.com/neoromantic/hermes-telegram-business/issues/2) | Finish integration review and prove new capture, restart, search, and deletion behavior. |
-| 2 | [Owner/contact dossiers #17](https://github.com/neoromantic/hermes-telegram-business/issues/17) | Inspectable context from selected history, with evidence, corrections, freshness, and forgetting. |
+| 2 | [Owner/contact dossiers #17](https://github.com/neoromantic/hermes-telegram-business/issues/17) | First slice implemented: opt-in [dossiers](DOSSIERS.md) for all private chats and an owner persona, with evidence, corrections, freshness, and forgetting. |
 | 3 | [Contextual drafts #18](https://github.com/neoromantic/hermes-telegram-business/issues/18) | Private suggestions using conversation context and approved dossiers; owner Send / Edit / Discard. |
 | 4 | [Automatic replies #19](https://github.com/neoromantic/hermes-telegram-business/issues/19) | Explicit per-chat activation, reply limits, pause, and owner handover. |
 
 The [assistant design](ASSISTANT.md) explains the owner experience, modes, context boundaries, and delivery lifecycle. Each issue is a set of requirements rather than a prescribed storage framework.
+
+Deferred from the #17 first slice: using dossiers in drafts (#18) and automatic replies (#19), a Telegram-side dossier UI, voice transcripts as a dossier source, per-contact exclusion, and cross-contact persona leakage filters.
 
 ## Independent improvements
 

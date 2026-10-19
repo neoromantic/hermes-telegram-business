@@ -332,13 +332,13 @@ def read_changes(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
     """Revision log lines of a dossier dir, oldest first; bad lines are skipped."""
     out: list[dict[str, Any]] = []
     try:
-        with (path / CHANGES_FILE).open("r", encoding="utf-8") as handle:
+        with (path / CHANGES_FILE).open("rb") as handle:  # bytes: a torn UTF-8 tail spoils only its own line
             for line in handle:
                 if not line.strip():
                     continue
                 try:
                     obj = json.loads(line)
-                except ValueError:
+                except ValueError:  # includes UnicodeDecodeError
                     continue
                 if isinstance(obj, dict):
                     out.append(obj)
@@ -583,10 +583,15 @@ def _first_pass_candidates(msgs: list[Msg], *, now: datetime, cfg: DossierConfig
     return cand, window_start, older
 
 
+def _tracking_floor(coverage: dict[str, Any], ws_at: datetime, now: datetime, cfg: DossierConfig) -> datetime:
+    """Rolling floor that never moves back, so raising the backfill window cannot re-admit aged-out keys."""
+    return max(now - timedelta(days=cfg.backfill_days), ws_at, _parse(coverage.get("tracked_floor")) or ws_at)
+
+
 def _incremental(msgs: list[Msg], dossier: dict[str, Any], *, now: datetime,
                  cfg: DossierConfig) -> tuple[list[Msg], set[str], datetime, datetime]:
     ws_at = _parse(dossier["coverage"]["window_start"]) or now
-    floor = max(now - timedelta(days=cfg.backfill_days), ws_at)  # rolling tracking floor
+    floor = _tracking_floor(dossier["coverage"], ws_at, now, cfg)
     seen = dossier["seen"]
     # New messages must be strictly after window_start so boundary ties cut by the first-pass cap stay out.
     pending = [m for m in msgs
@@ -623,7 +628,7 @@ def plan_persona(persona: dict[str, Any] | None, views: dict[str, ChatView], *, 
         pending, changed, ws_at, floor = _incremental(projected, persona, now=now, cfg=cfg)
         older = bool(persona["coverage"].get("older_history_not_sent"))
     new_n, changed_n = len(pending) - len(changed), len(changed)
-    last = _parse(persona and (persona.get("last_revision_at") or persona.get("created_at")))
+    last = _parse(persona and (persona.get("refreshed_at") or persona.get("created_at")))  # last model refresh
     due = ((first and new_n >= 1) or new_n >= PERSONA_MIN_NEW
            or ((new_n + changed_n) >= 1 and (last is None or now - last >= PERSONA_MAX_AGE))
            or (force and (new_n + changed_n) >= 1))
@@ -639,10 +644,9 @@ def plan_persona(persona: dict[str, Any] | None, views: dict[str, ChatView], *, 
 
 
 def _floor_of(d: dict[str, Any] | None, now: datetime, cfg: DossierConfig) -> datetime:
-    base = now - timedelta(days=cfg.backfill_days)
     coverage = d.get("coverage") if d else None
     ws_at = _parse(coverage.get("window_start")) if coverage else None
-    return max(base, ws_at) if ws_at else base
+    return _tracking_floor(coverage, ws_at, now, cfg) if ws_at else now - timedelta(days=cfg.backfill_days)
 
 
 def fold_since(contact: dict[str, Any] | None, persona: dict[str, Any] | None, now: datetime,
@@ -781,22 +785,8 @@ def source_state(view: ChatView, src: dict[str, Any]) -> str:
 
 
 def needs_maintenance(d: dict[str, Any], view: ChatView) -> bool:
-    for f in d["facts"]:
-        for s in f["sources"]:
-            if source_chat_key(d, s) != view.chat_key:
-                continue
-            st = source_state(view, s)
-            mid = str(s["message_id"])
-            if st in ("gone", "replaced"):
-                return True
-            if st == "old":
-                if mid in view.deleted_seen and not s.get("deleted"):
-                    return True
-                continue
-            m = view.messages[mid]
-            if m.fp != s.get("fp") or m.deleted != bool(s.get("deleted")):
-                return True
-    return False
+    return any(source_chat_key(d, s) == view.chat_key and _source_change(view, s)
+               for f in d["facts"] for s in f["sources"])
 
 
 def compute_stale(dossier: dict[str, Any], views: dict[str, ChatView]) -> dict[str, list[dict[str, str]]]:
@@ -814,6 +804,7 @@ def compute_stale(dossier: dict[str, Any], views: dict[str, ChatView]) -> dict[s
 
 
 def _source_change(view: ChatView, s: dict[str, Any]) -> str | None:
+    """The one "a source changed" rule; apply_maintenance must reconcile every non-None result."""
     st = source_state(view, s)
     mid = str(s["message_id"])
     if st in ("gone", "replaced"):
@@ -1126,8 +1117,7 @@ def apply_maintenance(d: dict[str, Any], *, views: dict[str, ChatView], kind: st
         if f["kind"] == "observed" and not any(s.get("quote") for s in kept):
             f["kind"], f["confidence"] = "inferred", "low"
             ops.append({"op": "invalidate", "fact_id": f["id"], "ref": None, "why": "downgraded"})
-        noted = f["kind"] == "owner" and (f.get("owner") or {}).get("action") == "noted"
-        if not kept and not noted:
+        if not kept and not _is_note(f):
             if protected(f):
                 if not f.get("source_gone"):
                     f["source_gone"] = True
@@ -1260,7 +1250,7 @@ def merge_batch(d: dict[str, Any], output: dict[str, Any], *, kind: str, resolve
         if any(similar(text, t) for t in removed_texts):
             drops["removed_similar"] += 1
             continue
-        if any(protected(g) and g["id"] != fid and similar(text, g["text"]) for g in facts.values()):
+        if any(protected(g) and (op == "add" or g["id"] != fid) and similar(text, g["text"]) for g in facts.values()):
             drops["protected_similar"] += 1
             continue
         sources = validate_sources(item.get("sources"), resolver, drops)
@@ -1293,7 +1283,8 @@ def merge_batch(d: dict[str, Any], output: dict[str, Any], *, kind: str, resolve
             facts[fid] = {"id": fid, "section": section, "kind": fkind, "confidence": conf, "text": text,
                           "status": "active", "pinned": False, "source_gone": False, "unsupported_cycle": None,
                           "first_revision": rev, "last_revision": rev, "owner": None, "sources": sources}
-            ops.append({"op": "add", "fact_id": fid, "section": section, "text": text})
+            ops.append({"op": "add", "fact_id": fid, "section": section, "text": text,
+                        "reason": clip(item.get("reason", ""), MAX_REASON_CHARS)})
         else:
             before = f["text"]
             f.update(section=section, kind=fkind, confidence=conf, text=text, sources=sources,
@@ -1317,6 +1308,7 @@ def merge_batch(d: dict[str, Any], output: dict[str, Any], *, kind: str, resolve
             _coverage_add(d, m)
         d["seen"][m.key] = [m.fp, _iso(m.order_at)]
     _age_seen(d, plan.floor)
+    d["coverage"]["tracked_floor"] = _history._isoformat_utc(plan.floor)  # plan.floor is already monotonic
     if kind == "persona":
         d["coverage"]["chats"] = len(d.get("chat_aliases") or {})
     d["refreshed_at"] = _iso(now)
@@ -1341,11 +1333,12 @@ def merge_batch(d: dict[str, Any], output: dict[str, Any], *, kind: str, resolve
 
 def _owner_text(text: Any) -> str:
     raw = str(text or "").strip()
-    if not raw:
-        raise ValueError("text is empty")
     if len(raw) > MAX_OWNER_TEXT_CHARS:
         raise ValueError(f"text exceeds {MAX_OWNER_TEXT_CHARS} characters")
-    return clip(raw, MAX_OWNER_TEXT_CHARS)
+    cleaned = clip(raw, MAX_OWNER_TEXT_CHARS)
+    if not cleaned:  # checked after cleaning: control or bidi characters alone are empty too
+        raise ValueError("text is empty")
+    return cleaned
 
 
 def normalize_fact_id(fact_id: Any) -> str:
@@ -1368,13 +1361,23 @@ def normalize_section(kind: str, section: Any) -> str:
     return name
 
 
+def _is_note(f: dict[str, Any]) -> bool:
+    """An owner note (corrected or not): it never had sources, so it is never 'source gone'."""
+    owner = f.get("owner") or {}
+    return f["kind"] == "owner" and (owner.get("action") == "noted" or bool(owner.get("noted")))
+
+
 def owner_correct(d: dict[str, Any], fact_id: Any, text: Any, *, now: datetime, rev: int) -> dict[str, Any]:
     f, new_text = _fact(d, fact_id), _owner_text(text)
     old = f["text"]
     if f["kind"] != "owner":
         d["removed"].append({"fact_id": f["id"], "text": old, "at": _iso(now), "by": "correct"})
+    owner = {"action": "corrected", "at": _iso(now), "previous_text": old}
+    if _is_note(f):
+        owner["noted"] = True  # a corrected note still never had sources
     f.update(kind="owner", confidence=None, text=new_text, status="active", unsupported_cycle=None,
-             owner={"action": "corrected", "at": _iso(now), "previous_text": old}, last_revision=rev)
+             owner=owner, last_revision=rev)
+    f["source_gone"] = not f["sources"] and not _is_note(f)
     return {"op": "correct", "fact_id": f["id"], "before": old, "after": new_text}
 
 
@@ -1383,6 +1386,10 @@ def owner_pin(d: dict[str, Any], fact_id: Any, *, now: datetime, rev: int, pinne
     f.update(pinned=pinned, last_revision=rev)
     if pinned and f["status"] == "unsupported":
         f.update(status="active", unsupported_cycle=None, source_gone=not f["sources"])
+    elif not pinned and not protected(f):
+        f["source_gone"] = False  # only protected facts are "source gone"
+        if not f["sources"] and f["status"] == "active":  # removed on the next refresh, like any unsupported fact
+            f.update(status="unsupported", unsupported_cycle=None)  # None never equals a cycle id
     return {"op": "pin" if pinned else "unpin", "fact_id": f["id"]}
 
 
@@ -1453,7 +1460,10 @@ def _forget_summary(path: Path) -> dict[str, Any]:
         d = load_dossier(path)
     except (OSError, ValueError):
         d = None
-    log = read_changes(path)
+    try:
+        log = read_changes(path)
+    except OSError:  # an unreadable log must never block the delete
+        log = []
     return {"existed": path.exists(), "revision": d["revision"] if d else None,
             "facts": len(d["facts"]) if d else 0,
             "owner_edits": sum(1 for line in log if line.get("actor") == "owner"), "log_entries": len(log)}
@@ -1568,6 +1578,7 @@ class _Cycle:
     persona: dict[str, Any] | None  # persona at cycle start (for fold windows only)
     views: dict[str, ChatView] = field(default_factory=dict)
     stats: dict[str, int] = field(default_factory=dict)
+    dirty: bool = False  # state changed since the last save
 
     def stopped(self) -> bool:
         return self.stop is not None and self.stop.is_set()
@@ -1579,6 +1590,7 @@ def _gate_ok(gate: Any, sig: list[list[Any]], ident: str | None, id_field: str =
 
 def _set_gate(cx: _Cycle, key: str, sig: list[list[Any]], ident: str | None) -> None:
     cx.state["chats"][key] = {"signature": sig, "dossier_id": ident, "at": _iso(cx.now)}
+    cx.dirty = True
 
 
 def _record_failure(state: dict[str, Any], key: str, entry: dict[str, Any] | None, exc: BaseException,
@@ -1737,6 +1749,7 @@ def process_persona(entries: list[dict[str, Any]], cx: _Cycle, *, force: bool = 
     def gate(keys: Any, ident: str | None) -> None:
         for k in keys:
             gates[k] = {"signature": views[k].signature, "persona_id": ident}
+            cx.dirty = True
 
     if not plan.due:
         outcome = "not_due"
@@ -1777,13 +1790,14 @@ def _guarded(cx: _Cycle, key: str, entry: dict[str, Any] | None, label: str, ste
     cx.stats = {}
     try:
         outcome = step()
-        if outcome not in ("stopped", "waiting", "discarded"):
-            cx.state["failures"].pop(key, None)
+        if outcome not in ("stopped", "waiting", "discarded") and cx.state["failures"].pop(key, None):
+            cx.dirty = True
     except _TrustGateDenied:
         raise
     except Exception as exc:  # noqa: BLE001 - one target must not stop the cycle
         outcome = "failed"
         _record_failure(cx.state, key, entry, exc, cx.now)
+        cx.dirty = True
         cx.rep.failures.append((label, type(exc).__name__))
         if entry is None:
             logger.warning("%s: dossier persona refresh failed error=%s", _history.PLUGIN_NAME, type(exc).__name__)
@@ -1795,8 +1809,10 @@ def _guarded(cx: _Cycle, key: str, entry: dict[str, Any] | None, label: str, ste
                  _history.PLUGIN_NAME, "persona" if entry is None else _entry_label(entry), outcome,
                  s.get("calls", 0), s.get("batches", 0), s.get("new", 0), s.get("changed", 0), s.get("dropped", 0),
                  int((time.monotonic() - started) * 1000))
-    cx.state["recent_calls"] = cx.limiter.snapshot()
-    save_state(cx.state)
+    if cx.dirty or s.get("calls"):  # an idle target (gate hit) writes nothing; the cycle end saves anyway
+        cx.state["recent_calls"] = cx.limiter.snapshot()
+        save_state(cx.state)
+        cx.dirty = False
     return outcome
 
 

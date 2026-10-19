@@ -384,11 +384,14 @@ async def test_unknown_direction_labelled_and_known_direction_preferred(
     ds = dossiers
     chat = 5511
     raw(plug, chat, [(1, "unknown", "who wrote this", 50), (2, "in", "hi there", 45)], username="u5511")
+    raw(plug, 5590, [(1, "unknown", "who wrote this", 50), (2, "out", "owner here", 45)], username="u5590")
     fake = llm()
     report = cycle(ds, fake)
-    assert report.unqualified == 1  # unknown counts for neither side
+    assert report.unqualified == 2  # unknown counts for neither side
     assert contact_payloads(fake) == []
-    assert read_dossier(ds, chat) is None
+    assert read_dossier(ds, chat) is None and read_dossier(ds, 5590) is None
+    (persona,) = persona_payloads(fake)
+    assert [m["text"] for m in persona["messages"]] == ["owner here"]  # unknown-direction text never enters it
 
     raw(plug, chat, [(3, "out", "reply text", 40), (3, "unknown", "reply text edited", 35, "edited")],
         username="u5511")
@@ -1115,6 +1118,26 @@ async def test_changes_log_torn_tail_isolated(plug: ModuleType, dossiers: Module
     code, out, _err = cli(plug, "dossier", "changes", *chat_args(chat))
     assert code == 0
     assert re.search(r"rev 2 .*owner.*pin f1", out)
+
+
+@pytest.mark.asyncio
+async def test_changes_log_torn_utf8_tail_isolated(plug: ModuleType, dossiers: ModuleType) -> None:
+    ds = dossiers
+    chat = 5551
+    await two_sided(plug, chat, "TORNUTF")
+    cycle(ds, llm(quote_first))
+    log = dossier_dir(ds, chat) / "changes.jsonl"
+    with log.open("ab") as handle:
+        handle.write('{"text":"Клиент'.encode()[:-1])  # cut inside a 2-byte character
+    ds.apply_owner_edit(("contact", catalog_entry(plug, chat)), "pin", fact_id="f1")
+
+    assert [line["actor"] for line in ds.read_changes(dossier_dir(ds, chat))] == ["model", "owner"]
+    for command in ("changes", "export"):
+        code, out, err = cli(plug, "dossier", command, *chat_args(chat))
+        assert code == 0, (command, out, err)
+    code, out, err = cli(plug, "dossier", "forget", *chat_args(chat))
+    assert code == 0, (out, err)
+    assert not dossier_dir(ds, chat).exists()
 
 
 @pytest.mark.asyncio

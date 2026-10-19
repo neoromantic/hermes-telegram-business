@@ -131,6 +131,26 @@ async def replace_with_duplicate(plugin: Any, chat_id: int, username: str, mid: 
     assert classified[-1]["classification"] == "likely_duplicate"
 
 
+EDIT_DONE = {"correct": "Corrected", "pin": "Pinned", "unpin": "Unpinned", "note": "Added note"}
+
+
+def owner_edit(plugin: Any, ds: Any, entry: dict[str, Any], via: str, action: str, *, fact_id: str | None = None,
+               text: str | None = None, section: str | None = None, now: datetime | None = None) -> str | None:
+    """One owner edit on alice through the API or ``hermes telegram-business dossier``; returns the fact id."""
+    if via == "api":
+        _, op = ds.apply_owner_edit(("contact", entry), action, fact_id=fact_id, text=text, section=section,
+                                    now=now)
+        return op["fact_id"]
+    argv = ["dossier", action, "--contact", "@alice"]
+    for flag, value in (("--fact", fact_id), ("--section", section), ("--text", text)):
+        if value is not None:
+            argv += [flag, value]
+    code, out, err = cli(plugin, *argv)
+    assert code == 0, (out, err)
+    assert out.startswith(f"{EDIT_DONE[action]} "), out
+    return out.split()[2 if action == "note" else 1]
+
+
 def count_folds(monkeypatch: pytest.MonkeyPatch, ds: Any) -> Counter:
     """Spy on read_chat_view; returns a Counter of folded chat keys."""
     folds: Counter = Counter()
@@ -150,21 +170,28 @@ def count_folds(monkeypatch: pytest.MonkeyPatch, ds: Any) -> Counter:
 
 
 @pytest.mark.asyncio
-async def test_correct_survives_refresh(dossier_plugin, dossiers):
+@pytest.mark.parametrize("via", ["api", "cli"])
+async def test_correct_survives_refresh(dossier_plugin, dossiers, via):
     ds = dossiers
     entry = await seed_alice(dossier_plugin)
-    fake = scripted(contact=[output(email_fact())])
+    fake = scripted(contact=[output(email_fact(reason="She asked for it"))])
     assert cycle(ds, fake).refreshed == 1
     assert fact(read_dossier(ds, ALICE), "f1")["kind"] == "observed"
+    code, out, err = cli(dossier_plugin, "dossier", "changes", "--contact", "@alice")
+    assert code == 0, (out, err)
+    assert "add f1 preferences:" in out and "(She asked for it)" in out  # the log says why
 
     owner_text = "The contact wants invoices announced by phone."
-    ds.apply_owner_edit(("contact", entry), "correct", fact_id="f1", text=owner_text, now=ago(-1))
+    assert owner_edit(dossier_plugin, ds, entry, via, "correct", fact_id="f1", text=owner_text, now=ago(-1)) == "f1"
     await seed_alice(dossier_plugin, [(13, "in", "Also please call me on Mondays", -5)])
     second = output(
         change("update", "f1", text="The contact prefers phone calls on Mondays.",
                sources=(("m13", "call me on Mondays"),)),
         change(section="decisions", text="Contact prefers email for invoices.", sources=(("m13", ""),)),
         change(section="open_questions", text="The contact asked for a Monday call.",
+               sources=(("m13", "call me on Mondays"),)),
+        # A restatement of the correction in another section, carrying the protected fact's id.
+        change(fid="f1", section="shared_facts", text="The contact wants invoices announced by phone!",
                sources=(("m13", "call me on Mondays"),)),
     )
     fake = scripted(contact=[second])
@@ -179,10 +206,12 @@ async def test_correct_survives_refresh(dossier_plugin, dossiers):
     texts = [f["text"] for f in d["facts"]]
     assert "Contact prefers email for invoices." not in texts  # similar to the corrected-away text
     assert "The contact asked for a Monday call." in texts  # the control add landed
+    assert "The contact wants invoices announced by phone!" not in texts
     line = last_line(ds)
     assert line["actor"] == "model"
     assert line["dropped"]["removed_similar"] == 1
     assert line["dropped"]["protected"] == 1
+    assert line["dropped"]["protected_similar"] == 1
 
     payload = payloads(fake, CONTACT)[0]
     shown = payload_fact(payload, "f1")
@@ -193,27 +222,31 @@ async def test_correct_survives_refresh(dossier_plugin, dossiers):
 
 
 @pytest.mark.asyncio
-async def test_pin_blocks_model_update_and_retire(dossier_plugin, dossiers):
+@pytest.mark.parametrize("via", ["api", "cli"])
+async def test_pin_blocks_model_update_and_retire(dossier_plugin, dossiers, via):
     ds = dossiers
     entry = await seed_alice(dossier_plugin)
     assert cycle(ds, scripted(contact=[output(email_fact(), harbour_fact())])).refreshed == 1
-    ds.apply_owner_edit(("contact", entry), "pin", fact_id="f1", now=ago(-1))
+    owner_edit(dossier_plugin, ds, entry, via, "pin", fact_id="f1", now=ago(-1))
 
     await seed_alice(dossier_plugin, [(13, "in", "Phone works better for me now", -5)])
     fake = scripted(contact=[output(
         change("update", "f1", text="The contact prefers phone calls.", sources=(("m13", "Phone works"),)),
         change("retire", "f1", reason="changed"),
         change("retire", "f2", reason="no longer relevant"),
+        change(section="decisions", text="The contact prefers email for invoices!", sources=(("m13", "Phone works"),)),
     )])
     assert cycle(ds, fake, now=ago(-20)).refreshed == 1
     d = read_dossier(ds, ALICE)
     assert fact(d, "f1")["text"] == EMAIL_TEXT
     assert fact(d, "f1")["pinned"] is True
     assert fact(d, "f2") is None  # an unpinned model fact is still model-mutable
+    assert [f["id"] for f in d["facts"]] == ["f1"]  # no unpinned copy of the pinned fact
     assert last_line(ds)["dropped"]["protected"] == 2
+    assert last_line(ds)["dropped"]["protected_similar"] == 1
     assert payload_fact(payloads(fake, CONTACT)[0], "f1")["read_only"] is True
 
-    ds.apply_owner_edit(("contact", entry), "unpin", fact_id="f1", now=ago(-21))
+    owner_edit(dossier_plugin, ds, entry, via, "unpin", fact_id="f1", now=ago(-21))
     await seed_alice(dossier_plugin, [(14, "in", "Calls after 5pm are best", -25)])
     fake = scripted(contact=[output(
         change("update", "f1", text="The contact prefers calls after 5pm.", sources=(("m14", "Calls after 5pm"),)),
@@ -223,6 +256,22 @@ async def test_pin_blocks_model_update_and_retire(dossier_plugin, dossiers):
     f1 = fact(read_dossier(ds, ALICE), "f1")
     assert f1["text"] == "The contact prefers calls after 5pm."
     assert f1["pinned"] is False
+
+
+@pytest.mark.asyncio
+async def test_readd_of_current_fact_dropped_as_duplicate(dossier_plugin, dossiers):
+    ds = dossiers
+    await seed_alice(dossier_plugin)
+    assert cycle(ds, scripted(contact=[output(email_fact())])).refreshed == 1
+    await seed_alice(dossier_plugin, [(13, "in", "Email still works best", -5)])
+    fake = scripted(contact=[output(
+        change(text="The contact prefers e-mail for invoices.", sources=(("m13", "Email still works"),)),
+        change(section="open_questions", text="Something new about Mondays.", sources=(("m13", "Email still"),)),
+    )])
+    assert cycle(ds, fake, now=ago(-20)).refreshed == 1
+    texts = [f["text"] for f in read_dossier(ds, ALICE)["facts"]]
+    assert texts == [EMAIL_TEXT, "Something new about Mondays."]
+    assert last_line(ds)["dropped"]["duplicate"] == 1
 
 
 @pytest.mark.asyncio
@@ -256,8 +305,9 @@ async def test_note_validates_section_and_skeleton_survives_first_pass(dossier_p
     target = ("contact", entry)
     with pytest.raises(ValueError, match="unknown section 'hobbies'"):
         ds.apply_owner_edit(target, "note", section="hobbies", text="Likes sailing.")
-    with pytest.raises(ValueError, match="text is empty"):
-        ds.apply_owner_edit(target, "note", section="preferences", text="   ")
+    for blank in ("   ", "\u200f\u202e\x07"):  # bidi and control characters alone are empty as well
+        with pytest.raises(ValueError, match="text is empty"):
+            ds.apply_owner_edit(target, "note", section="preferences", text=blank)
     with pytest.raises(ValueError, match="exceeds 500 characters"):
         ds.apply_owner_edit(target, "note", section="preferences", text="x" * 501)
     with pytest.raises(ValueError, match="no dossier yet"):
@@ -288,6 +338,29 @@ async def test_note_validates_section_and_skeleton_survives_first_pass(dossier_p
     assert d["revision"] == 2
     assert [(f["id"], f["kind"], f["text"]) for f in d["facts"]] == [
         ("f1", "owner", note), ("f2", "observed", EMAIL_TEXT)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["api", "cli"])
+async def test_corrected_note_is_never_source_gone(dossier_plugin, dossiers, via):
+    ds = dossiers
+    entry = await seed_alice(dossier_plugin)
+    assert cycle(ds, scripted(contact=[output(email_fact())])).refreshed == 1
+    fid = owner_edit(dossier_plugin, ds, entry, via, "note", section="relationship", text="Old client since 2019.")
+    assert fid == "f2"
+    assert owner_edit(dossier_plugin, ds, entry, via, "correct", fact_id=fid, text="Client since 2018.") == fid
+    d = read_dossier(ds, ALICE)
+    note = fact(d, fid)
+    assert (note["section"], note["kind"], note["sources"]) == ("relationship", "owner", [])
+    assert note["owner"]["previous_text"] == "Old client since 2019."
+    revision, lines = d["revision"], len(read_changes(dossier_dir(ds, ALICE)))
+
+    await seed_alice(dossier_plugin, [(13, "in", "Thanks for the call", -5)])
+    assert cycle(ds, scripted(), now=ago(-20)).refreshed == 1  # the model changes nothing
+    d = read_dossier(ds, ALICE)
+    assert fact(d, fid)["source_gone"] is False
+    assert d["revision"] == revision
+    assert len(read_changes(dossier_dir(ds, ALICE))) == lines
 
 
 @pytest.mark.asyncio
@@ -640,8 +713,8 @@ async def test_deletion_flags_source_without_call_then_duplicate_drops_it(dossie
 
 
 @pytest.mark.asyncio
-async def test_pruned_source_unsupported_pinned_source_gone(dossier_plugin, dossiers, monkeypatch):
-    ds = dossiers
+async def prune_lemons(dossier_plugin: Any, ds: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """f1 (model) and f2 (pinned) lose their only sources to retention; returns alice's entry."""
     old = timedelta(days=70)
     raw(dossier_plugin, ALICE, [(1, "in", "Old order: two crates of lemons", old),
                                 (2, "out", "Old reply: crates ship Tuesday", old - timedelta(minutes=1))],
@@ -658,9 +731,15 @@ async def test_pruned_source_unsupported_pinned_source_gone(dossier_plugin, doss
 
     monkeypatch.setenv(RETENTION_ENV, "30")
     assert maintain(dossier_plugin, 0).pruned_files >= 1
-    fake = scripted()
-    rep = cycle(ds, fake, now=ago(-5))
+    rep = cycle(ds, scripted(), now=ago(-5))
     assert (rep.maintained, rep.calls) == (1, 0)
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_pruned_source_unsupported_pinned_source_gone(dossier_plugin, dossiers, monkeypatch):
+    ds = dossiers
+    await prune_lemons(dossier_plugin, ds, monkeypatch)
     d = read_dossier(ds, ALICE)
     f1, f2 = fact(d, "f1"), fact(d, "f2")
     assert (f1["status"], f1["sources"]) == ("unsupported", [])
@@ -670,6 +749,110 @@ async def test_pruned_source_unsupported_pinned_source_gone(dossier_plugin, doss
     assert sorted(op_names(line)) == ["invalidate"] * 4 + ["source_gone", "unsupported"]
     whys = sorted(op["why"] for op in line["changes"] if op["op"] == "invalidate")
     assert whys == ["downgraded", "downgraded", "source_gone", "source_gone"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["api", "cli"])
+async def test_owner_edits_on_sourceless_facts_settle_source_gone_at_once(dossier_plugin, dossiers, monkeypatch,
+                                                                          via):
+    """Correcting an unsupported fact marks it source gone now; unpinning a source-gone fact retires it now."""
+    ds = dossiers
+    entry = await prune_lemons(dossier_plugin, ds, monkeypatch)  # f1 unsupported, f2 pinned and source gone
+    owner_edit(dossier_plugin, ds, entry, via, "correct", fact_id="f1", text="The contact ordered three crates.",
+               now=ago(-6))
+    owner_edit(dossier_plugin, ds, entry, via, "unpin", fact_id="f2", now=ago(-6))
+    d = read_dossier(ds, ALICE)
+    f1, f2 = fact(d, "f1"), fact(d, "f2")
+    assert (f1["status"], f1["kind"], f1["source_gone"], f1["sources"]) == ("active", "owner", True, [])
+    assert (f2["status"], f2["pinned"], f2["source_gone"], f2["sources"]) == ("unsupported", False, False, [])
+    code, out, err = cli(dossier_plugin, "dossier", "show", "--contact", "@alice")
+    assert code == 0, (out, err)
+    assert "1 source gone" in out
+    assert "f1  [owner, source gone]" in out and "f2  [inferred low]" in out
+
+    raw(dossier_plugin, ALICE, [(20, "in", "Any news on the crates?", ago(-7) - timedelta(hours=1))],
+        username="alice")
+    assert cycle(ds, scripted(), now=ago(-7)).refreshed == 1  # the model returns no changes
+    d = read_dossier(ds, ALICE)
+    assert fact(d, "f2") is None and fact(d, "f1")["source_gone"] is True
+    line = last_line(ds)
+    assert line["actor"] == "model"
+    assert [(op["op"], op["fact_id"]) for op in line["changes"]] == [("remove_unsupported", "f2")]
+
+
+@pytest.mark.asyncio
+async def test_rolling_floor_keeps_aged_out_messages_unsent(dossier_plugin, dossiers, dossier_env):
+    """Seen messages that age past the rolling floor are not resent, even inside the fold margin."""
+    ds = dossiers
+    dossier_env(BACKFILL_DAYS=30)
+    raw(dossier_plugin, ALICE, [(1, "in", "old question", timedelta(days=25)),
+                                (2, "out", "old answer", timedelta(days=25, minutes=-1))], username="alice")
+    fake = scripted()
+    cycle(ds, fake)
+    assert [refs(p) for p in payloads(fake, CONTACT)] == [["m1", "m2"]]
+
+    t1 = NOW + timedelta(days=6)  # floor is NOW-24d: m1/m2 drop out of `seen` but stay in the fold margin
+    raw(dossier_plugin, ALICE, [(3, "in", "new question", t1 - timedelta(hours=2)),
+                                (4, "out", "new answer", t1 - timedelta(hours=2) + timedelta(minutes=1))],
+        username="alice")
+    fake = scripted()
+    cycle(ds, fake, now=t1)
+    assert [refs(p) for p in payloads(fake, CONTACT)] == [["m3", "m4"]]
+    assert sorted(read_dossier(ds, ALICE)["seen"]) == ["3", "4"]  # m1/m2 really left `seen`
+
+    t2 = t1 + timedelta(hours=3)
+    raw(dossier_plugin, ALICE, [(5, "in", "newer question", t2 - timedelta(hours=1))], username="alice")
+    fake = scripted()
+    cycle(ds, fake, now=t2)
+    assert [refs(p) for p in payloads(fake, CONTACT)] == [["m5"]]
+    assert read_dossier(ds, ALICE)["coverage"]["messages_processed"] == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("middle_days", [30, 10])  # constant window, or lowered before the raise
+async def test_raised_backfill_window_never_resends_aged_out_messages(dossier_plugin, dossiers, dossier_env,
+                                                                     middle_days):
+    """The tracking floor never moves back, so raising BACKFILL_DAYS does not re-admit aged-out messages."""
+    ds = dossiers
+    dossier_env(BACKFILL_DAYS=30)
+    raw(dossier_plugin, ALICE, [(1, "in", "old question", timedelta(days=25)),
+                                (2, "out", "old answer", timedelta(days=25, minutes=-1))], username="alice")
+    cycle(ds, scripted())
+
+    dossier_env(BACKFILL_DAYS=middle_days)
+    t1 = NOW + timedelta(days=6)
+    raw(dossier_plugin, ALICE, [(3, "in", "new question", t1 - timedelta(hours=2)),
+                                (4, "out", "new answer", t1 - timedelta(hours=2) + timedelta(minutes=1))],
+        username="alice")
+    cycle(ds, scripted(), now=t1)
+    assert sorted(read_dossier(ds, ALICE)["seen"]) == ["3", "4"]
+
+    dossier_env(BACKFILL_DAYS=90)
+    t2 = t1 + timedelta(hours=3)
+    raw(dossier_plugin, ALICE, [(5, "in", "newer question", t2 - timedelta(hours=1))], username="alice")
+    fake = scripted()
+    cycle(ds, fake, now=t2)
+    assert [refs(p) for p in payloads(fake, CONTACT)] == [["m5"]]
+    assert read_dossier(ds, ALICE)["coverage"]["messages_processed"] == 5
+
+
+@pytest.mark.asyncio
+async def test_first_pass_cutoff_uses_message_time(dossier_plugin, dossiers, dossier_env):
+    """The fold reads by observed time; the first pass still drops messages older than the window."""
+    ds = dossiers
+    dossier_env(BACKFILL_DAYS=30)
+    fresh = [(2, "in", "fresh question", timedelta(days=1)), (3, "out", "fresh answer", timedelta(days=1, minutes=-1))]
+    # Alice: 31 days old, inside the 2-day fold margin. Bob: observed 5 days ago, written 65 days ago.
+    raw(dossier_plugin, ALICE, [(1, "in", "too old", timedelta(days=31)), *fresh], username="alice")
+    raw(dossier_plugin, BOB, [(1, "in", "late-observed old", timedelta(days=5))], username="bob",
+        message_lag=timedelta(days=60))
+    raw(dossier_plugin, BOB, fresh, username="bob")
+    raw(dossier_plugin, 993, fresh, username="carol")
+    fake = scripted()
+    assert cycle(ds, fake).refreshed == 3
+    assert [refs(p) for p in payloads(fake, CONTACT)] == [["m2", "m3"]] * 3
+    older = {chat: read_dossier(ds, chat)["coverage"]["older_history_not_sent"] for chat in (ALICE, BOB, 993)}
+    assert older == {ALICE: True, BOB: True, 993: False}
 
 
 @pytest.mark.asyncio
@@ -814,11 +997,16 @@ async def test_no_changes_no_model_call(dossier_plugin, dossiers, monkeypatch):
     before = snapshot_tree(dossier_dir(ds, ALICE))
 
     folds = count_folds(monkeypatch, ds)
+    writes: list[Any] = []
+    real_write = ds._history._write_json_atomic
+    monkeypatch.setattr(ds._history, "_write_json_atomic", lambda path, data: (writes.append(path),
+                                                                              real_write(path, data)))
     rep = cycle(ds, fake, now=ago(-5))
     assert len(fake.calls) == 2
     assert (rep.calls, rep.unchanged, rep.refreshed, rep.persona) == (0, 1, 0, "not_due")
     assert sum(folds.values()) == 0  # the stat gate skipped the fold for the contact and the persona
     assert snapshot_tree(dossier_dir(ds, ALICE)) == before
+    assert writes == [ds.state_path()]  # gate hits write nothing; only the cycle end saves state.json
 
 
 @pytest.mark.asyncio
@@ -1088,6 +1276,17 @@ async def test_persona_due_rule_20_new_or_24h(dossier_plugin, dossiers):
     assert rep.persona == "refreshed"
     assert persona_calls() == 4
     assert [m["text"] for m in payloads(fake, PERSONA)[-1]["messages"]] == ["A single fresh owner line"]
+
+    # A refresh where the model changes nothing still restarts the 24 h clock.
+    fake = scripted()  # every answer is {"changes": []}
+    revision = read_persona(ds)["revision"]
+    await seed_alice(dossier_plugin, [(123, "out", "Owner line the next day", at(hours=53))])
+    assert cycle(ds, fake, now=at(hours=53, minutes=30)).persona == "refreshed"
+    assert persona_calls() == 1
+    assert read_persona(ds)["revision"] == revision  # nothing changed, so no revision
+    await seed_alice(dossier_plugin, [(124, "out", "Owner line an hour later", at(hours=54, minutes=20))])
+    assert cycle(ds, fake, now=at(hours=54, minutes=30)).persona == "not_due"
+    assert persona_calls() == 1
 
 
 @pytest.mark.asyncio
