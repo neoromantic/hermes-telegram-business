@@ -3511,8 +3511,14 @@ def add_history_parser(subs: Any) -> None:
     maintain = history_subs.add_parser("maintain", help="Run classification and retention/size maintenance")
     maintain.set_defaults(_history_action="maintain")
 
+    from . import dossier_cli
+    dossier_cli.add_parser(subs)
+
 
 def handle_cli(args: argparse.Namespace) -> int:
+    if getattr(args, "_dossier_action", None) is not None:
+        from . import dossier_cli
+        return dossier_cli.handle_cli(args)
     action = getattr(args, "_history_action", None)
     if action is None:
         print("Usage: hermes telegram-business history <chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>")

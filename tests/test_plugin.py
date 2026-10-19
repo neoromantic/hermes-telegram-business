@@ -399,7 +399,12 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
             "history",
             plugin._history_support.skill_path(),
             "Telegram Business history schema, safe read recipes, and maintenance guidance.",
-        )
+        ),
+        (
+            "dossiers",
+            plugin._dossier_support.skill_path(),
+            "Telegram Business contact dossiers and owner persona: safe read and correction recipes.",
+        ),
     ]
 
 
