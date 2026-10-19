@@ -34,16 +34,12 @@ NO_ARG_ACTIONS = frozenset({"r", "b", "p"})
 NOT_ALLOWED = "Not allowed"
 UNKNOWN_CONNECTION = (
     "I can't confirm you own this Business connection yet. "
-    "Send /transcribe in that chat once, then try Manage Bot again."
-)
-UNKNOWN_CONNECTION_NO_TRANSCRIBE = (
-    "I can't confirm you own this Business connection yet. "
-    "Transcription is off here, so /transcribe won't help; turn on history capture, then try Manage Bot again."
+    "Send any message in that chat, then tap Manage Bot again."
 )
 UNKNOWN_CONNECTION_MODES_UNREADABLE = (
     f"{_history.TRANSCRIBE_SAVE_ERROR}\n"
     "The transcription modes file is unreadable, so I can't confirm you own this Business connection. "
-    "Send /transcribe in that chat once to re-verify, then try Manage Bot again."
+    "Send any message in that chat, then tap Manage Bot again."
 )
 TRANSCRIPTION_DISABLED = "Transcription is disabled on this gateway."
 SECTION_UNAVAILABLE = "Section unavailable"
