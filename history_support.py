@@ -3592,6 +3592,9 @@ def add_history_parser(subs: Any) -> None:
     export.add_argument("--until")
     export.set_defaults(_history_action="export")
 
+    from . import history_import
+    history_import.add_parser(history_subs)
+
     verify = history_subs.add_parser("verify", help="Verify canonical history files")
     verify.add_argument("--repair-tails", action="store_true")
     verify.set_defaults(_history_action="verify")
@@ -3607,6 +3610,9 @@ def handle_cli(args: argparse.Namespace) -> int:
     if getattr(args, "_dossier_action", None) is not None:
         from . import dossier_cli
         return dossier_cli.handle_cli(args)
+    if getattr(args, "_history_action", None) == "import":
+        from . import history_import
+        return history_import.handle_cli(args)
     action = getattr(args, "_history_action", None)
     if action is None:
         print("Usage: hermes telesec history <chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>")

@@ -264,6 +264,8 @@ When nothing is missing, the line reads `missing history: none (retained from <d
 
 Stats are computed live from retained JSONL. Retention removes whole monthly partitions, so pruned messages drop out of the counts on their own. The partial marker shows where retained history begins.
 
+Messages [imported from a Telegram Desktop export](HISTORY.md#import-past-messages) count like captured ones, with their Telegram send time and side. An import moves "retained from" back to its first message, and an edited imported message counts as edited.
+
 ## Time and time zone
 
 - Messages are placed by Telegram's send time (`message_at`), not by the time the bot observed them. If the send time is missing, the first observation time is used.

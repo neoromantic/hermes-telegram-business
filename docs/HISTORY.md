@@ -16,7 +16,7 @@ hermes telesec settings set history on
 
 No gateway restart is needed: capture starts with the next update. **Don't save** or `hermes telesec settings set history off` stops capture and keeps what was stored; retention and delayed deletion classification keep running. Up to 0.11.0, `TELESEC_HISTORY_ENABLE=1` or the Desktop `history_enable` setting turned history on. On the first start after upgrading, an "on" there is stored in Settings once and the gateway log says so (a variable set to off over a Desktop "on" is stored as off); after that they are ignored. Remove them once you no longer plan to go back to 0.11.0 or older.
 
-By default, capture includes private chats Telegram delivers through the bot's Business connections. Connection and chat filters are optional. Your own chat with the bot (where the owner panel and your agent chat live) is never captured: Telegram also delivers it as Business updates, but it is not a Business chat. The plugin knows it by the bot's id (from the running bot, or from the digits before `:` in `TELEGRAM_BOT_TOKEN`), and readers (history, stats, dossiers, the panel) also skip such a chat if an older version captured it. Groups, supergroups, and channels require explicit configuration. The plugin does not retrieve conversations from before capture started.
+By default, capture includes private chats Telegram delivers through the bot's Business connections. Connection and chat filters are optional. Your own chat with the bot (where the owner panel and your agent chat live) is never captured: Telegram also delivers it as Business updates, but it is not a Business chat. The plugin knows it by the bot's id (from the running bot, or from the digits before `:` in `TELEGRAM_BOT_TOKEN`), and readers (history, stats, dossiers, the panel) also skip such a chat if an older version captured it. Groups, supergroups, and channels require explicit configuration. The plugin does not fetch conversations from before capture started, but you can [import a chat's earlier messages](#import-past-messages) from a Telegram Desktop export.
 
 Text, edits, deletions, reply relationships, sender/direction, and available contact snapshots are recorded. Media bytes, media metadata, and captions are excluded. Missing original text is recorded as missing rather than reconstructed. The owner's in-chat [`/stats` command](STATS.md#in-a-business-chat-stats), its card or notice, and their edits and deletion are control traffic. They are not recorded while the gateway remembers their message IDs: 24 hours, in memory. After that, or after a gateway restart, an edit or deletion of the card is recorded as an edit or deletion of a message that is not in history.
 
@@ -47,6 +47,38 @@ hermes telesec history export --contact @alice --format jsonl --limit 200
 Use `--until` with an ISO timestamp to bound the end of a query. Both bounds are inclusive and apply to observation time, rather than the original message's timestamp. Search performs a Unicode-normalized, case-insensitive substring match. It does not use embeddings, interpret intent, or require `jq`.
 
 The bundled `history` skill gives Hermes the same bounded contact-first recipes. Stored text is conversation data, not instructions for the agent.
+
+## Import past messages
+
+History starts when capture starts. To add a chat's earlier messages, export the chat from Telegram Desktop and import the file:
+
+1. In Telegram Desktop, open the private chat, then **⋮ → Export chat history**. Choose the **JSON** format. Media is not needed, so you can untick photos, videos, voice messages, and files.
+2. Copy `result.json` to the Hermes host, check what would happen, then import:
+
+```bash
+hermes telesec history import ~/result.json --chat 991 --dry-run
+hermes telesec history import ~/result.json --chat 991
+```
+
+```text
+Imported 1200 messages (1310 records) into chat 991 (connection business-123), sent 2025-11-02 to 2026-07-18 (UTC).
+Skipped: 85 already saved, 40 newer than saved history, 30 voice, round video or audio (not transcribed), 64 other media, 3 service messages.
+```
+
+The output above is fictional. `--chat` is the contact's chat id (`hermes telesec history contacts` shows it), and it must match the export. `--dry-run` prints the same summary and writes nothing. The summary has counts and dates only, never message text. When the chat has no saved history yet, the command uses the bot's only Business connection, or asks for `--connection`; that connection must have saved history or a known owner.
+
+What is imported:
+
+- Text messages older than the chat's first captured record, from the contact (received) and from you (sent), with their Telegram send time and reply links. The time capture covers is never imported, even what capture did not save: media, Telesec commands, and anything sent while history was off or the chat was set to Don't save.
+- An edited message becomes a message without text at its send time and an edit with the final text at the edit time. The export has no earlier text.
+- Skipped and counted in the summary: messages already in history, voice messages, round videos, and audio (not transcribed), photos, files, stickers, and other media (captions too), service messages such as calls and pins, your `/stats` and `/dossier` commands, and posts by a third sender, such as a bot. Messages older than the retention period are skipped too.
+
+Rules:
+
+- History must be on in Settings, and the chat must not be set to Don't save. Otherwise the command refuses and writes nothing. Only a one-to-one chat export can be imported; group, channel, and full account exports are refused, and so is an export made by an account other than the connection's owner. Your private chat with the bot is never imported.
+- Imported messages are never duplicated. Running the same file again adds nothing, and a newer export adds only messages that are not saved yet. What history already has wins.
+- Imported records are ordinary history records with `"source":"import"`. They go into the chat's normal monthly files, placed by send time, and the contact catalog is updated, so stats, the 📊 panel, `history show`, and search see them. Retention, the size cap, and removal treat them like captured history.
+- An existing dossier reads only messages newer than its window. To build it again with imported history, run `hermes telesec dossier forget` for it; the next cycle rebuilds it within the backfill window (90 days and 500 messages by default, see [dossiers](DOSSIERS.md)).
 
 ## Edits and deletions
 
@@ -89,7 +121,7 @@ $HERMES_HOME/data/telesec/history/
   contacts.json
 ```
 
-JSONL is canonical. Events have durable identities and are appended under a lock with `fsync`; retries do not append the same event twice. The contact catalog is a small derived directory, not a second message database. Monthly partitions follow observation time. Contact queries select the relevant conversation and date partitions before streaming records.
+JSONL is canonical. Events have durable identities and are appended under a lock with `fsync`; retries do not append the same event twice. An [import](#import-past-messages) writes its records under the same locks and keeps each monthly file in observation order: it rewrites a file that already has records through a temporary file and an atomic rename. For imported records the observation time is the Telegram send time (the edit time for an edit). The contact catalog is a small derived directory, not a second message database. Monthly partitions follow observation time. Contact queries select the relevant conversation and date partitions before streaming records.
 
 ```bash
 hermes telesec history stats
