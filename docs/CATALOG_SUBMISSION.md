@@ -1,48 +1,58 @@
-# Catalog submission draft
+# Catalog submission
 
-Not submitted. The public name is **Telesec**; the manifest name and catalog key are `telesec`, and the repository is `neoromantic/telesec`.
+Submitted on 2026-10-19 as [NousResearch/hermes-agent#141648](https://github.com/NousResearch/hermes-agent/pull/141648): version **0.10.1**, pinned to `365ee6665187a3a534ee69b484db95f023a3994d`. The public name is **Telesec**; the manifest name and catalog key are `telesec`, and the repository is `neoromantic/telesec`. The PR has the final body; the notes below are the background for it and for later SHA bumps.
 
-Replace `RELEASE_VERSION` and `FULL_40_CHARACTER_RELEASE_COMMIT_SHA` after the batched release. Re-run validation on that exact commit and replace the validation excerpt below. Add an actual owner-panel screenshot before submission; the current transcript illustration and synthetic history CLI image are labelled examples, not live Telegram evidence.
+A SHA bump is a new upstream PR that changes `sha` and `version` together. Images in the entry are pinned to the same commit.
 
-References: [catalog policy](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/README.md), [submission guide](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission), [plugin API](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/), and the [stickers README disclosure example](https://github.com/churnast/hermes-telegram-stickers#-privacy-and-safety).
+References: [catalog policy](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/README.md), [submission guide](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission), [plugin API](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/).
 
 ## Catalog YAML
 
-Draft file: `plugin-catalog/telesec.yaml`. Only this YAML file belongs in the upstream catalog PR.
+Submitted file `plugin-catalog/telesec.yaml`:
 
 ```yaml
 name: telesec
+title: Telesec
 repo: https://github.com/neoromantic/telesec
-sha: FULL_40_CHARACTER_RELEASE_COMMIT_SHA
-description: Telegram Business transcription, opt-in text history, correspondence stats, and contact dossiers.
+sha: 365ee6665187a3a534ee69b484db95f023a3994d
+description: >-
+  Telegram Business secretary: transcribes voice notes, round videos, and speech
+  attachments right in the chat, with per-chat controls in Telegram's Manage Bot
+  panel, plus opt-in text history, correspondence stats, and contact dossiers.
+  Disclosure — audio goes to the STT backend Hermes is configured with (local or
+  external); transcript cleanup and opt-in dossiers send chat text through the
+  host ctx.llm; runs local ffprobe/ffmpeg (argument lists, no shell) on attached
+  audio; opt-in dossiers run a gateway background thread; modes, opt-in history,
+  and dossiers are stored 0600 under HERMES_HOME/data/telesec; reads only the
+  numeric bot id prefix of TELEGRAM_BOT_TOKEN; no telemetry.
 maintainer: neoromantic
 tier: community
 category: voice
 requires_hermes: ">=0.21.6"
 docs_url: https://telesec.sergeybaus.com
-version: "RELEASE_VERSION"
-title: "Telesec"
+version: "0.10.1"
+image: https://raw.githubusercontent.com/neoromantic/telesec/365ee6665187a3a534ee69b484db95f023a3994d/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/neoromantic/telesec/FULL_40_CHARACTER_RELEASE_COMMIT_SHA/docs/images/telesec@2x.png
-  - https://raw.githubusercontent.com/neoromantic/telesec/FULL_40_CHARACTER_RELEASE_COMMIT_SHA/docs/images/history-search.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/365ee6665187a3a534ee69b484db95f023a3994d/docs/images/voice-transcript.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/365ee6665187a3a534ee69b484db95f023a3994d/docs/images/owner-panel.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/365ee6665187a3a534ee69b484db95f023a3994d/docs/images/stats-panel.png
 readme: true
 known_issues:
-  - Requires in-process plugin mode for native Telegram handlers.
+  - Needs in-process plugin mode for native Telegram handlers.
   - Uses the undocumented host STT entrypoint tools.transcription_tools.transcribe_audio.
 capabilities:
   provides_tools: []
-  provides_hooks: [pre_gateway_dispatch]
+  provides_hooks:
+    - pre_gateway_dispatch
   provides_middleware: []
   requires_env: []
 ```
-
-The catalog name and manifest identity are both `telesec`. Do not submit a branch/tag in place of the full commit pin. The existing images must be pinned to that same commit. Add the owner-panel screenshot to `screenshots` once captured.
 
 ## PR body
 
 ### Summary
 
-Add **Telesec** as a community voice plugin, version **RELEASE_VERSION**, pinned to **FULL_40_CHARACTER_RELEASE_COMMIT_SHA**. I own the plugin repository. This PR adds one catalog YAML file.
+Add **Telesec** as a community voice plugin, version **0.10.1**, pinned to **365ee6665187a3a534ee69b484db95f023a3994d**. I own the plugin repository. This PR adds one catalog YAML file.
 
 The plugin transcribes Telegram Business voice notes, round videos, and speech attachments without a tool-agent turn. Owners control each chat from Telegram's Manage Bot panel. Separate opt-ins enable text history with edits and preserved deletions, deterministic correspondence stats, and evidence-backed contact dossiers plus an owner writing persona.
 
@@ -58,7 +68,7 @@ It uses `ctx.register_telegram_handler`, `pre_gateway_dispatch`, `ctx.register_c
 
 **Validator probe limitation:** Hermes v0.22.2's recording context omits the documented `ctx.llm` property. Registration tolerates its absence with `getattr(ctx, "llm", None)`, so the capability probe can finish without model access. Real `PluginContext` supplies the host facade. Missing model access never causes the plugin to create its own client or bypass the host trust gate.
 
-**UI evidence:** Include the pinned images from the YAML and label their synthetic/illustrative content. Add the actual owner-panel screenshot captured for the final release.
+**UI evidence:** real Telegram screenshots of a transcribed voice note, the owner panel, and its Stats view, pinned in the YAML. The voice note is synthetic; contact names and IDs are blurred.
 
 ### What it does
 
@@ -71,7 +81,7 @@ Reply drafts and automatic replies are planned, not shipped. PTB takes one match
 
 ### Validation
 
-Readiness validation is recorded in [VERIFY.md](VERIFY.md#catalog-readiness-checks-2026-10-19). Before submitting, paste the exact release-pin output here, including the private-import warning; do not describe a warning-bearing run as warning-free.
+Readiness validation is recorded in [VERIFY.md](VERIFY.md#catalog-readiness-checks-2026-10-19). The 0.10.1 pin passed `hermes plugins validate --install-deps` on an isolated Hermes v0.22.2 with the private STT import warning ([0.10.1 fix](VERIFY.md#0101-fix-2026-10-19)). The catalog CI runs the same check at the pinned commit.
 
 ```text
 Readiness check, current Hermes main 493208879a3248c6a4b844981d2c31c78ae00929:
@@ -92,4 +102,4 @@ The plugin security scanner uses `tools.plugin_guard.scan_plugin`, which applies
 
 The scanner findings are the disclosed local media processes, concurrency-test process, escaped control-character handling/test fixtures, documentation install commands, developer instruction files, and large illustration. No scan exclusions were added. The only admission warning is the STT import disclosed above.
 
-Minimum Hermes version: `0.21.6`, verified with the isolated minimum-version check. Python runtime for validation: 3.14.5; PTB: 22.8. No new Python runtime dependencies are declared by the plugin. The release pin and upstream catalog submission are still pending.
+Minimum Hermes version: `0.21.6`, verified with the isolated minimum-version check. Python runtime for validation: 3.14.5; PTB: 22.8. No new Python runtime dependencies are declared by the plugin.
