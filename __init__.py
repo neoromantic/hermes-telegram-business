@@ -77,6 +77,7 @@ else:
 from . import dossier_support as _dossier_support
 from . import history_support as _history_support
 from . import owner_panel as _owner_panel
+from . import stats_panel as _stats_panel
 from . import transcription_modes as _transcription_modes
 
 
@@ -2629,6 +2630,7 @@ def register(ctx: Any) -> None:
     _dossier_support.bind_llm(_llm_facade)
     ctx.register_telegram_handler(_register_telegram_handlers)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
+    _stats_panel.register_section()
     ctx.register_cli_command(
         name="telegram-business",
         help="Read Telegram Business history and manage transcription modes",
