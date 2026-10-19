@@ -251,7 +251,7 @@ def test_manifest_uses_current_fields():
     assert {key: value for key, value in manifest.items() if key != "config_schema"} == {
         "manifest_version": 2,
         "name": PLUGIN_ID,
-        "version": "0.12.0",
+        "version": "0.12.1",
         "description": (
             "Telesec — Telegram Business secretary for Hermes."
         ),
@@ -282,7 +282,7 @@ def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "telesec"
-    assert metadata["version"] == "0.12.0"
+    assert metadata["version"] == "0.12.1"
     assert metadata["description"] == (
         "Telesec — Telegram Business secretary for Hermes."
     )
@@ -292,6 +292,17 @@ def test_package_metadata_uses_public_product_identity():
         "Issues": f"{CANONICAL_REPOSITORY}/issues",
         "Changelog": f"{CANONICAL_REPOSITORY}/blob/main/CHANGELOG.md",
     }
+
+
+def test_dependency_groups_never_constrain_hermes():
+    # Hermes resolves plugin dependency groups together with its own pins and disables the
+    # plugin on a conflict (0.12.0 pinned ruamel.yaml above Hermes 0.21.6), so name packages only.
+    document = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert document["project"].get("dependencies", []) == []
+    for group, requirements in document.get("dependency-groups", {}).items():
+        for requirement in requirements:
+            assert re.fullmatch(r"[A-Za-z0-9._-]+", requirement), (group, requirement)
 
 
 def test_readme_uses_public_name_and_canonical_install_source():
