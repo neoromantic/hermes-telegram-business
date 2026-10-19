@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 - 2026-10-20
 
 - Add Settings: one screen in the owner's private chat with the bot that turns transcription, history, and dossiers on or off for all chats. Open it with `/telesec` or the new ⚙️ Settings button on every chat's panel. Turning dossiers on asks first and names the model; while history is off, dossiers are paused and Settings says so. Only an owner of every Business connection the bot knows about can change the switches; another verified owner sees them read-only. Nothing is posted into a Business chat, and a `/telesec` typed in a Business chat is never answered there.
 - Add `hermes telesec settings [--format json]` and `hermes telesec settings set <transcription|history|dossiers> on|off`. Changes apply to the next update with no restart. `hermes telesec dossier enable|disable` still works.
