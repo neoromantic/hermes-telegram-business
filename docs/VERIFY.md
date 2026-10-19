@@ -14,6 +14,19 @@ History checks must cover one-time opt-in, private-chat defaults, explicit scope
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## 0.11.0 release and live smoke: 2026-10-19
+
+Before tagging, `hermes plugins validate --install-deps --json` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`) passed: exit 0, `ok: true`, all 14 checks, security scan `safe`. The only warning is the known private STT import. CI passed on Python 3.11–3.14.
+
+The production gateway (Hermes 0.21.6) was updated plugin-only to `v0.11.0` (`cbca9743ad7b4662a8b4f3aae684282afb241015`) and restarted.
+
+- **Switch migration.** Before the update, dossiers were on through the old environment variable, and no switch was stored. On the first start the switch was stored as on with `updated_via: migration` and file mode `0600`. The variable was then removed from the gateway's service environment, and the gateway was restarted again. Dossiers stayed on, and the worker started with `enabled=True`.
+- **Owner panel.** `/start bizChat<chat_id>` from the owner's account opened the panel with a new Dossier button next to Stats. Dossier opened the overview with Manage facts, Refresh, My persona, Disable (the switch shows on for an owner of every known connection), and « Back. Manage facts listed the chat's facts. A fact card had Pin, Remove, and ‹ Facts. ‹ Dossier, My persona (Manage facts, ‹ Dossier), and « Back to the main panel worked. The gateway logged no "rich edit failed" warning, so the views were rich messages, not the plain fallback. The panel language was English because the test client does not report a Russian Telegram language. Nothing appeared in the Business chat, and the two bot-DM fixtures were deleted.
+- **Not run live:** the owner's `/dossier` in a Business chat. It posts into a real contact's chat, so it needs a chat the owner picks; tests cover it.
+- **Finding:** the migration's info log line is missing from the gateway log, because `register()` runs before Hermes sets up its file logging. The stored switch is correct; the next release logs it as a warning.
+
+No message text, contact names, or raw contact IDs are included here.
+
 ## 0.10.1 fix: 2026-10-19
 
 The rename added a top-level PyYAML import in `migration.py`. Hermes 0.22 depends on ruamel.yaml and does not install PyYAML, so `hermes plugins validate` on Hermes v0.22.2 failed the capability probe with `No module named 'yaml'` for 0.10.0. 0.10.1 reads YAML only when the config still names the old plugin, with a ruamel.yaml fallback. With the fix, `hermes plugins validate --install-deps` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`) passed: capability probe, declared hooks, security scan `safe`, no core override, and the known private STT import warning. The production gateway (Hermes 0.21.6) has PyYAML and was not affected.
