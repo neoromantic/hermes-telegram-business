@@ -18,12 +18,12 @@ The product connects readable Telegram voice messages with useful personal corre
 
 ## Unreleased
 
-- Owner panel: Telegram's "Manage Bot" button in a Business chat opens the bot's private chat with that chat's transcription mode as buttons, visible only to the owner. Other features add per-chat views with `owner_panel.register_section` and localize them through the panel's string catalog (English and Russian).
+- Owner panel: Telegram's "Manage Bot" button in a Business chat opens the bot's private chat with that chat's transcription mode as buttons, visible only to the owner. Other features add per-chat views with `owner_panel.register_section` and localize them through the panel's string catalog (English and Russian). The in-chat `/transcribe` command from 0.9.0 is removed: the panel is the only control inside Telegram.
 
 ## Next
 
 - Stats ([#4](https://github.com/neoromantic/hermes-telegram-business/issues/4)) and dossiers ([#17](https://github.com/neoromantic/hermes-telegram-business/issues/17)) as owner panel sections, so the owner sees them per chat without the contact seeing anything.
-- Known limit: claimed panel taps, `/transcribe` commands, and voice updates stop propagation before Hermes' group-99 dispatch counter, so the core "ingress healthy but deaf" warning can show a stale gap after quiet periods. The fix belongs in Hermes core (count dispatch in a group before every plugin group).
+- Known limit: claimed panel taps and Business updates stop propagation before Hermes' group-99 dispatch counter, so the core "ingress healthy but deaf" warning can show a stale gap after quiet periods. The fix belongs in Hermes core (count dispatch in a group before every plugin group).
 
 ## Priorities and requirements
 

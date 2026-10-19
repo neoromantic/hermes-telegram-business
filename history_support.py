@@ -2718,55 +2718,13 @@ async def _resolve_direction(message: Any, *, bot: Any = None) -> str:
     return _HISTORY_DIRECTIONS[(await resolve_business_direction(message, bot=bot)).direction]
 
 
-# Mirrors the voice module's disable switch: no transcription, no `/transcribe` command.
+# Mirrors the voice module's disable switch.
 TRANSCRIBER_DISABLE_ENV = "TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE"
 
-# Transcription-mode vocabulary shared with transcription_modes.status_text.
+# Transcription-mode vocabulary shared with transcription_modes and the owner panel.
 TRANSCRIBE_MODES = ("both", "own", "peer", "off")
 TRANSCRIBE_DEFAULT_MODE = "both"
-TRANSCRIBE_USAGE = f"Usage: /transcribe [{'|'.join((*TRANSCRIBE_MODES, 'reset'))}]"
 TRANSCRIBE_SAVE_ERROR = "Error: could not save transcription mode"
-
-# The one `/transcribe` predicate for the whole plugin. `/transcribeoff` and
-# `/transcribers` are ordinary text; any `@bot` suffix is accepted.
-TRANSCRIBE_COMMAND_RE = re.compile(r"^/transcribe(?:@[A-Za-z0-9_]{1,64})?(?=\s|$)", re.IGNORECASE)
-
-
-def is_transcribe_command_text(text: Any) -> bool:
-    return isinstance(text, str) and TRANSCRIBE_COMMAND_RE.match(text) is not None
-
-
-# The exact shape of the plugin's own status output (transcription_modes.status_text),
-# so other bot-sent text that merely starts with `/transcribe` stays history.
-TRANSCRIBE_STATUS_RE = re.compile(
-    r"^/transcribe(?: [^\n]*)? → (?:Transcription: (?:"
-    + "|".join(map(re.escape, TRANSCRIBE_MODES))
-    + r")(?: \(default\))?|"
-    + re.escape(TRANSCRIBE_USAGE)
-    + "|"
-    + re.escape(TRANSCRIBE_SAVE_ERROR)
-    + r")\Z"
-)
-
-
-def is_transcribe_status_text(text: Any) -> bool:
-    return isinstance(text, str) and TRANSCRIBE_STATUS_RE.match(text) is not None
-
-
-def is_transcribe_control_message(message: Any, text: Any) -> bool:
-    """True for an outbound `/transcribe` command or the plugin's own status for one.
-
-    A forwarded or inline-bot message is someone else's text, and a bot-sent
-    message counts only when it is exactly a status line. With voice
-    transcription disabled there is no command, so it is ordinary text.
-    """
-    if not is_transcribe_command_text(text) or _truthy_env(TRANSCRIBER_DISABLE_ENV):
-        return False
-    if _get(message, "forward_origin") is not None or _get(message, "via_bot") is not None:
-        return False
-    if _get(message, "sender_business_bot") is not None:
-        return is_transcribe_status_text(text)
-    return True
 
 
 def _extract_history_text(message: Any) -> str | None:
@@ -2864,10 +2822,6 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
             return False
         chat_dir = _history_chat_dir(business_connection_id, chat_id)
         direction = await _resolve_direction(payload, bot=bot)
-        if direction == "outbound" and is_transcribe_control_message(payload, text):
-            # Owner transcription-mode commands and the bot's status edits are
-            # control traffic, never conversation history.
-            return False
         message_date = _normalize_timestamp(_get(payload, "date"))
         chat_profile = _extract_chat_profile(payload)
         sender_profile = _extract_sender_profile(payload)

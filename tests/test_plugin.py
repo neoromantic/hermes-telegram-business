@@ -272,7 +272,7 @@ def test_release_notes_and_readme_match_manifest_version():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert first_release.startswith(f"## {version} ")
-    assert "/transcribe" in readme
+    assert "Manage Bot" in readme
     assert "hermes telegram-business mode" in readme
 
 

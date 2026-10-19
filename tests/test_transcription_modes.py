@@ -38,7 +38,6 @@ OWNER = 1000
 PEER = 2000
 CHAT = 991
 BCID = "business-123"
-USAGE = "Usage: /transcribe [both|own|peer|off|reset]"
 LONG_TRANSCRIPT = "x" * 1100
 
 
@@ -379,9 +378,9 @@ async def test_owner_lookup_failure_keeps_bound_owner_off_and_retries_next_messa
 
 
 @pytest.mark.asyncio
-async def test_owner_command_binds_its_connection_for_lookup_failures(plugin, modes):
-    command_bot = CommandBot(business_owner_id=OWNER)
-    assert await _run_command(plugin, make_text_update("/transcribe off"), command_bot) is True
+async def test_panel_change_binds_its_connection_for_lookup_failures(plugin, modes):
+    plugin._note_business_chat(BCID, CHAT)  # any Business message in the chat
+    await _panel_tap(plugin, "tb:m:991:off", CommandBot(business_owner_id=OWNER))
     assert modes.default_store().connection_owner(BCID) == "1000"
 
     plugin._history_support.reset_in_memory_caches()
@@ -639,456 +638,36 @@ async def test_policy_error_fails_open(plugin, modes, monkeypatch, caplog):
     assert "reason=policy_error:RuntimeError" in caplog.text
 
 
-# --- In-chat /transcribe command ---------------------------------------------------------------
+# --- Owner panel taps and `/transcribe` text --------------------------------------------------
 
 
-async def _run_command(plugin, update, bot):
-    return await plugin._handle_transcribe_command_update(update, bot=bot, adapter=FakeAdapter(bot))
-
-
-@pytest.mark.asyncio
-async def test_owner_command_sets_mode_and_edits_command_into_status(plugin, modes):
-    bot = CommandBot(business_owner_id=OWNER)
-
-    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
-
-    entry = modes.default_store().get(OWNER, CHAT)
-    assert (entry.mode, entry.updated_via, entry.label) == ("off", "chat", "Casey Customer (@customer991)")
-    assert bot.text_edit_calls == [
-        {
-            "text": "/transcribe off → Transcription: off",
-            "chat_id": CHAT,
-            "message_id": 77,
-            "business_connection_id": BCID,
-        }
-    ]
-    assert bot.calls == []
-    stored = json.loads(modes_file(plugin).read_text(encoding="utf-8"))
-    assert "/transcribe" not in json.dumps(stored)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("seeded", "text", "status", "stored"),
-    [
-        (None, "/transcribe", "/transcribe → Transcription: both (default)", None),
-        ("own", "/transcribe", "/transcribe → Transcription: own", "own"),
-        ("off", "/transcribe reset", "/transcribe reset → Transcription: both (default)", None),
-        (None, "/transcribe own", "/transcribe own → Transcription: own", "own"),
-        (None, "/transcribe peer", "/transcribe peer → Transcription: peer", "peer"),
-        ("off", "/transcribe both", "/transcribe both → Transcription: both", "both"),
-        (None, "/transcribe OFF", "/transcribe off → Transcription: off", "off"),
-        (None, "/transcribe@SomeBot peer", "/transcribe peer → Transcription: peer", "peer"),
-        (None, "/transcribe banana", f"/transcribe banana → {USAGE}", None),
-        ("own", "/transcribe off now", f"/transcribe off now → {USAGE}", "own"),
-    ],
-)
-async def test_command_grammar(plugin, modes, seeded, text, status, stored):
-    if seeded is not None:
-        seed(plugin, OWNER, CHAT, seeded)
-    file_existed = modes_file(plugin).exists()
-    bot = CommandBot(business_owner_id=OWNER)
-
-    assert await _run_command(plugin, make_text_update(text), bot) is True
-
-    assert [call["text"] for call in bot.text_edit_calls] == [status]
-    entry = modes.default_store().get(OWNER, CHAT)
-    assert (entry.mode if entry else None) == stored
-    if not file_existed and stored is None:
-        assert not modes_file(plugin).exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["/transcribeoff", "/transcribers", "transcribe off", "hello /transcribe off"])
-async def test_non_command_text_is_not_claimed(plugin, modes, text):
-    bot = CommandBot(business_owner_id=OWNER)
-
-    assert await _run_command(plugin, make_text_update(text), bot) is False
-    assert bot.business_connection_calls == []
-    assert bot.text_edit_calls == []
-
-
-def test_parse_command_and_status_texts(modes):
-    assert modes.parse_command("/transcribe") == modes.TranscribeCommand("show", None, "/transcribe")
-    assert modes.parse_command("/TRANSCRIBE   Peer ") == modes.TranscribeCommand("set", "peer", "/transcribe peer")
-    assert modes.parse_command("/transcribe reset").action == "reset"
-    assert modes.parse_command("/transcribeoff") is None
-    assert modes.parse_command(None) is None
-    long_usage = modes.parse_command("/transcribe " + "y" * 80)
-    assert long_usage.display == "/transcribe " + "y" * 32
-    assert modes.status_text(modes.parse_command("/transcribe off"), entry=None, error=True) == (
-        "/transcribe off → Error: could not save transcription mode"
+async def _panel_tap(plugin, data, bot, *, from_user_id=OWNER):
+    """Press an owner-panel button in the owner's private chat with the bot."""
+    query = SimpleNamespace(
+        id="query-1",
+        data=data,
+        from_user=SimpleNamespace(id=from_user_id, language_code=None),
+        message=SimpleNamespace(chat=SimpleNamespace(id=from_user_id, type="private"), message_id=500),
     )
-    assert modes.build_chat_label(SimpleNamespace(title="Team\x07 Chat")) == "Team Chat"
-    assert modes.build_chat_label(SimpleNamespace(first_name="Ann", username="ann")) == "Ann (@ann)"
-    assert modes.build_chat_label(SimpleNamespace(username="ann")) == "@ann"
-    assert modes.build_chat_label(SimpleNamespace(first_name="A" * 300)) == "A" * 128
-    assert modes.build_chat_label(SimpleNamespace()) is None
+    update = SimpleNamespace(update_id=1, message=None, callback_query=query, effective_message=query.message)
+    assert await plugin._handle_owner_panel_update(update, bot=bot) is True
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("echo", ["edited_owner", "sender_business_bot"])
-async def test_status_echoes_are_claimed_but_not_executed(plugin, modes, echo):
-    bot = CommandBot(business_owner_id=OWNER)
-    status = "/transcribe off → Transcription: off"
-    if echo == "edited_owner":
-        update = make_text_update(status, edited=True)
-    else:
-        update = make_text_update(status, from_user_id=OWNER, sender_business_bot=555)
-
-    assert await _run_command(plugin, update, bot) is True
-
-    assert not modes_file(plugin).exists()
-    assert bot.text_edit_calls == []
-    assert bot.calls == []
-
-
-def test_every_status_text_matches_the_echo_predicate(modes):
-    history = modes._history
-    commands = [
-        modes.parse_command(text)
-        for text in ("/transcribe", "/transcribe off", "/transcribe reset", "/transcribe banana split", "/transcribe " + "y" * 80)
-    ]
-    entry = modes.ModeEntry(mode="own", updated_at="2026-10-19T12:00:00Z", updated_via="chat", label=None)
-    for command in commands:
-        for kwargs in ({"entry": None}, {"entry": entry}, {"entry": None, "error": True}):
-            assert history.is_transcribe_status_text(modes.status_text(command, **kwargs))
-    for text in ("/transcribe off", "/transcribe lets the owner choose", "/transcribe off → Transcription: loud"):
-        assert not history.is_transcribe_status_text(text)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["/transcribe lets the owner choose who gets transcribed", "/transcribe peer"])
-async def test_bot_sent_non_status_transcribe_text_is_ordinary_outbound_history(history_enabled, modes, text):
+@pytest.mark.parametrize("sender", [OWNER, PEER])
+async def test_transcribe_text_in_a_business_chat_is_ordinary_history(history_enabled, modes, sender):
     plugin = history_enabled
     bot = CommandBot(business_owner_id=OWNER)
     callback = registered_business_handler(plugin, command_adapter(bot))
 
-    with pytest.raises(ApplicationHandlerStop):
-        await callback(make_text_update(text, sender_business_bot=555), SimpleNamespace(bot=bot))
+    with pytest.raises(ApplicationHandlerStop):  # consumed like any Business text, never an agent turn
+        await callback(make_text_update("/transcribe off", from_user_id=sender), SimpleNamespace(bot=bot))
 
-    records = test_history.load_records(plugin)
-    assert [(record["direction"], record["text"]) for record in records] == [("outbound", text)]
+    assert bot.text_edit_calls == [] and bot.calls == [] and bot.delete_calls == []
     assert not modes_file(plugin).exists()
-    assert bot.text_edit_calls == []
-    assert bot.calls == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("origin", ["forward_origin", "via_bot"])
-async def test_forwarded_or_inline_bot_owner_command_is_ordinary_text(history_enabled, modes, origin):
-    plugin = history_enabled
-    bot = CommandBot(business_owner_id=OWNER)
-    callback = registered_business_handler(plugin, command_adapter(bot))
-    update = make_text_update("/transcribe off")
-    setattr(update.business_message, origin, SimpleNamespace(type="user", id=3000))
-
-    assert await _run_command(plugin, update, bot) is False
-    with pytest.raises(ApplicationHandlerStop):
-        await callback(update, SimpleNamespace(bot=bot))
-
-    assert not modes_file(plugin).exists()
-    assert bot.text_edit_calls == []
-    assert bot.calls == []
     records = test_history.load_records(plugin)
-    assert [(record["direction"], record["text"]) for record in records] == [("outbound", "/transcribe off")]
-
-
-@pytest.mark.asyncio
-async def test_owner_command_does_not_need_dm_allowlist(plugin, modes):
-    bot = CommandBot(business_owner_id=OWNER)
-    adapter = command_adapter(bot, authorized=False)
-    callback = registered_business_handler(plugin, adapter)
-
-    with pytest.raises(ApplicationHandlerStop):
-        await callback(make_text_update("/transcribe peer"), SimpleNamespace(bot=bot))
-
-    assert modes.default_store().get(OWNER, CHAT).mode == "peer"
-    adapter._is_user_authorized_from_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_duplicate_command_delivery_writes_and_confirms_once(plugin, modes, monkeypatch):
-    store = modes.default_store()
-    writes = []
-    original = store.set_mode
-
-    def counting(*args, **kwargs):
-        writes.append(args)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(store, "set_mode", counting)
-    bot = CommandBot(business_owner_id=OWNER)
-    update = make_text_update("/transcribe off")
-
-    assert await _run_command(plugin, update, bot) is True
-    assert await _run_command(plugin, update, bot) is True
-
-    assert len(writes) == 1
-    assert len(bot.text_edit_calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_store_failure_reports_error_status_and_still_claims(plugin, modes, monkeypatch, caplog):
-    def failing(*_args, **_kwargs):
-        raise OSError("disk full at /secret/path")
-
-    monkeypatch.setattr(modes.default_store(), "set_mode", failing)
-    bot = CommandBot(business_owner_id=OWNER)
-
-    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
-
-    assert [call["text"] for call in bot.text_edit_calls] == [
-        "/transcribe off → Error: could not save transcription mode"
-    ]
-    assert "OSError" in caplog.text
-    assert "/secret/path" not in caplog.text
-
-
-# --- A contact's /transcribe is ordinary text -------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_contact_command_is_not_claimed(plugin, modes):
-    bot = CommandBot(business_owner_id=OWNER)
-
-    assert await _run_command(plugin, make_text_update("/transcribe off", from_user_id=PEER), bot) is False
-
-    assert not modes_file(plugin).exists()
-    assert bot.text_edit_calls == []
-    assert bot.calls == []
-
-
-@pytest.mark.asyncio
-async def test_contact_command_reaches_history_as_inbound_text(history_enabled, modes):
-    plugin = history_enabled
-    bot = CommandBot(business_owner_id=OWNER)
-    callback = registered_business_handler(plugin, command_adapter(bot))
-
-    with pytest.raises(ApplicationHandlerStop):
-        await callback(make_text_update("/transcribe off", from_user_id=PEER), SimpleNamespace(bot=bot))
-
-    records = test_history.load_records(plugin)
-    assert [(record["direction"], record["text"]) for record in records] == [("inbound", "/transcribe off")]
-    assert not modes_file(plugin).exists()
-
-
-@pytest.mark.asyncio
-async def test_unverifiable_owner_command_is_ordinary_unknown_text(history_enabled, modes):
-    plugin = history_enabled
-    bot = CommandBot(business_owner_id=OWNER)
-    bot.business_connection_error = RuntimeError("lookup down")
-    callback = registered_business_handler(plugin, command_adapter(bot))
-
-    with pytest.raises(ApplicationHandlerStop):
-        await callback(make_text_update("/transcribe off"), SimpleNamespace(bot=bot))
-
-    records = test_history.load_records(plugin)
-    assert [(record["direction"], record["text"]) for record in records] == [("unknown", "/transcribe off")]
-    assert not modes_file(plugin).exists()
-    assert bot.text_edit_calls == []
-
-
-@pytest.mark.asyncio
-async def test_owner_command_uses_the_stored_binding_when_the_lookup_fails(plugin, modes):
-    store = modes.default_store()
-    store.bind_connection(BCID, OWNER)
-    bot = CommandBot(business_owner_id=OWNER)
-    bot.business_connection_error = RuntimeError("lookup down")
-
-    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
-
-    assert store.get(OWNER, CHAT).mode == "off"
-    assert [call["text"] for call in bot.text_edit_calls] == ["/transcribe off → Transcription: off"]
-
-    # The binding never makes a contact the owner, nor lets the Business bot execute a command.
-    contact = make_text_update("/transcribe both", from_user_id=PEER, message_id=78)
-    assert await _run_command(plugin, contact, bot) is False
-    for message_id, text in ((79, "/transcribe both"), (80, "/transcribe both → Transcription: both")):
-        echo = make_text_update(text, from_user_id=OWNER, sender_business_bot=555, message_id=message_id)
-        await _run_command(plugin, echo, bot)
-    assert store.get(OWNER, CHAT).mode == "off"
-    assert len(bot.text_edit_calls) == 1
-
-
-# --- Edit confirmation and reply fallback -----------------------------------------------------
-
-
-EXPECTED_REPLY = {
-    "chat_id": CHAT,
-    "text": "/transcribe off → Transcription: off",
-    "business_connection_id": BCID,
-    "disable_notification": True,
-    "reply_to_message_id": 77,
-}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["cant_edit", "false_result", "timed_out", "network", "no_edit_method"])
-async def test_failed_edit_falls_back_to_one_business_reply(plugin, modes, failure):
-    bot = FakeBot(business_owner_id=OWNER) if failure == "no_edit_method" else CommandBot(business_owner_id=OWNER)
-    if failure == "cant_edit":
-        bot.text_edit_error = BadRequest("Bad Request: message can't be edited")
-    elif failure == "false_result":
-        bot.text_edit_result = False
-    elif failure == "timed_out":
-        bot.text_edit_error = TimedOut("timed out")
-    elif failure == "network":
-        bot.text_edit_error = NetworkError("connection reset")
-
-    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
-
-    assert bot.calls == [EXPECTED_REPLY]
-    assert modes.default_store().get(OWNER, CHAT).mode == "off"
-
-
-async def _drain_cleanup(plugin):
-    if plugin._pending_tasks:
-        await asyncio.gather(*list(plugin._pending_tasks))
-
-
-@pytest.mark.asyncio
-async def test_status_is_deleted_after_a_short_delay(plugin, modes, monkeypatch):
-    monkeypatch.setattr(plugin, "_COMMAND_STATUS_TTL_SECONDS", 0)
-    bot = CommandBot(business_owner_id=OWNER)
-
-    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
-    assert bot.delete_calls == []  # the owner first sees the status
-    await _drain_cleanup(plugin)
-
-    assert bot.delete_calls == [{"business_connection_id": BCID, "message_ids": [77]}]
-    assert modes.default_store().get(OWNER, CHAT).mode == "off"
-
-
-@pytest.mark.asyncio
-async def test_fallback_reply_is_deleted_together_with_the_command(plugin, modes, monkeypatch):
-    monkeypatch.setattr(plugin, "_COMMAND_STATUS_TTL_SECONDS", 0)
-    bot = CommandBot(business_owner_id=OWNER)
-    bot.text_edit_error = BadRequest("Bad Request: message can't be edited")
-
-    async def send_message(**kwargs):
-        bot.calls.append(kwargs)
-        return SimpleNamespace(message_id=900)
-
-    bot.send_message = send_message
-
-    assert await _run_command(plugin, make_text_update("/transcribe"), bot) is True
-    await _drain_cleanup(plugin)
-
-    assert bot.delete_calls == [{"business_connection_id": BCID, "message_ids": [77, 900]}]
-
-
-@pytest.mark.asyncio
-async def test_failed_delete_only_logs_a_hint(plugin, modes, monkeypatch, caplog):
-    monkeypatch.setattr(plugin, "_COMMAND_STATUS_TTL_SECONDS", 0)
-    bot = CommandBot(business_owner_id=OWNER)
-    bot.delete_error = BadRequest("Bad Request: business connection does not have the right")
-
-    with caplog.at_level(logging.WARNING):
-        assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
-        await _drain_cleanup(plugin)
-
-    assert modes.default_store().get(OWNER, CHAT).mode == "off"
-    assert "allow the bot to delete messages" in caplog.text
-    assert "business connection does not have" not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_message_not_modified_counts_as_applied(plugin, modes):
-    bot = CommandBot(business_owner_id=OWNER)
-    bot.text_edit_error = BadRequest("Bad Request: message is not modified")
-
-    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
-
-    assert len(bot.text_edit_calls) == 1
-    assert bot.calls == []
-
-
-@pytest.mark.asyncio
-async def test_edit_and_reply_failures_are_contained(plugin, modes, caplog):
-    bot = CommandBot(business_owner_id=OWNER)
-    bot.text_edit_error = BadRequest("message can't be edited")
-    bot.send_error = RuntimeError("send failed with private detail")
-
-    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
-
-    assert modes.default_store().get(OWNER, CHAT).mode == "off"
-    assert "confirmation failed (RuntimeError)" in caplog.text
-    assert "private detail" not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_disabled_transcriber_leaves_owner_command_as_ordinary_history(history_enabled, modes, monkeypatch):
-    plugin = history_enabled
-    monkeypatch.setenv("TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE", "1")
-    bot = CommandBot(business_owner_id=OWNER)
-    callback = registered_business_handler(plugin, command_adapter(bot))
-    update = make_text_update("/transcribe off")
-
-    assert await _run_command(plugin, update, bot) is False
-    with pytest.raises(ApplicationHandlerStop):
-        await callback(update, SimpleNamespace(bot=bot))
-
-    assert not modes_file(plugin).exists()
-    assert bot.text_edit_calls == []
-    assert bot.calls == []
-    records = test_history.load_records(plugin)
-    assert [(record["direction"], record["text"]) for record in records] == [("outbound", "/transcribe off")]
-
-
-# --- History exclusion ------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_owner_command_and_its_echo_never_reach_history(history_enabled, modes):
-    plugin = history_enabled
-    bot = CommandBot(business_owner_id=OWNER)
-    callback = registered_business_handler(plugin, command_adapter(bot))
-    context = SimpleNamespace(bot=bot)
-
-    with pytest.raises(ApplicationHandlerStop):
-        await callback(make_text_update("/transcribe off", update_id=1), context)
-    with pytest.raises(ApplicationHandlerStop):
-        await callback(make_text_update(bot.text_edit_calls[0]["text"], edited=True, update_id=2), context)
-
-    assert test_history.load_records(plugin) == []
-    assert not (plugin._history_support.history_root() / "contacts.json").exists()
-
-    with pytest.raises(ApplicationHandlerStop):
-        await callback(make_text_update("Hello", message_id=78, update_id=3), context)
-    records = test_history.load_records(plugin)
-    assert [(record["direction"], record["text"]) for record in records] == [("outbound", "Hello")]
-
-
-@pytest.mark.asyncio
-async def test_history_filter_is_a_second_safeguard(history_enabled, modes):
-    plugin = history_enabled
-    history = plugin._history_support
-    bot = FakeBot(business_owner_id=OWNER)
-
-    assert not await history.observe_ptb_update(make_text_update("/transcribe off", update_id=1), bot=bot)
-    assert not await history.observe_ptb_update(
-        make_text_update("/transcribe off → Transcription: off", edited=True, update_id=2), bot=bot
-    )
-    assert not await history.observe_ptb_update(
-        make_text_update(
-            "/transcribe peer → Transcription: peer", sender_business_bot=555, message_id=79, update_id=3
-        ),
-        bot=bot,
-    )
-    assert test_history.load_records(plugin) == []
-
-    assert await history.observe_ptb_update(
-        make_text_update("/transcribe off", from_user_id=PEER, message_id=80, update_id=4), bot=bot
-    )
-    assert await history.observe_ptb_update(make_text_update("Hello", message_id=81, update_id=5), bot=bot)
-    records = test_history.load_records(plugin)
-    assert [(record["message_id"], record["direction"], record["text"]) for record in records] == [
-        (80, "inbound", "/transcribe off"),
-        (81, "outbound", "Hello"),
-    ]
-    assert records[1]["sender_id"] == OWNER
-    assert records[1]["event_type"] == "message.created"
+    direction = "outbound" if sender == OWNER else "inbound"
+    assert [(record["direction"], record["text"]) for record in records] == [(direction, "/transcribe off")]
 
 
 # --- Reload without restart -------------------------------------------------------------------
@@ -1507,15 +1086,17 @@ async def test_corrupt_file_keeps_last_valid_modes_and_only_the_cli_repairs_it(p
     assert (await _voice_event(plugin, bot)).voice.get_file_calls == 0
     assert bot.calls == []
 
-    # An in-chat set or reset answers with an error status instead of overwriting
-    # the file; a bare /transcribe shows the mode the gateway is applying.
-    command_bot = CommandBot(business_owner_id=OWNER)
-    for message_id, text in ((90, "/transcribe both"), (91, "/transcribe reset"), (92, "/transcribe")):
-        assert await _run_command(plugin, make_text_update(text, message_id=message_id), command_bot) is True
-    assert [call["text"] for call in command_bot.text_edit_calls] == [
-        "/transcribe both → Error: could not save transcription mode",
-        "/transcribe reset → Error: could not save transcription mode",
-        "/transcribe → Transcription: off",
+    # A panel set or reset shows an error instead of overwriting the file;
+    # Refresh shows the mode the gateway is applying.
+    plugin._note_business_chat(BCID, CHAT)
+    panel_bot = CommandBot(business_owner_id=OWNER)
+    for data in ("tb:m:991:both", "tb:r:991", "tb:p:991"):
+        await _panel_tap(plugin, data, panel_bot)
+    error = "Error: could not save transcription mode"
+    assert [call["text"] for call in panel_bot.text_edit_calls] == [
+        f"Owner panel: chat 991\n{error}\nTranscription: off",
+        f"Owner panel: chat 991\n{error}\nTranscription: off",
+        "Owner panel: chat 991\nTranscription: off",
     ]
     assert path.read_bytes() == b"{not json SECRET-CONTENT"
     assert list(path.parent.glob("transcription-modes.json.corrupt-*")) == []
@@ -1634,26 +1215,29 @@ async def test_empty_modes_file_reads_as_no_modes(plugin, modes, caplog, payload
     assert run_cli(plugin, "mode", "set", "991", "off")[1].startswith("error: no Business owner known yet;")
     assert "unreadable" not in caplog.text
 
-    # The owner's in-chat command writes over it without a corrupt-file backup.
-    bot = CommandBot(business_owner_id=OWNER)
-    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
-    assert [call["text"] for call in bot.text_edit_calls] == ["/transcribe off → Transcription: off"]
+    # An owner-panel change writes over it without a corrupt-file backup.
+    plugin._note_business_chat(BCID, CHAT)
+    await _panel_tap(plugin, "tb:m:991:off", CommandBot(business_owner_id=OWNER))
     assert store.get(OWNER, CHAT).mode == "off"
     assert list(path.parent.glob("transcription-modes.json.corrupt-*")) == []
 
 
+NO_OWNER = (
+    "error: no Business owner known yet; change a mode once in the owner panel "
+    "(Manage Bot in a Business chat), or pass --owner USER_ID"
+)
+
+
 @pytest.mark.asyncio
-async def test_bare_transcribe_records_no_owner_for_the_cli(plugin, modes):
+async def test_panel_refresh_records_no_owner_for_the_cli_but_a_reset_does(plugin, modes):
+    plugin._note_business_chat(BCID, CHAT)
     bot = CommandBot(business_owner_id=OWNER)
-    no_owner = (
-        "error: no Business owner known yet; send /transcribe <mode> or /transcribe reset "
-        "in a Business chat once, or pass --owner USER_ID"
-    )
 
-    assert await _run_command(plugin, make_text_update("/transcribe", message_id=90), bot) is True
-    assert run_cli(plugin, "mode", "set", "992", "off") == (1, no_owner)
+    await _panel_tap(plugin, "tb:p:991", bot)
+    assert run_cli(plugin, "mode", "set", "992", "off") == (1, NO_OWNER)
 
-    assert await _run_command(plugin, make_text_update("/transcribe reset", message_id=91), bot) is True
+    await _panel_tap(plugin, "tb:r:991", bot)
+    assert modes.default_store().connection_owner(BCID) == "1000"
     assert run_cli(plugin, "mode", "set", "992", "off") == (0, "chat=992 mode=off")
 
 
@@ -1803,12 +1387,7 @@ def test_cli_list_shows_labels_and_empty_state(plugin, modes):
 
 
 def test_cli_owner_inference(plugin, modes):
-    exit_code, output = run_cli(plugin, "mode", "set", "991", "off")
-    assert exit_code == 1
-    assert output == (
-        "error: no Business owner known yet; send /transcribe <mode> or /transcribe reset "
-        "in a Business chat once, or pass --owner USER_ID"
-    )
+    assert run_cli(plugin, "mode", "set", "991", "off") == (1, NO_OWNER)
     assert run_cli(plugin, "mode", "get", "991") == (0, "chat=991 mode=both (default)")
 
     modes.default_store().set_mode(OWNER, 1, "off", via="chat")

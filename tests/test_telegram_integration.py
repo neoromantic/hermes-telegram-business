@@ -246,12 +246,6 @@ def _business_update(app, *, sender_id, update_id=42, **content):
     }}, app.bot)
 
 
-def _edited_text_result(text):
-    return (200, {"ok": True, "result": {
-        "message_id": 77, "date": 1, "chat": {"id": 991, "type": "private"}, "text": text,
-    }})
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("content", [
     {"text": "Hello"},
@@ -290,90 +284,45 @@ async def test_real_ptb_off_chat_claims_voice_without_download_or_reply(plugin, 
 
 
 @pytest.mark.asyncio
-async def test_real_ptb_owner_command_edits_status_and_skips_core(plugin, telegram_app):
+@pytest.mark.parametrize("sender_id", [1000, 2000])
+async def test_real_ptb_transcribe_text_is_ordinary_business_text(plugin, telegram_app, sender_id):
     app, request = telegram_app
-    status = "/transcribe off → Transcription: off"
-    request.responses["editMessageText"] = _edited_text_result(status)
     core = _register_native(plugin, app, authorized=False)
 
-    await app.process_update(_business_update(app, sender_id=1000, text="/transcribe off"))
-
-    assert core.await_count == 0
-    method, params = request.calls[-1]
-    assert method == "editMessageText"
-    assert params["chat_id"] == "991"
-    assert params["message_id"] == "77"
-    assert params["business_connection_id"] == "business-123"
-    assert params["text"] == status
-    stored = json.loads(plugin._transcription_modes.modes_path().read_text(encoding="utf-8"))
-    assert stored["owners"]["1000"]["chats"]["991"]["mode"] == "off"
-
-
-@pytest.mark.asyncio
-async def test_real_ptb_contact_command_is_ordinary_text(plugin, telegram_app):
-    app, request = telegram_app
-    request.responses["editMessageText"] = _edited_text_result("unused")
-    core = _register_native(plugin, app)
-
-    await app.process_update(_business_update(app, sender_id=2000, text="/transcribe off"))
+    await app.process_update(_business_update(app, sender_id=sender_id, text="/transcribe off"))
 
     core.assert_not_awaited()
-    assert "editMessageText" not in [method for method, _params in request.calls]
+    assert [method for method, _params in request.calls] == ["getMe"]
     assert not plugin._transcription_modes.modes_path().exists()
-
-
-@pytest.mark.asyncio
-async def test_real_ptb_owner_command_falls_back_to_business_reply(plugin, telegram_app):
-    app, request = telegram_app
-    request.responses["editMessageText"] = (400, {
-        "ok": False, "error_code": 400, "description": "Bad Request: message can't be edited",
-    })
-    core = _register_native(plugin, app)
-
-    await app.process_update(_business_update(app, sender_id=1000, text="/transcribe peer"))
-
-    assert core.await_count == 0
-    endpoints = [method for method, _params in request.calls]
-    assert endpoints[-2:] == ["editMessageText", "sendMessage"]
-    _method, params = request.calls[-1]
-    assert params["business_connection_id"] == "business-123"
-    assert params["text"] == "/transcribe peer → Transcription: peer"
-    assert json.loads(params["reply_parameters"])["message_id"] == 77
-    assert "entities" not in params
 
 
 @pytest.mark.asyncio
 async def test_real_ptb_off_then_both_gates_media_download(plugin, telegram_app, monkeypatch):
     app, request = telegram_app
-    request.responses["editMessageText"] = (200, {"ok": True, "result": True})
     monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
     core = _register_native(plugin, app)
     download = AsyncMock(side_effect=RuntimeError("stop at download"))
     monkeypatch.setattr(plugin, "_download_voice", download)
 
-    def update(number, *, mode=None):
-        content = {"text": f"/transcribe {mode}"} if mode else {
-            "voice": {"file_id": "v", "file_unique_id": "v", "duration": 3},
-        }
+    store = plugin._transcription_modes.default_store()
+
+    def update(number):
+        content = {"voice": {"file_id": "v", "file_unique_id": "v", "duration": 3}}
         message = _business_update(app, sender_id=1000, update_id=number, **content).to_dict()["business_message"]
         message["message_id"] = number
         return Update.de_json({"update_id": number, "business_message": message}, app.bot)
 
-    async def process(number, **kwargs):
-        await app.process_update(update(number, **kwargs))
+    async def process(number):
+        await app.process_update(update(number))
         if plugin._pending_tasks:
             await asyncio.gather(*plugin._pending_tasks)
 
-    await process(1, mode="off")
-    await process(2)
+    store.set_mode("1000", "991", "off", via="chat", connection="business-123")  # as an owner-panel tap stores it
+    await process(1)
     download.assert_not_awaited()
     assert "sendMessage" not in [method for method, _params in request.calls]
 
-    await process(3, mode="both")
-    await process(4)
+    store.set_mode("1000", "991", "both", via="chat", connection="business-123")
+    await process(2)
     download.assert_awaited_once()
     assert core.await_count == 0
-    assert [params["text"] for method, params in request.calls if method == "editMessageText"] == [
-        "/transcribe off → Transcription: off",
-        "/transcribe both → Transcription: both",
-    ]

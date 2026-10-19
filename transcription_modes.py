@@ -3,8 +3,8 @@
 One mode per (Business owner, chat) decides whose voice notes, round videos,
 and attached audio are transcribed: ``both`` (default), ``own``, ``peer``, or
 ``off``. Modes live in a small private JSON file that the gateway re-reads
-whenever it changes, so a CLI write, an owner-panel button, or an in-chat
-``/transcribe`` command applies to the next message without a restart. The
+whenever it changes, so a CLI write or an owner-panel button applies to the
+next message without a restart. The
 file never stores message text, transcripts, or counters.
 
 This module is stdlib-only and depends only on ``history_support``.
@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from . import history_support as _history
 
@@ -40,9 +40,7 @@ SCHEMA_VERSION = 1
 MODES_FILENAME = "transcription-modes.json"
 MAX_LABEL_CHARS = 128
 MAX_CHATS_PER_OWNER = 5000
-MAX_USAGE_ARGS_CHARS = 32
 MODE_USAGE = "Usage: hermes telegram-business mode <list|get|set|reset>"
-COMMAND_USAGE = _history.TRANSCRIBE_USAGE
 
 _OWNER_KEY_RE = re.compile(r"^\d+$")
 _CHAT_KEY_RE = re.compile(r"^-?\d+$")
@@ -83,8 +81,8 @@ class ModeStoreError(ValueError):
 class Snapshot(dict[str, dict[str, ModeEntry]]):
     """owner -> chat -> entry, plus ``connections``: Business connection id -> owner.
 
-    A binding is recorded whenever the gateway learns a connection's owner (an
-    in-chat command or a successful owner lookup), so a later failed lookup
+    A binding is recorded whenever the gateway learns a connection's owner (a
+    panel change or a successful owner lookup), so a later failed lookup
     still applies that owner's entry and never another owner's. It is routing
     metadata, never message content.
     """
@@ -602,50 +600,11 @@ def decide(mode: str, direction: str) -> PolicyDecision:
     return PolicyDecision(True, mode, direction, "mode_unknown")
 
 
-@dataclass(frozen=True)
-class TranscribeCommand:
-    action: Literal["show", "set", "reset", "usage"]
-    mode: str | None
-    display: str
-
-
 _BIDI_CONTROLS = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
 
 def _strip_control(text: str) -> str:
     return "".join(char for char in text if unicodedata.category(char) != "Cc" and char not in _BIDI_CONTROLS)
-
-
-def parse_command(text: Any) -> TranscribeCommand | None:
-    """Parse an owner `/transcribe` command; None when the text is not one."""
-    # history_support owns the one `/transcribe` predicate; arguments follow its match.
-    match = _history.TRANSCRIBE_COMMAND_RE.match(text) if isinstance(text, str) else None
-    if match is None:
-        return None
-    args = text[match.end() :].split()
-    if not args:
-        return TranscribeCommand("show", None, "/transcribe")
-    if len(args) == 1:
-        value = args[0].casefold()
-        if value in MODES:
-            return TranscribeCommand("set", value, f"/transcribe {value}")
-        if value == "reset":
-            return TranscribeCommand("reset", None, "/transcribe reset")
-    raw = _strip_control(" ".join(args))[:MAX_USAGE_ARGS_CHARS].strip()
-    return TranscribeCommand("usage", None, f"/transcribe {raw}".rstrip())
-
-
-def status_text(command: TranscribeCommand, *, entry: ModeEntry | None, error: bool = False) -> str:
-    if error:
-        return f"{command.display} → {_history.TRANSCRIBE_SAVE_ERROR}"
-    if command.action == "show":
-        current = f"{entry.mode}" if entry is not None else f"{DEFAULT_MODE} (default)"
-        return f"{command.display} → Transcription: {current}"
-    if command.action == "set":
-        return f"{command.display} → Transcription: {command.mode}"
-    if command.action == "reset":
-        return f"{command.display} → Transcription: {DEFAULT_MODE} (default)"
-    return f"{command.display} → {COMMAND_USAGE}"
 
 
 def _clean_label_part(value: Any) -> str | None:
@@ -718,10 +677,10 @@ def _resolve_owner(owners: list[str], owner_arg: str | None, *, action: str) -> 
     if not owners:
         if action in {"set", "reset"}:
             # The history catalog records no owner id, so the first write needs
-            # one in-chat /transcribe <mode> or /transcribe reset, or --owner.
+            # one owner-panel change or --owner.
             raise ValueError(
-                "no Business owner known yet; send /transcribe <mode> or /transcribe reset "
-                "in a Business chat once, or pass --owner USER_ID"
+                "no Business owner known yet; change a mode once in the owner panel "
+                "(Manage Bot in a Business chat), or pass --owner USER_ID"
             )
         return None
     if len(owners) > 1:
