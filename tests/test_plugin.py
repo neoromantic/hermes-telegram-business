@@ -308,7 +308,7 @@ def test_readme_uses_public_name_and_canonical_install_source():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert readme.startswith("# Telesec\n")
-    assert f"{CANONICAL_REPOSITORY}/actions/workflows/test.yml" in readme
+    assert f"{CANONICAL_REPOSITORY}/actions/workflows/ci.yml" in readme
     assert "hermes plugins install neoromantic/telesec --enable" in readme
     assert "scripts/upgrade-telesec.sh" in readme
     assert "hermes telesec settings set history on" in readme
