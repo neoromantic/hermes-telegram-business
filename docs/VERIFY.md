@@ -14,6 +14,17 @@ History checks must cover one-time opt-in, private-chat defaults, the stored old
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## 0.14.0 release and live smoke: 2026-10-20
+
+Before tagging, `hermes plugins validate --install-deps --json` ran on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`, Python 3.14) with a fresh `HERMES_HOME`. It passed with exit 0, `ok: true`, and all 14 checks. The security scan was `safe`, and stderr had no "unsatisfiable". 1268 tests passed locally, and CI passed on Python 3.11–3.14.
+
+The production gateway (Hermes 0.21.6) got a plugin-only update. The plugin checkout was fast-forwarded to `v0.14.0` (`47d41babf1392b86444107ec761d1a45f79b3603`) and the gateway restarted.
+
+- **Migration.** No history scope variables were set, so the scope migration did nothing: the chat settings file kept the same checksum, `hermes telesec chat scope` reported no old rule, and the history record count was the same before and after.
+- **Settings.** `/telesec` showed the retention row, `Keep history: forever`, and the model lines. Tapping `30 days` showed the confirm question. Cancel kept `retention: forever`.
+- **Erase.** In a controlled chat's panel, **Don't save** showed **🗑 Erase saved history**. Tapping it showed the confirm question with the message count and the dossier note. Cancel left everything in place. **Save history** turned the chat back on. Erase was not confirmed, and the record count did not change.
+- The gateway log had no Telesec errors.
+
 ## 0.13.0 release and live smoke: 2026-10-20
 
 Before tagging, `hermes plugins validate --install-deps --json` ran on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`, Python 3.14). It passed with exit 0, `ok: true`, and all 14 checks. The security scan was `safe`, and the dependency environment resolved with no "unsatisfiable" in stderr. Before [#78](https://github.com/neoromantic/telesec/pull/78), the scan said `caution` (`invisible_unicode`) about the literal left-to-right mark in `stats_render.py`. The one warning is the known private imports (`transcribe_audio`, `hermes_time`). 1219 tests passed locally on Python 3.13, and CI passed on Python 3.11–3.14.
