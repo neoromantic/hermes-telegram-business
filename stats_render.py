@@ -255,8 +255,11 @@ class _Format:
         # Hours only while they still matter: 3 d 5 h, but 12 d.
         return f"{days} {d}" + (f" {hours} {h}" if hours and days < 10 else "")
 
-    def days_unit(self) -> str:
-        return self.t("units").split()[3]
+    def days(self, count: int) -> str:
+        """A whole number of days, the word in full: 1 day, 9 days; 1 день, 3 дня, 9 дней."""
+        if self.lang == "ru":
+            return f"<b>{self.num(count)}</b> {_ru_plural(count, 'день', 'дня', 'дней')}"
+        return f"<b>{self.num(count)}</b> {'day' if count == 1 else 'days'}"
 
     def day(self, day: date, *, with_year: bool | None = None) -> str:
         if with_year is None:
@@ -637,16 +640,15 @@ def _side_lines(stats: _stats.ContactStats, fmt: _Format, contact: str, owner: s
 
 
 def _panel_tiles(stats: _stats.ContactStats, fmt: _Format) -> list[tuple[str, str]]:
-    unit = fmt.days_unit()
     streaks = stats.streaks
     pairs = [
-        (fmt.t("tile.streak"), f"<b>{fmt.num(streaks.current_days)}</b> {unit}"),
-        (fmt.t("tile.record"), f"<b>{fmt.num(streaks.longest_days)}</b> {unit}"),
+        (fmt.t("tile.streak"), fmt.days(streaks.current_days)),
+        (fmt.t("tile.record"), fmt.days(streaks.longest_days)),
     ]
     silence = stats.silence
     if silence is not None:
         seconds = silence.seconds
-        pause = f"<b>{fmt.num(seconds // 86400)}</b> {unit}" if seconds >= 86400 else f"<b>{fmt.dur(seconds)}</b>"
+        pause = fmt.days(seconds // 86400) if seconds >= 86400 else f"<b>{fmt.dur(seconds)}</b>"
         pairs.append((fmt.t("tile.pause"), pause))
     pairs.append((fmt.t("tile.sessions"), f"<b>{fmt.num(stats.sessions.total)}</b>"))
     first = _first_tile(stats)

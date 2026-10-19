@@ -359,7 +359,7 @@ The one-contact stats are also in Telegram, in your private chat with the bot. O
 
 <img src="images/stats-panel-en@2x.png" width="430" alt="Screenshot of the 📊 Stats view in the owner panel for a fictional contact, Alex Rivera, over 30 days, with 7d, 30d, 90d, All, and Back buttons.">
 
-Real Telegram screenshots of the new view over fictional data will replace this image; until then it shows the previous design. The fictional history is Alex Rivera and the owner Sam, about 2,000 text messages over 12 months, run through the real view. It is also in [Russian](images/stats-panel-ru@2x.png). [`scripts/render-stats-screenshots.py`](../scripts/render-stats-screenshots.py) writes the exact rich message HTML of each view to `images/src/`, ready to send for a screenshot.
+This is a real Telegram for macOS screenshot of the view over fictional history. The fictional history is Alex Rivera and the owner Sam, about 2,000 text messages over 12 months, run through the real view. It is also in [Russian](images/stats-panel-ru@2x.png). [`scripts/render-stats-screenshots.py`](../scripts/render-stats-screenshots.py) writes the exact rich message HTML of each view to `images/src/`, ready to send for a screenshot.
 
 The buttons under the report pick the period:
 
@@ -421,8 +421,8 @@ Example (synthetic): Alice from the [example above](#example-synthetic), period 
 </table>
 <p>🎯 Peak — <mark>Sat, 12–13</mark></p>
 <table compact>
-<tr><td>🔥 streak</td><td align="right"><b>1</b> d</td><td>🏆 record</td><td align="right"><b>2</b> d</td></tr>
-<tr><td>💤 pause</td><td align="right"><b>7</b> d</td><td>🗣 sessions</td><td align="right"><b>5</b></td></tr>
+<tr><td>🔥 streak</td><td align="right"><b>1</b> day</td><td>🏆 record</td><td align="right"><b>2</b> days</td></tr>
+<tr><td>💤 pause</td><td align="right"><b>7</b> days</td><td>🗣 sessions</td><td align="right"><b>5</b></td></tr>
 <tr><td>👋 first</td><td align="right">🟦 <b>60%</b></td><td>🗑 deleted</td><td align="right"><b>4</b> · ❓1</td></tr>
 </table>
 <footer>history since 3 Oct 2026 · text only</footer>
@@ -471,9 +471,9 @@ The card speaks the language of your Telegram app: Russian for a Russian app, En
 
 The card never shows deletions, edits, who is waiting for a reply, p90 reply times, missing history, the change against the previous period, or any message text. Those stay in the owner panel.
 
-<img src="images/stats-card-en@2x.png" width="430" alt="Screenshot of a Business chat with a fictional contact, Alex Rivera: the owner's /stats message has become the stats card for Sam and Alex, all time.">
+<img src="images/stats-card-en@2x.png" width="430" alt="Screenshot of the /stats card for a fictional owner, Sam, and contact, Alex Rivera, over all history.">
 
-The card is a normal message in the chat: the contact can read, copy, or forward it, and it stays until you delete it. Real Telegram screenshots of the new card over fictional data will replace this image; until then it shows the previous design. It uses the same fictional history as the [panel screenshot](#in-telegram-owner-panel), with the owner Sam; it is also in [Russian](images/stats-card-ru@2x.png).
+The card is a normal message in the chat: the contact can read, copy, or forward it, and it stays until you delete it. The screenshot is real Telegram for macOS; the bot sent the card's exact HTML to the owner's private chat with it, so it shows as the bot's message and not in a Business chat. It uses the same fictional history as the [panel screenshot](#in-telegram-owner-panel), with the owner Sam; it is also in [Russian](images/stats-card-ru@2x.png).
 
 Example (synthetic): Alice from the [example above](#example-synthetic), `/stats`, no Hermes time zone (UTC), clock at 2026-10-19 11:32 UTC, English app, owner first name Sam. This is the exact rich message HTML. A test checks that this block still matches the real card.
 

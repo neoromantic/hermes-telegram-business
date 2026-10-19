@@ -92,8 +92,8 @@ ALICE_WEEK_RU = """
 </table>
 <p>🎯 Пик — <mark>сб, 0–1</mark></p>
 <table compact>
-<tr><td>🔥 серия</td><td align="right"><b>1</b> дн</td><td>🏆 рекорд</td><td align="right"><b>1</b> дн</td></tr>
-<tr><td>💤 пауза</td><td align="right"><b>1</b> дн</td><td>🗣 бесед</td><td align="right"><b>2</b></td></tr>
+<tr><td>🔥 серия</td><td align="right"><b>1</b> день</td><td>🏆 рекорд</td><td align="right"><b>1</b> день</td></tr>
+<tr><td>💤 пауза</td><td align="right"><b>1</b> день</td><td>🗣 бесед</td><td align="right"><b>2</b></td></tr>
 <tr><td>👋 первым</td><td align="right">🟦 <b>50%</b></td><td>🗑 удалено</td><td align="right"><b>1</b></td></tr>
 </table>
 <p>📈 К прошлым 7 дням: сообщений <b>+0%</b> · ответ 🟦 10 мин → 1 ч 34 мин</p>
@@ -125,8 +125,8 @@ ALICE_WEEK_EN = """
 </table>
 <p>🎯 Peak — <mark>Sat, 0–1</mark></p>
 <table compact>
-<tr><td>🔥 streak</td><td align="right"><b>1</b> d</td><td>🏆 record</td><td align="right"><b>1</b> d</td></tr>
-<tr><td>💤 pause</td><td align="right"><b>1</b> d</td><td>🗣 sessions</td><td align="right"><b>2</b></td></tr>
+<tr><td>🔥 streak</td><td align="right"><b>1</b> day</td><td>🏆 record</td><td align="right"><b>1</b> day</td></tr>
+<tr><td>💤 pause</td><td align="right"><b>1</b> day</td><td>🗣 sessions</td><td align="right"><b>2</b></td></tr>
 <tr><td>👋 first</td><td align="right">🟦 <b>50%</b></td><td>🗑 deleted</td><td align="right"><b>1</b></td></tr>
 </table>
 <p>📈 vs the previous 7 days: messages <b>+0%</b> · reply 🟦 10 min → 1 h 34 min</p>
@@ -179,8 +179,8 @@ ALICE_MONTH = """
 </table>
 <p>🎯 Peak — <mark>Sat, 12–13</mark></p>
 <table compact>
-<tr><td>🔥 streak</td><td align="right"><b>1</b> d</td><td>🏆 record</td><td align="right"><b>2</b> d</td></tr>
-<tr><td>💤 pause</td><td align="right"><b>7</b> d</td><td>🗣 sessions</td><td align="right"><b>5</b></td></tr>
+<tr><td>🔥 streak</td><td align="right"><b>1</b> day</td><td>🏆 record</td><td align="right"><b>2</b> days</td></tr>
+<tr><td>💤 pause</td><td align="right"><b>7</b> days</td><td>🗣 sessions</td><td align="right"><b>5</b></td></tr>
 <tr><td>👋 first</td><td align="right">🟦 <b>60%</b></td><td>🗑 deleted</td><td align="right"><b>4</b> · ❓1</td></tr>
 </table>
 <footer>history since 3 Oct 2026 · text only</footer>

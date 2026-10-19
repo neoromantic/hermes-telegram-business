@@ -207,9 +207,11 @@ A compact view of the same stats for one chat is in Telegram, in Russian or Engl
 
 ![Screenshot of the 📊 Stats view in the owner panel for a fictional contact, Alex Rivera, over 30 days, with 7d, 30d, 90d, All, and Back buttons.](docs/images/stats-panel-en.png)
 
-The screenshot uses fictional history ([in Russian](docs/images/stats-panel-ru@2x.png)). Real Telegram screenshots of the new design will replace it.
+It is a real Telegram screenshot of the view over fictional history ([in Russian](docs/images/stats-panel-ru@2x.png)).
 
 To share stats with the contact, type `/stats` (all history) or `/stats 7d`, `30d`, or `90d` in the Business chat. Only the owner can. The bot edits the command into a short rich card for both of you: messages, each side's share, reply times, message length, when you talk, the longest streak, and sessions. The contact sees the card. It never shows deletions, edits, who is waiting, p90, missing history, or message text, and the command and card are never kept in history or counted. [In-chat `/stats`](docs/STATS.md#in-a-business-chat-stats).
+
+![Screenshot of the /stats card for a fictional owner, Sam, and contact, Alex Rivera, over all history.](docs/images/stats-card-en.png)
 
 ## Contact dossiers (opt-in)
 

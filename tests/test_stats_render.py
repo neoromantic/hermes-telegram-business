@@ -364,8 +364,8 @@ PANEL_MONTH_RU = """
 </table>
 <p>🎯 Пик — <mark>вт, 21–22</mark></p>
 <table compact>
-<tr><td>🔥 серия</td><td align="right"><b>10</b> дн</td><td>🏆 рекорд</td><td align="right"><b>14</b> дн</td></tr>
-<tr><td>💤 пауза</td><td align="right"><b>4</b> дн</td><td>🗣 бесед</td><td align="right"><b>41</b></td></tr>
+<tr><td>🔥 серия</td><td align="right"><b>10</b> дней</td><td>🏆 рекорд</td><td align="right"><b>14</b> дней</td></tr>
+<tr><td>💤 пауза</td><td align="right"><b>4</b> дня</td><td>🗣 бесед</td><td align="right"><b>41</b></td></tr>
 <tr><td>👋 первым</td><td align="right">🟦 <b>61%</b></td><td>🗑 удалено</td><td align="right"><b>3</b> · ❓1</td></tr>
 </table>
 <p>📈 К прошлым 30 дням: сообщений <b>+18%</b> · ответ 🟦 21 мин → 12 мин · ответ 🟩 40 мин → 38 мин</p>
