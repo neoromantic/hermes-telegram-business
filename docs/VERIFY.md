@@ -16,6 +16,8 @@ Native-handler checks must demonstrate that every Business message/edit/deletion
 
 The rename added a top-level PyYAML import in `migration.py`. Hermes 0.22 depends on ruamel.yaml and does not install PyYAML, so `hermes plugins validate` on Hermes v0.22.2 failed the capability probe with `No module named 'yaml'` for 0.10.0. 0.10.1 reads YAML only when the config still names the old plugin, with a ruamel.yaml fallback. With the fix, `hermes plugins validate --install-deps` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`) passed: capability probe, declared hooks, security scan `safe`, no core override, and the known private STT import warning. Production (`baus`, Hermes 0.21.6) has PyYAML and was not affected.
 
+On `baus` the plugin checkout was fast-forwarded to `v0.10.0` and then to `v0.10.1` (`365ee6665187a3a534ee69b484db95f023a3994d`), with a gateway restart each time. After the last restart the gateway wired the `telesec` native handlers, started the dossier worker, and connected to Telegram at **16:30:53 UTC**. The code differs from the earlier live smoke only by the lazy YAML import, so no new Telegram smoke was run.
+
 ## Telesec rename checks: 2026-10-19
 
 Before production cutover:
