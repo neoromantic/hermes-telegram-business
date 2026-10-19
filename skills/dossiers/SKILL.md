@@ -73,7 +73,7 @@ hermes telesec chat get 991 --format json   # effective_dossier, dossier_state
 hermes telesec chat list --format json
 ```
 
-- `effective_dossier` is `on` or `off`. `dossier_state` says why: `off` (No dossier for this chat), `needs_history` (Don't save for this chat), `settings` (dossiers off for all chats), `no_history`, `private_only`, or `on`.
+- `effective_dossier` is `on` or `off`. `dossier_state` says why: `off` (No dossier for this chat), `needs_history` (Don't save for this chat), `settings` (dossiers off for all chats), `no_history` (history is off, or the server's history settings leave the chat out), `private_only`, or `on`.
 - A paused chat keeps its stored dossier frozen: `show` still works, but `run --contact` and `preview` refuse with "Dossier is off for this chat.", and the persona leaves its messages out.
 - Only when the owner asks: `hermes telesec chat set 991 --dossier off` or `--dossier on`. Turning it on sends that chat's text to the model again.
 

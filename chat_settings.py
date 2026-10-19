@@ -20,7 +20,7 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -377,9 +377,12 @@ def paused(business_connection_id: Any, chat_id: Any, feature: str, owner: Any =
     """Is ``feature`` paused for this chat by its owner? A dossier also pauses while the chat's history is off.
 
     No live lookup: the owner comes from ``owner``, the cache or a binding, and an unknown owner of a
-    chat id that some owner paused counts as paused (fail closed).
+    chat id that some owner paused counts as paused (fail closed). A dossier also pauses for a chat
+    outside the TELESEC_HISTORY_* scope, as the panel shows it; its stored dossier stays.
     """
     _check_feature(feature)
+    if feature == "dossier" and not _scope_allows(business_connection_id, chat_id, "private"):
+        return True
     store = default_store()
     features = ("history",) if feature == "history" else FEATURES
     if not any(store.excluded_anywhere(name, chat_id) for name in features):
@@ -388,35 +391,51 @@ def paused(business_connection_id: Any, chat_id: Any, feature: str, owner: Any =
     return any(store.is_off(owner, chat_id, name) for name in features)
 
 
-def _scope_allows(connection: Any, chat: Any, chat_type: Any) -> bool:
-    """TELESEC_HISTORY_CONNECTIONS/CHATS/CHAT_TYPES allow this chat (a Business chat is private when unknown)."""
+def _scope_allows(connection: Any, chat: Any, chat_type: Any, owner_connections: Iterable[str] = ()) -> bool:
+    """TELESEC_HISTORY_CONNECTIONS/CHATS/CHAT_TYPES allow this chat (a Business chat is private when unknown).
+
+    Without the chat's connection, a chat of an owner none of whose known connections is allowed is out.
+    """
     config = _history.history_config_from_env()
-    if connection and not config.connection_allowed(connection):
-        return False
+    if connection:
+        if not config.connection_allowed(connection):
+            return False
+    else:
+        known = tuple(owner_connections)
+        if known and not any(config.connection_allowed(item) for item in known):
+            return False
     if not config.chat_in_scope(chat):
         return False
     return config.exact_chat_allowed(chat) or config.chat_type_allowed(chat_type or "private")
 
 
+def _stored_on(snapshot: ChatSnapshot, owner: Any, chat: Any, feature: str) -> bool:
+    """The chat's stored value; an unknown owner counts as off when any owner turned it off (fail closed)."""
+    if owner is None:
+        return str(chat) not in snapshot.off[feature]
+    entry = snapshot.owners.get(str(owner), {}).get(str(chat))
+    return entry is None or entry.on(feature)
+
+
 def chat_state(owner: Any, chat: Any, *, connection: Any = None, chat_type: Any = None,
-               snapshot: ChatSnapshot | None = None) -> tuple[str, str]:
+               owner_connections: Iterable[str] = (), snapshot: ChatSnapshot | None = None) -> tuple[str, str]:
     """(history, dossier) for one owner's chat, as the panel shows them. Blocking.
 
     history: "on" | "off" (this chat) | "settings" (off for all chats) | "server" (outside the env
     scope) | "unreadable" (chat-settings.json can't be read, everything paused).
     dossier: "on" | "off" (this chat) | "settings" (dossiers off for all chats) | "needs_history" (this
     chat's history is off) | "no_history" (history is not on for the chat) | "private_only".
+    ``owner_connections`` are the owner's known Business connections, for a chat whose own is unknown.
     """
     snapshot = snapshot or default_store().snapshot()
     if not _settings.enabled("history"):
         history = "settings"
-    elif not _scope_allows(connection, chat, chat_type):
+    elif not _scope_allows(connection, chat, chat_type, owner_connections):
         history = "server"
     elif snapshot.blind:
         history = "unreadable"
     else:
-        entry = snapshot.owners.get(str(owner), {}).get(str(chat)) if owner is not None else None
-        history = "off" if entry is not None and not entry.history else "on"
+        history = "on" if _stored_on(snapshot, owner, chat, "history") else "off"
     if history not in ("on", "off"):
         return history, "no_history"
     if not _settings.enabled("dossiers"):
@@ -425,8 +444,41 @@ def chat_state(owner: Any, chat: Any, *, connection: Any = None, chat_type: Any 
         return history, "needs_history"
     if chat_type is not None and chat_type != "private":
         return history, "private_only"
-    entry = snapshot.owners.get(str(owner), {}).get(str(chat)) if owner is not None else None
-    return history, "off" if entry is not None and not entry.dossier else "on"
+    return history, "on" if _stored_on(snapshot, owner, chat, "dossier") else "off"
+
+
+@dataclass(frozen=True)
+class ChatScope:
+    """What the CLI knows of each chat for ``chat_state``: from the history catalog and the owner bindings."""
+
+    connections: Mapping[str, str] = field(default_factory=dict)  # chat -> the one connection history lists
+    chat_types: Mapping[str, str] = field(default_factory=dict)
+    owner_connections: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def state(self, owner: str | None, chat: str, *, connection: str | None = None,
+              snapshot: ChatSnapshot | None = None) -> tuple[str, str]:
+        return chat_state(owner, chat, connection=connection or self.connections.get(chat),
+                          chat_type=self.chat_types.get(chat),
+                          owner_connections=self.owner_connections.get(owner, ()) if owner is not None else (),
+                          snapshot=snapshot)
+
+
+def cli_scope(bindings: Mapping[str, str]) -> ChatScope:
+    """One read of the history catalog for a CLI call; ``bindings`` maps a connection to its owner."""
+    connections: dict[str, set[str]] = {}
+    chat_types: dict[str, str] = {}
+    for entry in _modes._history_entries():
+        chat = str(entry.get("chat_id"))
+        if entry.get("business_connection_id"):
+            connections.setdefault(chat, set()).add(str(entry["business_connection_id"]))
+        chat_type = _history._normalize_chat_type(entry.get("chat_type"))
+        if chat_type:
+            chat_types.setdefault(chat, chat_type)
+    owners: dict[str, list[str]] = {}
+    for connection, owner in sorted(bindings.items()):
+        owners.setdefault(str(owner), []).append(str(connection))
+    return ChatScope({chat: next(iter(items)) for chat, items in connections.items() if len(items) == 1},
+                     chat_types, {owner: tuple(items) for owner, items in owners.items()})
 
 
 # ---------------------------------------------------------------------------
@@ -463,10 +515,11 @@ def _flag(on: bool) -> str:
     return "on" if on else "off"
 
 
-def _entry_json(owner: str | None, chat: str, entry: ChatEntry | None, *, connection: Any = None,
-                label: str | None = None, snapshot: ChatSnapshot | None = None) -> dict[str, Any]:
+def _entry_json(owner: str | None, chat: str, entry: ChatEntry | None, *, scope: ChatScope,
+                connection: str | None = None, label: str | None = None,
+                snapshot: ChatSnapshot | None = None) -> dict[str, Any]:
     entry_or_default = entry or ChatEntry()
-    history, dossier = chat_state(owner, chat, connection=connection, snapshot=snapshot)
+    history, dossier = scope.state(owner, chat, connection=connection, snapshot=snapshot)
     return {
         "owner": owner,
         "chat_id": chat,
@@ -493,6 +546,35 @@ def _modes_snapshot(owner_arg: str | None) -> _modes.Snapshot:
         return _modes.Snapshot()
 
 
+def _bindings() -> Mapping[str, str]:
+    """Connection -> owner from transcription-modes.json; none when it can't be read (the scope check skips it)."""
+    try:
+        return _modes.default_store().read_strict().connections
+    except (_modes.ModesFileCorrupt, OSError):
+        return {}
+
+
+def _single_holder(store: ChatSettingsStore, chat: str) -> str | None:
+    """The owner when exactly one stored a setting for this chat."""
+    holders = [owner for owner, chats in store.read_strict().owners.items() if chat in chats]
+    return holders[0] if len(holders) == 1 else None
+
+
+def _resolve_owner(store: ChatSettingsStore, owner_arg: str | None, chat: str, connection: str | None,
+                   action: str) -> str | None:
+    """--owner, else the owner the modes bindings give, else the one owner holding this chat's setting."""
+    try:
+        owner = _modes._resolve_chat_owner(_modes_snapshot(owner_arg), owner_arg, connection, action=action)
+    except ValueError:
+        if owner_arg is not None:
+            raise
+        holder = _single_holder(store, chat)
+        if holder is None:
+            raise
+        return holder
+    return owner if owner is not None else _single_holder(store, chat)
+
+
 def _print_json(document: Any) -> None:
     # ASCII only, like `mode`: labels are contact names, and escapes keep terminal controls inert.
     print(json.dumps(document, ensure_ascii=True, indent=2))
@@ -511,9 +593,10 @@ def _list(args: argparse.Namespace, store: ChatSettingsStore) -> int:
             if owner is None or owner_key == owner
             for chat, entry in sorted(snapshot.owners[owner_key].items(), key=lambda item: int(item[0]))]
     if getattr(args, "format", None) == "json":
+        scope = cli_scope(_bindings())
         _print_json({"history_enabled": _settings.enabled("history"),
                      "dossiers_enabled": _settings.enabled("dossiers"),
-                     "chats": [_entry_json(o, c, e, snapshot=snapshot) for o, c, e in rows]})
+                     "chats": [_entry_json(o, c, e, scope=scope, snapshot=snapshot) for o, c, e in rows]})
         return 0
     if not rows:
         print("No chat has history or the dossier off; every chat follows Settings.")
@@ -534,14 +617,16 @@ def handle_chat_cli(args: argparse.Namespace, *, store: ChatSettingsStore | None
             return _list(args, store)
         owner_arg = getattr(args, "owner", None)
         chat, label, connection = _modes._resolve_chat_selector(args.chat, getattr(args, "connection", None))
-        owner = _modes._resolve_chat_owner(_modes_snapshot(owner_arg), owner_arg, connection, action=action)
+        owner = _resolve_owner(store, owner_arg, chat, connection, action)
         if action == "get":
             snapshot = store.read_strict()
             entry = snapshot.owners.get(owner, {}).get(chat) if owner is not None else None
+            scope = cli_scope(_bindings())
             if getattr(args, "format", None) == "json":
-                _print_json(_entry_json(owner, chat, entry, connection=connection, label=label, snapshot=snapshot))
+                _print_json(_entry_json(owner, chat, entry, scope=scope, connection=connection, label=label,
+                                        snapshot=snapshot))
                 return 0
-            history, dossier = chat_state(owner, chat, connection=connection, snapshot=snapshot)
+            history, dossier = scope.state(owner, chat, connection=connection, snapshot=snapshot)
             stored = "" if entry is None else f" (via {entry.updated_via} at {entry.updated_at})"
             print(f"chat={chat} {_entry_text(entry)}{stored}")
             print(f"in effect: history={history} dossier={dossier}")

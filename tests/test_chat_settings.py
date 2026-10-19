@@ -6,7 +6,7 @@ import json
 import logging
 import stat
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +15,7 @@ import test_history
 import test_owner_panel as top
 import test_plugin
 import test_transcription_modes as ttm
-from dossier_helpers import BUSINESS_ID, OWNER_ID, FakeLlm, cli, cycle, quote_first, read_dossier, seed
+from dossier_helpers import BUSINESS_ID, NOW, OWNER_ID, FakeLlm, cli, cycle, quote_first, read_dossier, seed
 
 isolate_plugin_environment = test_plugin.isolate_plugin_environment
 isolate_modes_environment = ttm.isolate_modes_environment
@@ -356,6 +356,19 @@ async def test_rows_hidden_by_settings_show_a_line_and_refuse_a_stale_tap(cs, pl
     assert not cs.chat_settings_path().exists()
 
 
+@pytest.mark.asyncio
+async def test_an_excluded_connection_hides_the_rows_without_a_known_chat_connection(both_on, plugin, monkeypatch):
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "some-other-connection")
+    plugin._history_support.reset_in_memory_caches()
+    top.bind_owner(plugin, seen_chat=None)  # neither history nor an update names the chat's connection
+    bot = top.PanelBot(business_owner_id=OWNER)
+
+    assert await top.dispatch(plugin, top.start_update(), bot) is True
+
+    assert bot.calls[0]["text"].endswith("\nHistory: off (server settings)")
+    assert top.keyboard(bot.calls[0]["reply_markup"]) == [top.MODE_ROW, REFRESH_ROW]
+
+
 def test_a_group_chat_gets_history_but_no_dossier_row(both_on, plugin, monkeypatch):
     chat_state = both_on.chat_state
     assert chat_state(str(OWNER), "-100123", connection=BCID, chat_type="supergroup") == ("server", "no_history")
@@ -442,11 +455,68 @@ async def test_worker_skips_a_paused_chat_and_keeps_its_dossier(dossier_plugin, 
     assert paused_before is not None
     fake = FakeLlm(quote_first, quote_first, quote_first)
 
+    report = cycle(ds, fake, now=NOW + timedelta(hours=25))  # the persona is due again
+
+    assert report.persona == "refreshed" and len(fake.calls) == 2
+    sent = json.dumps([payload.get("messages") for payload in fake.payloads()])
+    assert "OPEN-TAG later" in sent and "PAUSED-TAG" not in sent  # contact and persona calls alike
+    assert report.orphans == 0 and read_dossier(ds, 5504) == paused_before  # frozen, never an orphan
+
+
+@pytest.mark.asyncio
+async def test_a_chat_paused_during_the_cycle_stays_out_of_the_persona(dossier_plugin, dossiers):
+    plug, ds = dossier_plugin, dossiers
+    await seed(plug, 5504, "paused_contact", [(1, "in", "PAUSED-TAG question", 90), (2, "out", "PAUSED-TAG reply", 85)])
+    await seed(plug, 5505, "open_contact", [(1, "in", "OPEN-TAG question", 80), (2, "out", "OPEN-TAG reply", 75)])
+    fake = FakeLlm(quote_first, quote_first)
+
+    def pause_during_the_open_call(payload):
+        if "OPEN-TAG" in json.dumps(payload):
+            plug._chat_settings.default_store().set_flag(OWNER_ID, 5504, "dossier", False, via="chat")
+
+    fake.on_call = pause_during_the_open_call
+
     report = cycle(ds, fake)
 
-    payloads = json.dumps(fake.payloads())
-    assert "OPEN-TAG later" in payloads and "PAUSED-TAG" not in payloads  # contact and persona calls alike
-    assert report.orphans == 0 and read_dossier(ds, 5504) == paused_before  # frozen, never an orphan
+    assert report.persona == "refreshed" and report.refreshed == 1
+    assert "PAUSED-TAG" not in json.dumps(fake.payloads())
+    assert "PAUSED-TAG" not in ds.persona_path().joinpath("dossier.json").read_text(encoding="utf-8")
+    assert read_dossier(ds, 5504) is None
+
+
+@pytest.mark.asyncio
+async def test_no_dossier_during_a_contact_call_writes_nothing(dossier_plugin, dossiers):
+    plug, ds = dossier_plugin, dossiers
+    await seed(plug, 5504, "paused_contact", [(1, "in", "PAUSED-TAG question", 90), (2, "out", "PAUSED-TAG reply", 85)])
+    fake = FakeLlm(quote_first, quote_first)
+    fake.on_call = lambda payload: plug._chat_settings.default_store().set_flag(OWNER_ID, 5504, "dossier", False,
+                                                                                 via="chat")
+
+    report = cycle(ds, fake)
+
+    assert len(fake.calls) == 1 and report.refreshed == 0  # the persona no longer reads the chat either
+    assert read_dossier(ds, 5504) is None
+
+
+@pytest.mark.asyncio
+async def test_a_chat_outside_the_history_scope_gets_no_dossier_work(dossier_plugin, dossiers, monkeypatch):
+    plug, ds = dossier_plugin, dossiers
+    await seed(plug, 5504, "scoped_out", [(1, "in", "PLAIN question", 90), (2, "out", "PLAIN reply", 85)])
+    await seed(plug, 5505, "open_contact", [(1, "in", "OPEN-TAG question", 80), (2, "out", "OPEN-TAG reply", 75)])
+    assert cycle(ds, FakeLlm(quote_first, quote_first, quote_first)).refreshed == 2
+    await seed(plug, 5504, "scoped_out", [(3, "in", "SCOPE-TAG later", 30), (4, "out", "SCOPE-TAG ok", 25)])
+    await seed(plug, 5505, "open_contact", [(3, "in", "OPEN-TAG later", 30), (4, "out", "OPEN-TAG ok", 25)])
+    before = read_dossier(ds, 5504)
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "5505")
+    fake = FakeLlm(quote_first, quote_first, quote_first)
+
+    report = cycle(ds, fake, now=NOW + timedelta(hours=25))
+
+    assert report.persona == "refreshed" and "OPEN-TAG later" in json.dumps(fake.payloads())
+    assert "SCOPE-TAG" not in json.dumps(fake.payloads())
+    assert report.orphans == 0 and read_dossier(ds, 5504) == before  # frozen, not deleted
+    assert plug._chat_settings.paused(BUSINESS_ID, 5504, "dossier") is True
+    assert plug._chat_settings.paused(BUSINESS_ID, 5504, "history") is False  # capture checks the scope itself
 
 
 @pytest.mark.asyncio
@@ -504,6 +574,20 @@ async def test_panel_section_shows_the_frozen_dossier_without_refresh(dossier_pl
     assert panel.start_refresh(BUSINESS_ID, tdp.CHAT, OWNER_ID) == "unavailable"
     refused = await tdp.act(panel, "rf.c")
     assert refused.notice == "Refresh is unavailable: dossiers or history are off, or the model is not connected."
+
+
+@pytest.mark.asyncio
+async def test_panel_no_dossier_stops_a_running_refresh(both_on, plugin):
+    top.bind_owner(plugin)
+    panel_module = plugin._dossier_panel
+    key = panel_module._refresh_key(plugin._dossier_support.chat_key(BCID, CHAT))
+    stop = threading.Event()
+    panel_module._REFRESHES[key] = (SimpleNamespace(), stop)
+    try:
+        await tap(plugin, "tb:f:991:d.off", top.PanelBot(business_owner_id=OWNER))
+        assert stop.is_set()
+    finally:
+        panel_module._REFRESHES.pop(key, None)
 
 
 def test_stop_refresh_stops_a_running_refresh(dossier_plugin, dossiers, panel):
@@ -579,6 +663,56 @@ def test_chat_cli_repairs_a_corrupt_file_only_with_owner(cs, plugin):
     assert code == 0 and out.startswith("warning: corrupt chat-settings.json backed up to ")
     assert len(list(cs.chat_settings_path().parent.glob("chat-settings.json.corrupt-*"))) == 1
     assert cs.default_store().is_off(OWNER, CHAT, "history") is True
+
+
+def test_chat_cli_stores_the_chat_id_as_telegram_sends_it(cs, plugin):
+    top.bind_owner(plugin)
+
+    assert ttm.run_cli(plugin, "chat", "set", "0991", "--history", "off")[0] == 0
+
+    assert cs.default_store().is_off(OWNER, CHAT, "history") is True
+    assert list(stored(cs)["owners"]["1000"]["chats"]) == ["991"]
+    assert plugin._transcription_modes._validate_chat("-0991") == "-991"
+
+
+def test_chat_cli_without_a_known_owner_fails_closed_and_finds_the_holder(cs, plugin):
+    test_history.set_switch(plugin, "history", True)
+    assert ttm.run_cli(plugin, "chat", "set", "991", "--history", "off", "--owner", "1000")[0] == 0
+
+    got = json.loads(ttm.run_cli(plugin, "chat", "get", "991", "--format", "json")[1])
+    assert (got["owner"], got["effective_history"], got["history_state"]) == ("1000", "off", "off")
+    assert ttm.run_cli(plugin, "chat", "set", "991", "--history", "on")[0] == 0
+    assert stored(cs) == {"version": 1, "owners": {}}
+
+    # Two owners hold the chat: no owner is picked, and the chat still reads as paused.
+    for owner in ("1000", "3000"):
+        assert ttm.run_cli(plugin, "chat", "set", "991", "--history", "off", "--owner", owner)[0] == 0
+    got = json.loads(ttm.run_cli(plugin, "chat", "get", "991", "--format", "json")[1])
+    assert (got["owner"], got["effective_history"]) == (None, "off")
+    got = json.loads(ttm.run_cli(plugin, "mode", "get", "991", "--format", "json")[1])
+    assert (got["owner"], got["effective_history"], got["effective_dossier"]) == (None, "off", "off")
+
+
+@pytest.mark.asyncio
+async def test_cli_lists_apply_the_connection_scope_and_the_chat_type(both_on, plugin, monkeypatch):
+    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", "private,supergroup")
+    await capture(plugin, text_update(77))
+    await capture(plugin, test_history.make_business_text_update(chat_id=-100123, chat_type="supergroup",
+                                                                 message_id=78, update_id=78))
+    for chat in ("991", "-100123"):
+        assert ttm.run_cli(plugin, "chat", "set", chat, "--dossier", "off", "--owner", "1000")[0] == 0
+    assert ttm.run_cli(plugin, "mode", "set", "991", "off", "--owner", "1000")[0] == 0
+
+    chats = json.loads(ttm.run_cli(plugin, "chat", "list", "--format", "json")[1])["chats"]
+    listed = {item["chat_id"]: item for item in chats}
+    assert listed["-100123"]["dossier_state"] == "private_only"
+    assert (listed["991"]["history_state"], listed["991"]["dossier_state"]) == ("on", "off")
+
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "some-other-connection")
+    listed = json.loads(ttm.run_cli(plugin, "chat", "list", "--format", "json")[1])["chats"]
+    assert {(item["effective_history"], item["history_state"]) for item in listed} == {("off", "server")}
+    (mode,) = json.loads(ttm.run_cli(plugin, "mode", "list", "--format", "json")[1])["chats"]
+    assert (mode["chat_id"], mode["effective_history"], mode["effective_dossier"]) == ("991", "off", "off")
 
 
 def test_mode_json_and_settings_show_the_chat_switches(cs, plugin):

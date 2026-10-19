@@ -220,10 +220,11 @@ def _validate_owner(owner: Any) -> str:
 
 
 def _validate_chat(chat: Any) -> str:
+    """The chat id as Telegram sends it: "0991" is stored as "991", or it would never match."""
     text = str(chat if chat is not None else "").strip()
     if not _CHAT_KEY_RE.match(text):
         raise ModeStoreError(f"chat must be a numeric Telegram chat id, got {text!r}")
-    return text
+    return str(int(text))
 
 
 def _validate_connection(connection: Any) -> str:
@@ -750,6 +751,7 @@ def _resolve_chat_selector(selector: str, connection: str | None) -> tuple[str, 
     """
     text = str(selector).strip()
     if _CHAT_KEY_RE.match(text):
+        text = str(int(text))
         return text, None, connection if connection is not None else _history_chat_connection(text)
     if not _history.history_config_from_env().active:
         raise ValueError(
@@ -771,7 +773,7 @@ def _resolve_chat_selector(selector: str, connection: str | None) -> tuple[str, 
 
 
 def _mode_json(
-    owner: str | None, chat: str, entry: ModeEntry | None, *, label: str | None = None, **extra: Any
+    owner: str | None, chat: str, entry: ModeEntry | None, *, scope: Any, label: str | None = None, **extra: Any
 ) -> dict[str, Any]:
     """One chat for ``--format json``: the stored mode and the mode the next voice note gets.
 
@@ -786,7 +788,7 @@ def _mode_json(
         effective, source = entry.mode, "stored"
     else:
         effective, source = DEFAULT_MODE, "default"
-    history, dossier = _chat_state(owner, chat, extra.get("business_connection_id"))
+    history, dossier = scope.state(owner, chat, connection=extra.get("business_connection_id"))
     return {
         "owner": owner,
         "chat_id": chat,
@@ -802,10 +804,11 @@ def _mode_json(
     }
 
 
-def _chat_state(owner: str | None, chat: str, connection: str | None) -> tuple[str, str]:
+def _chat_scope(snapshot: Snapshot) -> Any:
+    """chat_settings.ChatScope for ``effective_history``/``effective_dossier``: one history catalog read."""
     from . import chat_settings  # lazy: chat_settings imports this module
 
-    return chat_settings.chat_state(owner, chat, connection=connection)
+    return chat_settings.cli_scope(snapshot.connections)
 
 
 def _transcription_enabled() -> bool:
@@ -855,11 +858,14 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
                 for chat_key, entry in sorted(snapshot.get(owner_key, {}).items(), key=lambda item: int(item[0]))
             ]
             if as_json:
+                scope = _chat_scope(snapshot)
                 _print_json(
                     {
                         "default_mode": DEFAULT_MODE,
                         "transcription_enabled": _transcription_enabled(),
-                        "chats": [_mode_json(owner_key, chat_key, entry) for owner_key, chat_key, entry in chats],
+                        "chats": [
+                            _mode_json(owner_key, chat_key, entry, scope=scope) for owner_key, chat_key, entry in chats
+                        ],
                     }
                 )
                 return 0
@@ -879,7 +885,11 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
         if action == "get":
             entry = snapshot.get(owner, {}).get(chat) if owner is not None else None
             if as_json:
-                _print_json(_mode_json(owner, chat, entry, label=label, business_connection_id=connection))
+                _print_json(
+                    _mode_json(
+                        owner, chat, entry, scope=_chat_scope(snapshot), label=label, business_connection_id=connection
+                    )
+                )
                 return 0
             if entry is None:
                 print(f"chat={chat} mode={DEFAULT_MODE} (default)")

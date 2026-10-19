@@ -23,9 +23,9 @@ One switch covers every private Business chat in history. There is no per-contac
 
 ### One chat
 
-To leave one chat out, tap **Manage Bot** in that chat and then **No dossier** in your private chat with the bot, or run `hermes telesec chat set 991 --dossier off` ([per-chat history and dossier](../README.md#per-chat-history-and-dossier)). **Keep dossier** or `--dossier on` brings it back; it is the default, so nothing is stored for it. History keeps recording under No dossier, so the next cycle after Keep dossier catches up and sends what was written meanwhile to the model. A chat set to **Don't save** (no history) is paused the same way. For a paused chat:
+To leave one chat out, tap **Manage Bot** in that chat and then **No dossier** in your private chat with the bot, or run `hermes telesec chat set 991 --dossier off` ([per-chat history and dossier](../README.md#per-chat-history-and-dossier)). **Keep dossier** or `--dossier on` brings it back; it is the default, so nothing is stored for it. History keeps recording under No dossier, so the next cycle after Keep dossier catches up and sends what was written meanwhile to the model. A chat set to **Don't save** (no history) is paused the same way, and so is a chat that `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, or `TELESEC_HISTORY_CHAT_TYPES` leave out. For a paused chat:
 
-- The worker skips it, its messages are kept out of the persona, and a running panel Refresh for it stops before its next model call or write.
+- The worker skips it, its messages are kept out of the persona (also when it is paused in the middle of a cycle), and a running panel Refresh for it stops before its next model call or write.
 - `dossier run --contact` and `dossier preview` for it refuse with `Dossier is off for this chat.`, and the panel offers no Refresh.
 - The stored dossier stays frozen: you can still read it in the panel (with the note `Off for this chat.`) and the CLI, and the worker never treats it as an orphan. `dossier forget` deletes it. Persona facts already learned from the chat stay until you remove them in the persona view.
 - The owner's `/dossier` in the chat posts nothing, and the bot tells you privately: `Dossier is off for this chat.`

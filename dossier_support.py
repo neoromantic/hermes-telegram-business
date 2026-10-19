@@ -1762,14 +1762,14 @@ def _run_batches(cx: _Cycle, *, kind: str, path: Path, dossier: dict[str, Any] |
             return "stopped", expected_id
         if not load_config().enabled or not _history.capture_enabled():
             return "stopped", expected_id  # dossiers or history switched off while waiting for the rate limit
-        if entry is not None and kind == "contact" and _entry_paused(entry):
+        if _batch_paused(kind, entry, views):
             return "paused", expected_id  # switched off for this chat while waiting
         cx.rep.calls += 1
         cx.stats["calls"] = cx.stats.get("calls", 0) + 1
         output, model, provider = _call_model(cx.llm, kind=kind, payload_text=text, cfg=cx.cfg)
         if cx.stopped():
             return "stopped", expected_id  # shutting down: write nothing
-        if entry is not None and kind == "contact" and _entry_paused(entry):
+        if _batch_paused(kind, entry, views):
             return "paused", expected_id  # switched off for this chat during the call: write nothing
         with _data_lock():
             if _generation() != cx.generation:
@@ -1805,6 +1805,13 @@ def chat_paused(business_connection_id: Any, chat_id: Any) -> bool:
 
 def _entry_paused(entry: dict[str, Any]) -> bool:
     return chat_paused(entry.get("business_connection_id"), entry.get("chat_id"))
+
+
+def _batch_paused(kind: str, entry: dict[str, Any] | None, views: dict[str, ChatView]) -> bool:
+    """The contact's chat, or for the persona any chat it reads, was switched off since the cycle started."""
+    if kind == "persona":
+        return any(_entry_paused(view.entry) for view in views.values())
+    return entry is not None and _entry_paused(entry)
 
 
 def _paused_chat_keys(entries: list[dict[str, Any]], persona: dict[str, Any] | None) -> frozenset[str]:
@@ -1894,6 +1901,7 @@ def process_persona(entries: list[dict[str, Any]], cx: _Cycle, *, force: bool = 
                     exclude: frozenset[str] = frozenset()) -> str:
     path = persona_path()
     persona = load_dossier(path)
+    exclude = exclude | _paused_chat_keys(entries, persona)  # also the chats switched off during this cycle
     pid = persona["dossier_id"] if persona else None
     gates = cx.state["persona_gates"]
     views = _persona_views(entries, persona, now=cx.now, cfg=cx.cfg, gates=None if force else gates,

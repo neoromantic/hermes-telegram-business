@@ -2241,7 +2241,8 @@ def _panel_state(
     store_label = _transcription_modes.build_chat_label(profile) if isinstance(profile, dict) else None
     label = (entry.label if entry is not None else None) or store_label
     try:
-        features = _chat_settings.chat_state(owner_id, chat_id, connection=connection, chat_type=chat_type)
+        features = _chat_settings.chat_state(owner_id, chat_id, connection=connection, chat_type=chat_type,
+                                             owner_connections=owner.connections)
     except Exception as exc:  # noqa: BLE001 - hide the rows rather than show a wrong state
         logger.warning("%s: chat settings state failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         features = ("unreadable", "no_history")
