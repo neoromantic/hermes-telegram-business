@@ -20,6 +20,7 @@ import tempfile
 import threading
 import unicodedata
 from collections import deque
+from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field
@@ -2728,6 +2729,40 @@ TRANSCRIBE_DEFAULT_MODE = "both"
 TRANSCRIBE_SAVE_ERROR = "Error: could not save transcription mode"
 
 
+# The owner's bare `/dossier` posts the contact dossier into the chat; `/dossiers` and
+# `/dossier <text>` are ordinary text, so a longer message is never deleted or answered with a dossier.
+DOSSIER_COMMAND_RE = re.compile(r"^/dossier(?:@[A-Za-z0-9_]{1,64})?\s*\Z", re.IGNORECASE)
+
+
+def is_dossier_command_text(text: Any) -> bool:
+    return isinstance(text, str) and DOSSIER_COMMAND_RE.match(text) is not None
+
+
+def is_dossier_post(message: Any) -> bool:
+    """A rich message the Business bot sent: only an owner `/dossier` posts one into a Business chat.
+
+    PTB 22.8 has no ``rich_message`` field, so it lands in the read-only ``api_kwargs`` mapping.
+    """
+    if _get(message, "sender_business_bot") is None:
+        return False
+    api_kwargs = message.get("api_kwargs") if isinstance(message, dict) else getattr(message, "api_kwargs", None)
+    rich = _get(message, "rich_message")
+    return rich is not None or (isinstance(api_kwargs, Mapping) and api_kwargs.get("rich_message") is not None)
+
+
+def is_dossier_control_message(message: Any, text: Any) -> bool:
+    """True for an outbound `/dossier` command or the dossier the bot posted for one.
+
+    A forwarded or inline-bot message is someone else's text, and the bot never sends a
+    `/dossier` text itself, so those stay ordinary history.
+    """
+    if is_dossier_post(message):
+        return True
+    if not is_dossier_command_text(text):
+        return False
+    return all(_get(message, name) is None for name in ("forward_origin", "via_bot", "sender_business_bot"))
+
+
 def _extract_history_text(message: Any) -> str | None:
     text = _get(message, "text")
     if isinstance(text, str) and text.strip():
@@ -2735,7 +2770,9 @@ def _extract_history_text(message: Any) -> str | None:
     return None
 
 
-async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | None = None) -> bool:
+async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | None = None,
+                             direction: str | None = None) -> bool:
+    """Capture one Business update. ``direction`` skips the owner lookup when the caller already resolved it."""
     config = history_config_from_env()
     if not config.active:
         return False
@@ -2822,12 +2859,22 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
         if text is None:
             return False
         chat_dir = _history_chat_dir(business_connection_id, chat_id)
-        direction = await _resolve_direction(payload, bot=bot)
+        direction = direction or await _resolve_direction(payload, bot=bot)
+        command_edit = False
+        if direction == "outbound" and is_dossier_control_message(payload, text):
+            # The owner's `/dossier` command and the dossier the bot posts are
+            # control traffic, never conversation history. An edit of a stored
+            # message into `/dossier` still records the edit.
+            if event_type != "message.edited" or is_dossier_post(payload):
+                return False
+            command_edit = True
         message_date = _normalize_timestamp(_get(payload, "date"))
         chat_profile = _extract_chat_profile(payload)
         sender_profile = _extract_sender_profile(payload)
 
         def _mutate_message(state: ChatState, appended_records: list[dict[str, Any]]) -> bool:
+            if command_edit and str(_get(payload, "message_id")) not in state.messages:
+                return False
             record = _build_event(
                 event_type=event_type,
                 source=source,

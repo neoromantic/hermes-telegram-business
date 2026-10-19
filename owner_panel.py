@@ -244,6 +244,8 @@ class PanelView:
     text: str
     # Rows of (label, callback data); build the data with callback_data/section_callback.
     buttons: list[list[tuple[str, str]]] = field(default_factory=list)
+    # Optional Bot API rich message HTML (sendRichMessage); the router sends it when set, ``text`` is the fallback.
+    html: str | None = None
 
 
 SectionRender = Callable[[PanelContext], "PanelView | Awaitable[PanelView]"]
@@ -356,7 +358,7 @@ def render_main(
 def with_back(view: PanelView, chat_id: Any, language_code: str | None = None) -> PanelView:
     """A section view plus the Back row the router always adds."""
     back = [(tr("back", language_code), callback_data("b", chat_id))]
-    return PanelView(text=view.text, buttons=[*view.buttons, back])
+    return PanelView(text=view.text, buttons=[*view.buttons, back], html=view.html)
 
 
 def clip_text(text: str) -> str:

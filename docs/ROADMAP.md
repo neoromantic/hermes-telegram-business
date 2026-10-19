@@ -23,9 +23,14 @@ The product connects readable Telegram voice messages with useful personal corre
 - Owner panel: Telegram's "Manage Bot" button in a Business chat opens the bot's private chat with that chat's transcription mode as buttons, visible only to the owner. Other features add per-chat views with `owner_panel.register_section` and localize them through the panel's string catalog (English and Russian). The in-chat `/transcribe` command from 0.9.0 is removed: the panel is the only control inside Telegram.
 - Stats in the owner panel ([#4](https://github.com/neoromantic/telesec/issues/4)): a 📊 Stats section with the one-chat `stats` report for the last 7, 30, or 90 days or all history. [Owner panel stats](STATS.md#in-telegram-owner-panel).
 
+## Implemented in 0.11.0
+
+- Dossiers in Telegram ([#17](https://github.com/neoromantic/telesec/issues/17)): the panel's Dossier section (rich, Russian or English, with pin, unpin, remove, refresh, the persona, and the on/off switch), and the owner's `/dossier` that posts a contact's dossier into the chat (the one in-chat control besides the panel). Dossiers are switched only in the panel or with `dossier enable`/`disable`; the old environment variable and Desktop setting are moved into that switch once. [Dossiers in Telegram](DOSSIERS.md#in-telegram).
+
 ## Next
 
-- Dossiers ([#17](https://github.com/neoromantic/telesec/issues/17)) as an owner panel section, so the owner sees them per chat without the contact seeing anything.
+- Plugin settings in the private chat with the bot: global on/off for transcription, history, and dossiers, and the same per-chat controls for all three in the owner panel, in the style of transcription modes.
+
 - Known limit: claimed panel taps and Business updates stop propagation before Hermes' group-99 dispatch counter, so the core "ingress healthy but deaf" warning can show a stale gap after quiet periods. The fix belongs in Hermes core (count dispatch in a group before every plugin group).
 
 ## Priorities and requirements
@@ -39,7 +44,7 @@ The product connects readable Telegram voice messages with useful personal corre
 
 The [assistant design](ASSISTANT.md) explains the owner experience, modes, context boundaries, and delivery lifecycle. Each issue is a set of requirements rather than a prescribed storage framework.
 
-Deferred from the #17 first slice: using dossiers in drafts (#18) and automatic replies (#19), a Telegram-side dossier UI, voice transcripts as a dossier source, per-contact exclusion, and cross-contact persona leakage filters.
+Deferred from #17: using dossiers in drafts (#18) and automatic replies (#19), corrections and notes from Telegram (CLI only for now), voice transcripts as a dossier source, per-contact exclusion, and cross-contact persona leakage filters.
 
 ## Independent improvements
 

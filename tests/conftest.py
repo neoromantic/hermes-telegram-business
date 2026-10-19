@@ -51,8 +51,9 @@ def dossier_plugin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[
 def dossier_env(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
     """Clear every dossier env var and the cleanup provider/model/timeout vars.
 
-    Returns ``set_env(**values)``: ``set_env(ENABLE=1, BACKFILL_MESSAGES=10)`` sets
-    ``TELESEC_DOSSIER_<NAME>``; a value of None unsets it.
+    Returns ``set_env(**values)``: ``set_env(BACKFILL_MESSAGES=10)`` sets
+    ``TELESEC_DOSSIER_<NAME>``; a value of None unsets it. The on/off switch is stored:
+    use ``dossier_support.set_enabled``.
     """
     for name in list(os.environ):
         if name.startswith(DOSSIER_ENV_PREFIX):
@@ -90,14 +91,14 @@ def dossiers(
     dossier_history: ModuleType,
     dossier_env: Callable[..., None],
 ) -> Iterator[ModuleType]:
-    """History on, ``TELESEC_DOSSIER_ENABLE=1``; yields this plugin's ``dossier_support``.
+    """History on, dossiers switched on (stored switch, via the CLI); yields this plugin's ``dossier_support``.
 
     ``INITIAL_DELAY_SECONDS`` is 3600, so a started worker never runs a cycle unless the
     test lowers it. Teardown stops workers, checks that no worker thread survived, and
     unbinds the LLM facade.
     """
-    dossier_env(ENABLE="1")
     ds = dossier_helpers.dossier_module(dossier_history)
+    ds.set_enabled(True, via="cli")
     monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 3600)
     yield ds
     ds.stop_workers(timeout=2)

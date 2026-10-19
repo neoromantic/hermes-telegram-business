@@ -22,13 +22,15 @@ from . import history_support as _history
 
 Target = tuple[str, Any]
 
-COMMANDS = ("status", "list", "show", "preview", "correct", "pin", "unpin", "remove",
+COMMANDS = ("status", "enable", "disable", "list", "show", "preview", "correct", "pin", "unpin", "remove",
             "note", "changes", "export", "forget", "run")
 USAGE = "Usage: hermes telesec dossier <" + "|".join(COMMANDS) + ">"
 MAX_CHANGES_LIMIT = 500
-DISABLED_RUN = (f"error: dossiers are disabled; set {_dossier.ENABLE_ENV}=1 "
-                "(the gateway worker also needs a restart)")
-DISABLED_PREVIEW = f"note: dossiers are disabled; nothing is sent until {_dossier.ENABLE_ENV}=1"
+ENABLE_HOW = f"'{_dossier.ENABLE_COMMAND}' or the owner panel in Telegram"
+DISABLE_COMMAND = _dossier.DISABLE_COMMAND
+FORGET_ALL_COMMAND = "hermes telesec dossier forget --all"
+DISABLED_RUN = f"error: dossiers are disabled; turn them on with {ENABLE_HOW}"
+DISABLED_PREVIEW = f"note: dossiers are disabled; nothing is sent until they are turned on with {ENABLE_HOW}"
 NO_FACADE = "error: Hermes host LLM facade is unavailable in this process"
 BUSY = "error: another dossier cycle is running (probably the gateway worker); try again later"
 TRUST_HINT = f"check plugins.entries.{_history.PLUGIN_NAME}.llm"
@@ -70,6 +72,8 @@ def add_parser(subs: Any) -> None:
         return command
 
     leaf("status", "Show dossier settings, storage and the last cycle", target=False)
+    leaf("enable", "Turn dossiers on for all private chats (sends their text to the model)", target=False)
+    leaf("disable", "Turn dossiers off; stored dossiers are kept", target=False)
     leaf("list", "List stored dossiers", target=False)
     show = leaf("show", "Show a dossier, or follow one fact back to history", fact=True)
     show.add_argument("--format", choices=["text", "json"], default="text")
@@ -290,14 +294,26 @@ def _stale(dossier: dict[str, Any]) -> tuple[dict[str, Any], dict[str, list[dict
 # ---------------------------------------------------------------------------
 
 
+def _since(settings: dict[str, Any]) -> str:
+    if not settings.get("updated_at"):
+        return ""
+    return f" (since {settings['updated_at']} via {settings.get('updated_via') or 'unknown'})"
+
+
+def _switch_line(settings: dict[str, Any]) -> str:
+    if settings["enabled"]:
+        return f"Dossiers: enabled{_since(settings)}"
+    return f"Dossiers: disabled{_since(settings)}. Turn on with {ENABLE_HOW}."
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     cfg = _dossier.load_config()
     lines = list(cfg.warnings)
-    lines.append("Dossiers: enabled" if cfg.enabled else
-                 f"Dossiers: disabled. Set {_dossier.ENABLE_ENV}=1 in the gateway environment and restart the gateway.")
+    lines.append(_switch_line(_dossier.load_settings()))
     lines.append(f"Model: {cfg.provider} / {cfg.model} (timeout {_dossier.MODEL_TIMEOUT_SECONDS:g}s, "
                  f"max {cfg.max_calls_per_minute} calls/min)")
-    lines.append(f"Worker: gateway only; first cycle {_minutes(_dossier.INITIAL_DELAY_SECONDS)} after connect, "
+    lines.append(f"Worker: gateway only; checks the switch every {_minutes(_dossier.DISABLED_POLL_SECONDS)}; "
+                 f"first cycle {_minutes(_dossier.INITIAL_DELAY_SECONDS)} after connect at the earliest, "
                  f"then every {cfg.interval_minutes} min; quiet {cfg.quiet_minutes} min")
     lines.append(f"Backfill: last {cfg.backfill_days} days, at most {cfg.backfill_messages} messages per contact")
     lines.append(f"Storage: {_dossier.dossier_root()}")
@@ -328,6 +344,35 @@ def _cmd_status(args: argparse.Namespace) -> int:
     else:
         lines.append("Last cycle: none yet")
     lines.append(f"Cycle running now: {'yes' if _dossier.cycle_running() else 'no'}")
+    _emit(lines)
+    return 0
+
+
+def _cmd_enable(args: argparse.Namespace) -> int:
+    result = _dossier.set_enabled(True, via="cli")
+    cfg = _dossier.load_config()  # after the write: a corrupt switch file no longer warns
+    lines = list(cfg.warnings)
+    lines.append(f"Dossiers: enabled ({result['updated_at']} via cli)." if result["changed"]
+                 else f"Dossiers are already enabled{_since(result)}.")
+    lines.append("The gateway worker starts its first cycle within a few minutes; no gateway restart is needed.")
+    lines.append(f"The text of all private Business chats is sent to {cfg.provider} / {cfg.model}.")
+    if not _history.history_config_from_env().enabled:
+        lines.append("note: history capture is off; dossiers are built from it (turn on the history_enable "
+                     f"setting or set {_history.HISTORY_ENABLE_ENV}=1).")
+    lines.append(f"Turn off with '{DISABLE_COMMAND}'.")
+    _emit(lines)
+    return 0
+
+
+def _cmd_disable(args: argparse.Namespace) -> int:
+    result = _dossier.set_enabled(False, via="cli")
+    lines = list(_dossier.load_config().warnings)
+    if result["changed"]:
+        lines.append(f"Dossiers: disabled ({result['updated_at']} via cli). No more chat text is sent to the model; "
+                     "a cycle already running stops before its next model call.")
+    else:
+        lines.append(f"Dossiers are already disabled{_since(result)}.")
+    lines.append(f"Stored dossiers are kept; delete them with '{FORGET_ALL_COMMAND}'.")
     _emit(lines)
     return 0
 
@@ -797,8 +842,8 @@ def _cmd_forget(args: argparse.Namespace) -> int:
             persona = "the owner persona" if result["persona"] else "no owner persona"
             lines = [(f"Forgot {_plural(result['contacts'], 'contact dossier')} and {persona}. "
                       "Canonical history was not changed.")]
-        lines.append(f"To stop processing: unset {_dossier.ENABLE_ENV}, restart the gateway, then run "
-                     "'hermes telesec dossier forget --all'." if enabled
+        lines.append("Dossiers are still enabled, so the worker rebuilds them from history on its next cycle. "
+                     f"To stop processing: run '{DISABLE_COMMAND}', then '{FORGET_ALL_COMMAND}'." if enabled
                      else "Dossiers are disabled; nothing will be rebuilt.")
         _emit(lines)
         return 0
@@ -827,6 +872,8 @@ def _cmd_forget(args: argparse.Namespace) -> int:
 
 _ACTIONS: dict[str, Callable[[argparse.Namespace], int]] = {
     "status": _cmd_status,
+    "enable": _cmd_enable,
+    "disable": _cmd_disable,
     "list": _cmd_list,
     "show": _cmd_show,
     "preview": _cmd_preview,

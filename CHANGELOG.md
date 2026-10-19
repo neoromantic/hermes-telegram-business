@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0 - 2026-10-19
+
+- Add the panel's Dossier section ([#17](https://github.com/neoromantic/telesec/issues/17)): the chat's dossier as a Telegram rich message in the owner's app language (Russian or English), with an overview, a fact list, fact cards with current history text, Pin/Unpin, Remove with confirmation, and a background Refresh. The persona and the on/off switch are offered only to an owner of every Business connection the bot knows about (history, stored dossiers, the persona's chats, recorded owners, and connections seen since the gateway started). Stale buttons never edit a rebuilt dossier, long dossiers degrade to fit Telegram's limits, and a rejected rich message falls back to plain text.
+- Add the owner's in-chat `/dossier`, deliberately visible to the contact: the bot deletes the bare command and posts that contact's dossier into the chat, without owner notes and never the persona. The post leaves out current history text, change marks, and the quotes of deleted, edited, or gone messages, and skips unsupported facts and facts with no source left in history (every source deleted, gone, or deleted and resent). When history cannot be read to check the sources, nothing is posted. Telegram allows it only if the contact wrote in the last 24 hours. When there is nothing to post, nothing appears in the chat and the bot tells the owner why in their private chat with it. A contact's, forwarded, inline-bot, or longer `/dossier …` stays ordinary text; the command and the post are kept out of history and away from the agent.
+- Turn dossiers on and off from the owner panel or with `hermes telesec dossier enable|disable`. The choice is stored in `dossiers/settings.json`. No gateway restart is needed: the worker checks the switch every minute and a panel switch wakes it.
+- Remove `TELESEC_DOSSIER_ENABLE` and the Desktop `dossier_enable` setting: dossiers are no longer switched by configuration. On first start, a setup that turned them on that way gets the stored switch set to on once (shown as `via migration`), so its dossiers keep running; after that the variable and the setting are ignored.
+- Owner panel sections can return rich message HTML (`PanelView.html`, with a plain-text fallback).
+- A worker cycle that finds another cycle running retries a minute later instead of after a full interval, and plugin unload also stops a running panel refresh.
+
 ## 0.10.1 - 2026-10-19
 
 - Fix loading on Hermes 0.22+, which no longer installs PyYAML: the one-time config migration now reads YAML only when the config still names the old plugin, and uses Hermes's ruamel.yaml when PyYAML is missing.

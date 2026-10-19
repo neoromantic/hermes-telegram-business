@@ -74,6 +74,7 @@ else:
     )
 
 
+from . import dossier_panel as _dossier_panel
 from . import dossier_support as _dossier_support
 from . import history_support as _history_support
 from .migration import migrate
@@ -422,6 +423,15 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
             _note_business_update_chat(update)
         except Exception as exc:  # noqa: BLE001 - bookkeeping must not break dispatch
             logger.debug("%s: business chat note failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        try:
+            if await _dossier_panel.handle_dossier_command_update(
+                update, bot=context.bot, adapter=adapter, mark_seen=_mark_identity_seen
+            ):
+                raise ApplicationHandlerStop
+        except ApplicationHandlerStop:
+            raise
+        except Exception as exc:  # noqa: BLE001 - command failures must not break dispatch
+            logger.warning("%s: dossier command handling failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         try:
             await _history_support.observe_ptb_update(update, bot=context.bot)
         except Exception as exc:  # noqa: BLE001 - capture failures must not break dispatch
@@ -2369,6 +2379,24 @@ async def _edit_panel_message(bot: Any, query: Any, view: _owner_panel.PanelView
     message_id = _get(message, "message_id")
     if message_chat_id is None or message_id is None:
         return
+    if view.html:
+        markup = _panel_markup(view)
+        try:
+            await bot.do_api_request(
+                # Lower case: Bot API methods are case-insensitive, and PTB warns about its own camelCase alias.
+                "editmessagetext",
+                api_kwargs={
+                    "chat_id": message_chat_id,
+                    "message_id": message_id,
+                    "rich_message": {"html": view.html, "skip_entity_detection": True},
+                    **({"reply_markup": markup} if markup is not None else {}),
+                },
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - the plain text below is the fallback
+            if "not modified" in str(exc).casefold():
+                return
+            logger.warning("%s: owner panel rich edit failed (%s)", _PLUGIN_NAME, type(exc).__name__)
     try:
         await _maybe_await(
             bot.edit_message_text(
@@ -2648,6 +2676,10 @@ def register(ctx: Any) -> None:
     if deprecated and not _deprecated_env_warned:
         logger.warning("Deprecated Telesec environment aliases (removed next release): %s", ", ".join(deprecated))
         _deprecated_env_warned = True
+    try:
+        _dossier_support.migrate_legacy_switch()
+    except Exception as exc:  # noqa: BLE001 - plugin load must stay available
+        logger.warning("%s: dossier switch migration failed (%s)", _PLUGIN_NAME, type(exc).__name__)
     _llm_facade = getattr(ctx, "llm", None)
     _dossier_support.bind_llm(_llm_facade)
     ctx.register_telegram_handler(_register_telegram_handlers)
@@ -2674,7 +2706,9 @@ def register(ctx: Any) -> None:
     _register_agent_reference(ctx)
     on_unload = getattr(ctx, "on_unload", None)
     if callable(on_unload):
-        on_unload(_dossier_support.stop_workers)
+        on_unload(_dossier_panel.stop_background)
+    _dossier_panel.register_owner_panel_section(
+        _owner_panel, seen_connections=lambda: [*(c for c, _ in list(_PANEL_SEEN_CHATS)), *list(_PANEL_KNOWN_CONNECTIONS)])
     try:
         result = _history_support.run_startup_maintenance()
     except Exception as exc:  # noqa: BLE001 - plugin load must stay available
