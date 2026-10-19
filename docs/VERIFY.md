@@ -14,6 +14,18 @@ History checks must cover one-time opt-in, private-chat defaults, explicit scope
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## Stats redesign live check: 2026-10-20
+
+The production gateway (Hermes 0.21.6) runs `v0.12.2` (`b8190d2`), which includes the stats redesign ([#64](https://github.com/neoromantic/telesec/pull/64)). The plugin checkout was fast-forwarded and the gateway restarted with it, so no extra restart was needed.
+
+- **Panel.** From the owner's account in the bot DM, 📊 Stats on a controlled Business chat's panel edited the panel into the new HTML report: title, dates and time zone, share bars and the per-side table in one monospace block, sparklines and the summary in another, the footer, and the period buttons with « Back. In Telegram for macOS both blocks were aligned, with one copy bar each.
+- **Periods.** 7d, 90d, All, and 30d each re-rendered the report with the selected button marked. 90d grouped activity by week. Retained history started that day, so 7d, 30d, and 90d said "period partial" and All covered one day.
+- **Time zone.** The header showed the Hermes time zone from `config.yaml`; the plugin no longer has its own setting.
+- **Not checked live.** The in-chat `/stats` card: the contact would see it, so it stays with the owner.
+- **Logs.** The gateway logged the five panel actions and no Telesec error or rich-edit fallback. No message appeared in the Business chat, and the panel was left on 30d.
+
+No message text, contact names, or raw contact IDs are included here.
+
 ## 0.12.2 release: 2026-10-20
 
 Before tagging, `hermes plugins validate --install-deps --json` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`, Python 3.14) passed: exit 0, `ok: true`, all 14 checks, security scan `safe`, and the dependency environment resolved with no "unsatisfiable" in stderr. The warnings are the known private imports (`transcribe_audio`, `hermes_time`). 1177 tests passed locally on Python 3.12.
