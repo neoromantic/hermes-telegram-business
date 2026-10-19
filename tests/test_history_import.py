@@ -227,6 +227,34 @@ async def test_import_refuses_when_history_is_not_saved(enabled_history, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_import_finds_the_owner_like_chat_set_and_names_the_old_scope_rule(enabled_history, tmp_path,
+                                                                                 monkeypatch):
+    plugin = enabled_history
+    chat_settings = plugin._chat_settings
+    await capture_live(plugin)
+    path = write_export(tmp_path, sample_messages())
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "992")
+    assert chat_settings.migrate_history_scope()
+    monkeypatch.delenv("TELESEC_HISTORY_CHATS")
+    plugin._history_support.reset_in_memory_caches()  # a CLI process: no cached owner and no modes binding
+
+    code, output = _run_history_cli(plugin, "history", "import", str(path), "--chat", str(CHAT), "--dry-run")
+    assert code == 1 and output == ("error: the old history scope rule keeps chat 991 out of history; turn history "
+                                    "on for it first: 'hermes telesec chat set 991 --history on'")
+
+    # What `chat set 991 --history on --owner 1000` stores: the import finds that owner as the one holder.
+    chat_settings.default_store().set_flag(OWNER, CHAT, "history", True, via="cli", connections=("business-123",))
+    code, output = _run_history_cli(plugin, "history", "import", str(path), "--chat", str(CHAT), "--dry-run")
+    assert code == 0, output
+
+    chat_settings.chat_settings_path().write_bytes(b"{not json")
+    chat_settings.reset_in_memory_caches()
+    code, output = _run_history_cli(plugin, "history", "import", str(path), "--chat", str(CHAT), "--dry-run")
+    assert code == 1 and output == ("error: chat settings can't be read, so history is paused for every chat; "
+                                    "see 'hermes telesec chat list'")
+
+
+@pytest.mark.asyncio
 async def test_import_skips_messages_older_than_retention(enabled_history, tmp_path, monkeypatch):
     plugin = enabled_history
     await capture_live(plugin)

@@ -780,7 +780,7 @@ def _mode_json(
     ``source`` is ``stored`` (an owner set it), ``default`` (no stored mode), or
     ``disabled`` (transcription is off in Settings, so nothing is transcribed).
     ``effective_history`` and ``effective_dossier`` are "on" or "off" in effect for the chat
-    (Settings, the env scope, and the chat's own switches; see ``hermes telesec chat get``).
+    (Settings and the chat's own switches; see ``hermes telesec chat get``).
     """
     if not _transcription_enabled():
         effective, source = "off", "disabled"
@@ -788,7 +788,7 @@ def _mode_json(
         effective, source = entry.mode, "stored"
     else:
         effective, source = DEFAULT_MODE, "default"
-    history, dossier = scope.state(owner, chat, connection=extra.get("business_connection_id"))
+    history, dossier = scope.state(owner, chat)
     return {
         "owner": owner,
         "chat_id": chat,
@@ -804,11 +804,11 @@ def _mode_json(
     }
 
 
-def _chat_scope(snapshot: Snapshot) -> Any:
+def _chat_scope() -> Any:
     """chat_settings.ChatScope for ``effective_history``/``effective_dossier``: one history catalog read."""
     from . import chat_settings  # lazy: chat_settings imports this module
 
-    return chat_settings.cli_scope(snapshot.connections)
+    return chat_settings.cli_scope()
 
 
 def _transcription_enabled() -> bool:
@@ -858,7 +858,7 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
                 for chat_key, entry in sorted(snapshot.get(owner_key, {}).items(), key=lambda item: int(item[0]))
             ]
             if as_json:
-                scope = _chat_scope(snapshot)
+                scope = _chat_scope()
                 _print_json(
                     {
                         "default_mode": DEFAULT_MODE,
@@ -887,7 +887,7 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
             if as_json:
                 _print_json(
                     _mode_json(
-                        owner, chat, entry, scope=_chat_scope(snapshot), label=label, business_connection_id=connection
+                        owner, chat, entry, scope=_chat_scope(), label=label, business_connection_id=connection
                     )
                 )
                 return 0

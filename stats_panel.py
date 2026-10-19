@@ -288,8 +288,9 @@ def render_section(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
         chat_label=ctx.chat_label,
         period=ctx.arg,
         language_code=ctx.language_code,
-        # "Don't save" in this chat's panel (fails closed like capture).
-        history_paused=_chat_settings.default_store().is_off(ctx.owner_user_id, ctx.chat_id, "history"),
+        # "Don't save" in this chat's panel, or the old scope rule (fails closed like capture).
+        history_paused=_chat_settings.paused(ctx.business_connection_id, ctx.chat_id, "history",
+                                             owner=ctx.owner_user_id),
     )
     row = [(label, _owner_panel.section_callback(ctx.chat_id, SECTION_KEY, sub)) for label, sub in view.buttons]
     # The router sends ``html`` as a rich message, and ``text`` when Telegram rejects it.

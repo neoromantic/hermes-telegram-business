@@ -2128,12 +2128,23 @@ class _PanelOwner:
     cached: bool = False  # a negative result reused from _PANEL_NEGATIVE
 
 
+# History states of a chat that records nothing now, so its saved history may be erased (see chat_state).
+_ERASABLE_HISTORY = frozenset({"off", "scope", "settings"})
+
+
 @dataclass(frozen=True)
 class _PanelState:
     ctx: _owner_panel.PanelContext
     entry: Any
     store_label: str | None
     features: tuple[str, str] = _owner_panel.CHAT_DEFAULT_FEATURES  # (history, dossier), see chat_state
+    history_connections: tuple[str, ...] = ()  # the owner's connections with saved history for this chat
+
+    @property
+    def erasable(self) -> bool:
+        """The panel offers "Erase saved history": the chat has saved history and does not record now (Don't
+        save, the old scope rule, or history off in Settings)."""
+        return self.features[0] in _ERASABLE_HISTORY and bool(self.history_connections)
 
 
 def _panel_catalog() -> list[dict[str, Any]]:
@@ -2256,6 +2267,10 @@ def _panel_state(
             profile = item.get("current_profile")
             chat_type = item.get("chat_type")
             break
+    # The owner's connections the chat is captured through, else all of them: the old scope rule shows as
+    # keeping the chat out only when it does so on every one.
+    listed = {str(item.get("business_connection_id") or "") for item in catalog if str(item.get("chat_id")) == chat_id}
+    captured = tuple(c for c in owner.connections if c in listed or (c, chat_id) in _PANEL_SEEN_CHATS) or owner.connections
     if connection is None:
         # Only a connection this chat was seen on; never guess, so a section
         # cannot read or change another connection's data for this chat.
@@ -2267,11 +2282,12 @@ def _panel_state(
     store_label = _transcription_modes.build_chat_label(profile) if isinstance(profile, dict) else None
     label = (entry.label if entry is not None else None) or store_label
     try:
-        features = _chat_settings.chat_state(owner_id, chat_id, connection=connection, chat_type=chat_type,
-                                             owner_connections=owner.connections)
+        features = _chat_settings.chat_state(owner_id, chat_id, chat_type=chat_type, connections=captured)
     except Exception as exc:  # noqa: BLE001 - hide the rows rather than show a wrong state
         logger.warning("%s: chat settings state failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         features = ("unreadable", "no_history")
+    # Only the owner's verified connections: another owner's history of the same chat id is never offered.
+    history_connections = tuple(c for c in owner.connections if _history_support.has_saved_history(c, chat_id))
     ctx = _owner_panel.PanelContext(
         owner_user_id=owner_id,
         chat_id=chat_id,
@@ -2281,7 +2297,8 @@ def _panel_state(
         language_code=language_code,
         owner_connections=owner.connections,
     )
-    return _PanelState(ctx=ctx, entry=entry, store_label=store_label, features=features)
+    return _PanelState(ctx=ctx, entry=entry, store_label=store_label, features=features,
+                       history_connections=history_connections)
 
 
 def _settings_context(
@@ -2383,7 +2400,8 @@ async def _handle_owner_panel_update(update: Any, *, bot: Any) -> bool:
             _panel_state, owner, str(sender_id), str(chat_id), catalog, None, language_code
         )
         view = _owner_panel.render_main(
-            state.ctx, state.entry, _owner_panel.sections(), _voice_module_enabled(), features=state.features
+            state.ctx, state.entry, _owner_panel.sections(), _voice_module_enabled(), features=state.features,
+            erasable=state.erasable,
         )
         await bot.send_message(chat_id=private_chat_id, **_panel_message_kwargs(view))
         _log_panel("open", chat_id, state.entry.mode if state.entry is not None else None)
@@ -2502,8 +2520,10 @@ async def _apply_panel_flag(action: _owner_panel.PanelCallback, state: _PanelSta
         return refused, False
     on = value == "on"
     try:
+        # The owner's connections: history turned on over the old scope rule is stored as an explicit on.
         await asyncio.to_thread(
-            _chat_settings.default_store().set_flag, ctx.owner_user_id, ctx.chat_id, feature, on, via="chat"
+            _chat_settings.default_store().set_flag, ctx.owner_user_id, ctx.chat_id, feature, on, via="chat",
+            connections=ctx.owner_connections,
         )
     except (_chat_settings.ChatSettingsFileCorrupt, ValueError, OSError) as exc:
         logger.warning("%s: could not save chat setting (%s)", _PLUGIN_NAME, type(exc).__name__)
@@ -2515,6 +2535,47 @@ async def _apply_panel_flag(action: _owner_panel.PanelCallback, state: _PanelSta
         if not on:
             await asyncio.to_thread(_dossier_panel.stop_refresh, connection, ctx.chat_id)
     return _owner_panel.tr(f"{feature}.done.{value}", ctx.language_code), False
+
+
+def _saved_message_count(connections: tuple[str, ...], chat_id: str) -> int:
+    return sum(saved.messages for saved in (_history_support.saved_chat_history(c, chat_id) for c in connections)
+               if saved is not None)
+
+
+def _erase_chat(connections: tuple[str, ...], chat_id: str) -> None:
+    """Stop the chat's dossier refresh, then erase its saved history and forget its dossier. Blocking."""
+    for connection in connections:
+        _dossier_panel.stop_refresh(connection, chat_id)
+        _history_support.forget_chat(connection, chat_id)
+
+
+async def _panel_erase(
+    action: _owner_panel.PanelCallback, state: _PanelState
+) -> tuple[_owner_panel.PanelView | None, str | None, str | None]:
+    """"Erase saved history": the confirm view (``ERASE_ASK``) or the erase (``ERASE_DO``).
+
+    Returns (view, toast, notice); no view re-renders the main panel. Both refuse while the chat records
+    (history on) or its settings can't be read, and without saved history on one of the owner's verified
+    connections, so a stale or double tap erases nothing, and no other owner's history of the same chat id
+    is touched.
+    """
+    ctx = state.ctx
+    lang = ctx.language_code
+    if state.features[0] not in _ERASABLE_HISTORY:
+        refusal = "erase.needs_off" if state.features[0] == "on" else "erase.unreadable"
+        return None, _owner_panel.tr(refusal, lang), None
+    if not state.history_connections:
+        return None, _owner_panel.tr("erase.none", lang), None
+    if action.arg == _owner_panel.ERASE_ASK:
+        count = await asyncio.to_thread(_saved_message_count, state.history_connections, ctx.chat_id)
+        return _owner_panel.render_erase_confirm(ctx, count), None, None
+    try:
+        await asyncio.to_thread(_erase_chat, state.history_connections, ctx.chat_id)
+    except (OSError, ValueError) as exc:
+        logger.warning("%s: could not erase saved history (%s)", _PLUGIN_NAME, type(exc).__name__)
+        failed = _owner_panel.tr("erase.error", lang)
+        return None, failed, failed
+    return None, _owner_panel.tr("erase.done", lang), None
 
 
 async def _edit_panel_message(bot: Any, query: Any, view: _owner_panel.PanelView, fallback: Any = None) -> None:
@@ -2597,6 +2658,11 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
                 logger.warning("%s: could not save transcription mode (%s)", _PLUGIN_NAME, type(exc).__name__)
                 toast = notice = _owner_panel.tr("save_error", language_code)
         await _answer_panel_callback(bot, query, toast)
+    elif parsed.action == "f" and parsed.arg in _owner_panel.ERASE_ARGS:
+        view, toast, notice = await _panel_erase(parsed, state)
+        await _answer_panel_callback(bot, query, toast)
+        if view is None:
+            state = await asyncio.to_thread(_panel_state, owner, str(sender_id), chat_id, catalog, None, language_code)
     elif parsed.action == "f":
         toast, failed = await _apply_panel_flag(parsed, state)
         notice = toast if failed else None
@@ -2620,7 +2686,8 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
             fallback = _owner_panel.unavailable_view(chat_id, state.ctx.chat_label, language_code)
     if view is None:
         view = _owner_panel.render_main(
-            state.ctx, entry, _owner_panel.sections(), enabled, notice=notice, features=state.features
+            state.ctx, entry, _owner_panel.sections(), enabled, notice=notice, features=state.features,
+            erasable=state.erasable,
         )
     action_name = f"{parsed.action}:{parsed.arg}" if parsed.action in ("s", "f") else parsed.action
     _log_panel(action_name, chat_id, entry.mode if entry is not None else None)
@@ -3233,6 +3300,12 @@ def register(ctx: Any) -> None:
         _global_settings.warn_ignored_env(skip=moved)
     except Exception as exc:  # noqa: BLE001 - plugin load must stay available
         logger.warning("%s: settings migration failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+    try:
+        _chat_settings.warn_ignored_scope_env(skip=_chat_settings.migrate_history_scope())
+    except Exception as exc:  # noqa: BLE001 - plugin load must stay available
+        # Nothing stored, so the old scope variables keep applying in this process (fail closed).
+        logger.warning("%s: storing the old history scope failed (%s); retrying at the next start", _PLUGIN_NAME,
+                       type(exc).__name__)
     _llm_facade = getattr(ctx, "llm", None)
     _dossier_support.bind_llm(_llm_facade)
     ctx.register_telegram_handler(_register_telegram_handlers)

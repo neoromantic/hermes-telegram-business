@@ -73,6 +73,9 @@ def isolate_plugin_environment(monkeypatch: pytest.MonkeyPatch):
         "TELESEC_DISABLE",
         "TELESEC_HISTORY_ENABLE",
         "TELESEC_HISTORY_RETENTION_DAYS",
+        "TELESEC_HISTORY_CONNECTIONS",
+        "TELESEC_HISTORY_CHATS",
+        "TELESEC_HISTORY_CHAT_TYPES",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -330,7 +333,8 @@ def test_history_skill_documents_runtime_scheduler_and_defaults():
     assert "Update.ALL_TYPES" in skill
     assert "`source`" in skill
     assert "`classification_reason`" in skill
-    assert "TELESEC_HISTORY_CHAT_TYPES" in skill
+    assert "stores them as the old server scope rule (`legacy_scope` in `chat-settings.json`); never suggest them" in skill
+    assert "hermes telesec chat scope clear --yes" in skill
     assert "private Business chats only" in skill
     assert "contacts.json" in skill
     assert "TELESEC_HISTORY_NEARBY_BEFORE_SECONDS" in skill
@@ -338,7 +342,8 @@ def test_history_skill_documents_runtime_scheduler_and_defaults():
     assert "settings set retention <forever|365|90|30|N>" in skill
     assert "1073741824" in skill
     assert "does not depend on `maintain`" in skill
-    assert "No record-level or right-to-erasure command ships in v1." in skill
+    assert "There is no command to erase single messages." in skill
+    assert "run them only when the owner explicitly asks, show the dry run first" in skill
     assert "active month is preserved" in skill
 
 

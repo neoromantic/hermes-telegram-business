@@ -318,7 +318,15 @@ def run_import(path: Path, *, chat: str, connection: str | None = None, dry_run:
         raise ValueError("history is off in Settings; turn on Save history first")
     messages = load_export(path, chat_id)
     business_connection_id, has_history = _resolve_connection(chat_id, connection)
-    if _chat_settings.paused(business_connection_id, chat_id, "history"):
+    reason = _chat_settings.pause_reason(business_connection_id, chat_id, "history",
+                                         owner=_chat_settings.cli_owner(business_connection_id, chat_id))
+    if reason == "scope":
+        raise ValueError(f"the old history scope rule keeps chat {chat_id} out of history; turn history on for it "
+                         f"first: 'hermes telesec chat set {chat_id} --history on'")
+    if reason == "unreadable":
+        raise ValueError("chat settings can't be read, so history is paused for every chat; see "
+                         "'hermes telesec chat list'")
+    if reason is not None:
         raise ValueError(f"chat {chat_id} is set to Don't save; turn Save history on for it first")
     owner_id = export_owner(messages, chat_id, _chat_settings.known_owner(business_connection_id))
     current = now or datetime.now(UTC)
