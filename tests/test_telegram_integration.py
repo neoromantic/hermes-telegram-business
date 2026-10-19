@@ -69,9 +69,13 @@ async def telegram_app():
 @pytest.mark.parametrize("authorized,bypass,claimed", [
     (True, False, True), (False, False, False), (False, True, True),
 ])
-async def test_native_business_media_dispatch(plugin, telegram_app, monkeypatch, media, authorized, bypass, claimed):
+@pytest.mark.parametrize("agent_enabled", [False, True])
+async def test_native_business_media_dispatch(
+    plugin, telegram_app, monkeypatch, media, authorized, bypass, claimed, agent_enabled,
+):
     app, _request = telegram_app
     monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH", str(int(bypass)))
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE", str(int(agent_enabled)))
     observe = AsyncMock(return_value=False)
     process = AsyncMock()
     monkeypatch.setattr(plugin._history_support, "observe_ptb_update", observe)
@@ -98,15 +102,21 @@ async def test_native_business_media_dispatch(plugin, telegram_app, monkeypatch,
     assert observe.await_count == 2
     observe.assert_awaited_with(update, bot=app.bot)
     assert process.await_count == int(claimed)
-    assert core.await_count == 2 * int(not claimed)
+    assert core.await_count == 2 * int(agent_enabled and not claimed)
     if claimed:
         assert process.call_args.kwargs["event"].raw_message is update.effective_message
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("history_fails", [False, True])
-async def test_native_history_precedes_core_without_consuming_text(plugin, telegram_app, monkeypatch, history_fails):
+@pytest.mark.parametrize("agent_enabled", [False, True])
+@pytest.mark.parametrize("kind", ["business_message", "edited_business_message", "deleted_business_messages"])
+@pytest.mark.parametrize("sender_id", [1000, 2000])
+async def test_native_business_updates_stop_after_history(
+    plugin, telegram_app, monkeypatch, history_fails, agent_enabled, kind, sender_id,
+):
     app, _request = telegram_app
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE", str(int(agent_enabled)))
     calls = []
 
     async def observe(update, *, bot):
@@ -121,14 +131,21 @@ async def test_native_history_precedes_core_without_consuming_text(plugin, teleg
     adapter = SimpleNamespace(platform="telegram", _bot=app.bot)
     plugin._register_telegram_handlers(app, adapter)
     app.add_handler(TypeHandler(Update, core))
-    update = Update.de_json({"update_id": 42, "business_message": {
+    payload = {
         "message_id": 77, "date": 1, "business_connection_id": "business-123",
         "chat": {"id": 991, "type": "private"}, "text": "Hello",
-    }}, app.bot)
+        "from": {"id": sender_id, "is_bot": False, "first_name": "Speaker"},
+    }
+    if kind == "deleted_business_messages":
+        payload = {"business_connection_id": "business-123", "chat": payload["chat"], "message_ids": [77]}
+    update = Update.de_json({"update_id": 42, kind: payload}, app.bot)
 
     await app.process_update(update)
 
-    assert calls == ["history", "core"]
+    expected = ["history"]
+    if agent_enabled:
+        expected.append("core")
+    assert calls == expected
 
 
 @pytest.mark.asyncio
@@ -166,7 +183,8 @@ async def test_native_history_persists_real_ptb_updates_and_leaves_bot_chats_alo
         ]
         assert [record["text"] for record in records[:2]] == ["First text", "Edited text"]
         assert all(record["direction"] == "inbound" for record in records)
-        assert core.await_count == 4
+        core.assert_awaited_once()
+        assert core.call_args.args[0].message.message_id == 88
     finally:
         plugin._history_support.reset_in_memory_caches()
 
@@ -235,6 +253,24 @@ def _edited_text_result(text):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", [
+    {"text": "Hello"},
+    {"voice": {"file_id": "v", "file_unique_id": "v", "duration": 3}},
+    {"document": {"file_id": "d", "file_unique_id": "d", "file_name": "notes.pdf"}},
+    {"video": {"file_id": "v", "file_unique_id": "v", "width": 100, "height": 100, "duration": 3}},
+])
+async def test_disabled_transcription_still_consumes_business_updates(plugin, telegram_app, monkeypatch, content):
+    app, request = telegram_app
+    monkeypatch.setenv("TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE", "1")
+    core = _register_native(plugin, app)
+
+    await app.process_update(_business_update(app, sender_id=2000, **content))
+
+    core.assert_not_awaited()
+    assert [method for method, _params in request.calls] == ["getMe"]
+
+
+@pytest.mark.asyncio
 async def test_real_ptb_off_chat_claims_voice_without_download_or_reply(plugin, telegram_app):
     app, request = telegram_app
     plugin._transcription_modes.default_store().set_mode("1000", "991", "off", via="cli")
@@ -281,7 +317,7 @@ async def test_real_ptb_contact_command_is_ordinary_text(plugin, telegram_app):
 
     await app.process_update(_business_update(app, sender_id=2000, text="/transcribe off"))
 
-    assert core.await_count == 1
+    core.assert_not_awaited()
     assert "editMessageText" not in [method for method, _params in request.calls]
     assert not plugin._transcription_modes.modes_path().exists()
 
