@@ -31,11 +31,12 @@ Three switches cover all chats: transcription (on by default), history (off by d
 ```text
 Telesec settings · all chats
 One chat: Manage Bot in that chat.
+Keep history: forever
 Dossier model: gemini / gemini-3.8-flash
 Voice cleanup: gemini / gemini-3.8-flash
 [• Transcribe] [Don't transcribe]
 [Save history] [• Don't save]
-[• Keep: forever] [1 year] [90 days] [30 days]
+[• Forever] [1 year] [90 days] [30 days]
 [Keep dossiers] [• No dossiers]
 ```
 
@@ -54,7 +55,7 @@ hermes telesec settings set retention forever
 
 A change applies to the next update; no restart is needed. To turn history or the dossier off for one chat, use that chat's [owner panel](#per-chat-history-and-dossier); `hermes telesec settings` also counts such chats. Turning dossiers on asks first and names the model that will receive chat text. Dossiers are built from history, so while history is off they are paused, and Settings says so. Settings speaks Russian when your Telegram app is set to Russian (`Настройки Telesec`).
 
-**Keep** sets how long saved history is kept: forever, 1 year, 90 days, or 30 days. A shorter time asks first; a longer one applies at once. History is deleted a whole month at a time: once all of a month is older than the chosen time, the next hourly cleanup deletes it, so the current month always stays. The row stays while history is off, because cleanup keeps running. In the terminal, `hermes telesec settings set retention N` sets any number of days, and Settings shows such a value as its own button (for example `• 45 days`) until you pick another. See [retention and removal](docs/HISTORY.md#retention-and-removal).
+The **Forever · 1 year · 90 days · 30 days** row sets how long saved history is kept, and the `Keep history:` line shows the value in effect. A shorter time asks first; a longer one applies at once. History is deleted a whole month at a time: once all of a month is older than the chosen time, the next cleanup deletes it, so the current month always stays. Cleanup runs when the gateway starts, when a `hermes` command loads Telesec (such as `hermes telesec settings`), and at most hourly while Business messages arrive. The row stays while history is off, because cleanup keeps running. In the terminal, `hermes telesec settings set retention N` sets any number of days, and Settings shows such a value as its own button (for example `• 45 days`) until you pick another. See [retention and removal](docs/HISTORY.md#retention-and-removal).
 
 The last lines show the model that builds dossiers and the model that cleans up voice transcripts (or `off`), as configured. They are read-only: change models in the [configuration](#configuration).
 
@@ -74,7 +75,7 @@ platforms:
 
 **Upgrade from 0.11.0 or earlier.** `TELESEC_DISABLE`, `TELESEC_HISTORY_ENABLE`, and the Desktop `history_enable` setting are no longer read. On the first start each value that differs from the default (transcription off, history on) is stored once in Settings, and the gateway log says so. The variable still wins over the Desktop setting, as before, so a `TELESEC_HISTORY_ENABLE=0` that overrides a Desktop `history_enable` is stored as history off. A stored choice is never overwritten. A CLI run without the gateway's environment can store only the Desktop setting's value. After that a leftover variable only causes one log warning per start; remove it once you no longer plan to go back to 0.11.0 or older, which read only the variables and the Desktop setting. No manual step is needed: a gateway with history on keeps it on, transcription stays as it was, and dossiers keep their 0.11.0 switch.
 
-**Upgrade from 0.12.** `TELESEC_HISTORY_RETENTION_DAYS` is no longer read. On the first start a value other than `0` is stored once as the retention in Settings (`via migration`), and the gateway log says so; a stored choice is never overwritten. After that a leftover variable only causes one log warning per start. Telesec 0.12 ignores the stored retention, so after going back to it the variable applies again; remove it once you no longer plan to.
+**Upgrade from 0.12.** `TELESEC_HISTORY_RETENTION_DAYS` is no longer read. On the first start a value other than `0` is stored once as the retention in Settings (`via migration`), and the gateway log says so; a stored choice is never overwritten. A `hermes telesec settings set` that creates a new `settings.json` or replaces a corrupt one stores retention as forever, so the variable is not moved in after that; choose the time in Settings. Remove the variable after the upgrade: while it is set, each start logs a warning, and if `settings.json` is deleted, the next start moves it in again. Telesec 0.12 ignores the stored retention, so after going back to it the variable applies again.
 
 ## Per-chat transcription modes
 

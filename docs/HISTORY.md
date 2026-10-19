@@ -108,7 +108,7 @@ These are observable text-similarity categories, not judgments about a person's 
 | `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | Pre-delete replacement window, in seconds. |
 | `TELESEC_HISTORY_MAX_BYTES` | `1073741824` | Disk-safety limit for operators: above this total size the oldest closed months are pruned, whatever the retention in Settings. |
 
-Retention is not a variable: it is set in [Settings](#retention-and-removal). `TELESEC_HISTORY_RETENTION_DAYS` is no longer read; on the first start a value other than `0` is stored once as the retention and the gateway log says so.
+Retention is not a variable: it is set in [Settings](#retention-and-removal). `TELESEC_HISTORY_RETENTION_DAYS` is no longer read; on the first start a value other than `0` is stored once as the retention and the gateway log says so. A `settings set` that creates or repairs `settings.json` stores retention as forever, so the variable is not moved in after that.
 
 Unknown chat types are excluded unless an exact chat ID or earlier canonical profile evidence establishes eligibility. No member-count requests run on capture.
 
@@ -141,7 +141,7 @@ Read commands do not repair canonical files. `verify --repair-tails` explicitly 
 
 Telegram-side deletion does **not** erase the archive. The archive deliberately preserves the earlier text to make deletion inspection possible.
 
-History is kept forever by default. To keep less, tap **Keep** in [Settings](../README.md#settings) (`/telesec` in your private chat with the bot): forever, 1 year, 90 days, or 30 days. A shorter time asks first; a longer one applies at once. From the terminal:
+History is kept forever by default. To keep less, use the **Forever · 1 year · 90 days · 30 days** row in [Settings](../README.md#settings) (`/telesec` in your private chat with the bot). A shorter time asks first; a longer one applies at once. From the terminal:
 
 ```bash
 hermes telesec settings set retention 90
@@ -149,7 +149,7 @@ hermes telesec settings set retention forever
 hermes telesec settings --format json   # retention.days, 0 is forever
 ```
 
-`settings set retention N` takes any number of days from 0 to 36500. The value is stored in `settings.json` and read by every maintenance run, so a change needs no restart. Maintenance runs at gateway start and then at most once an hour, when a Business update arrives, also while history is off.
+`settings set retention N` takes any number of days from 0 to 36500. The value is stored in `settings.json` and read by every maintenance run, so a change needs no restart. Maintenance (the cleanup) runs when the gateway starts, when any `hermes` command loads Telesec (such as `hermes telesec history show`), and at most once an hour when a Business update arrives, also while history is off. So a shorter retention can delete months at the next `hermes telesec` command, not only in the gateway.
 
 Automatic retention and size pruning remove whole closed monthly partitions. Partitions follow observation time. A month is deleted once all of it is older than the retention: with 30 days, September goes at the first cleanup on or after October 31. The current month and partitions needed for pending deletion classification are preserved, so neither retention nor `TELESEC_HISTORY_MAX_BYTES` is a hard storage ceiling. The contact catalog is rebuilt from retained evidence after pruning.
 

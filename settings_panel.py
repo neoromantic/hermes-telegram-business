@@ -40,7 +40,6 @@ _FEATURES = {"t": "transcription", "h": "history", "d": "dossiers"}
 _RETENTION_ARG_RE = re.compile(r"^r\.(\d{1,5})(\.yes)?\Z")
 CURRENT_MARK = "• "
 MODEL_NAME_MAX = 120
-_URL_CREDENTIALS_RE = re.compile(r"(?<=://)[^/?#@\s]*@")
 
 STRINGS = {
     "en": {
@@ -70,15 +69,15 @@ STRINGS = {
         "settings.state.off": "off",
         "settings.read_only": "Only the owner of every connected account can change these.",
         "settings.retention.forever": "forever",
+        "settings.retention.forever_button": "Forever",
         "settings.retention.year": "1 year",
         "settings.retention.day": "{days} day",
         "settings.retention.few": "{days} days",
         "settings.retention.days": "{days} days",
-        "settings.retention.row": "Keep: {value}",
         "settings.status.retention": "Keep history: {value}",
         "settings.retention.ask": "Keep {value}?",
         "settings.retention.explain": ("Saved messages are deleted a whole month at a time: a month is deleted at "
-                                       "the next hourly cleanup once all of it is older than that."),
+                                       "the next cleanup once all of it is older than that."),
         "settings.retention.yes": "Keep {value}",
         "settings.retention.cancel": "Cancel",
         "settings.retention.done": "History is kept {value}.",
@@ -111,15 +110,15 @@ STRINGS = {
         "settings.state.off": "выкл",
         "settings.read_only": "Менять их может только владелец всех подключённых аккаунтов.",
         "settings.retention.forever": "всегда",
+        "settings.retention.forever_button": "Всегда",
         "settings.retention.year": "1 год",
         "settings.retention.day": "{days} день",
         "settings.retention.few": "{days} дня",
         "settings.retention.days": "{days} дней",
-        "settings.retention.row": "Хранить: {value}",
         "settings.status.retention": "Хранить историю: {value}",
         "settings.retention.ask": "Хранить {value}?",
         "settings.retention.explain": ("Сохранённые сообщения удаляются целыми месяцами: месяц удаляется при "
-                                       "ближайшей ежечасной очистке, когда весь он старше этого срока."),
+                                       "ближайшей очистке, когда весь он старше этого срока."),
         "settings.retention.yes": "Хранить {value}",
         "settings.retention.cancel": "Отмена",
         "settings.retention.done": "История хранится {value}.",
@@ -158,10 +157,23 @@ def _retention_value(ctx: _owner_panel.PanelContext, days: int) -> str:
     return _tr(f"settings.retention.{key}", ctx, days=days)
 
 
+def _without_credentials(value: str) -> str:
+    """``value`` without user info (up to the last "@", so an "@" in a password is covered), query or fragment.
+
+    With a scheme any "@" ends user info; without one only "name:secret@", so "model@version" stays.
+    """
+    scheme, sep, rest = value.strip().partition("://")
+    if not sep:
+        scheme, rest = "", scheme
+    userinfo, at, host = rest.rpartition("@")
+    if at and (sep or ":" in userinfo):
+        rest = host
+    return re.split(r"[?#]", scheme + sep + rest, maxsplit=1)[0].strip()
+
+
 def _model_name(provider: str, model: str) -> str:
     """``provider / model`` as configured, without URL credentials, queries or fragments."""
-    parts = [_URL_CREDENTIALS_RE.sub("", re.split(r"[?#]", str(part), maxsplit=1)[0]).strip()
-             for part in (provider, model)]
+    parts = [_without_credentials(str(part)) for part in (provider, model)]
     return _ds.clip(" / ".join(part for part in parts if part) or "?", MODEL_NAME_MAX)
 
 
@@ -219,8 +231,8 @@ def _retention_row(ctx: _owner_panel.PanelContext, current: int) -> list[tuple[s
     choices = sorted({*_settings.RETENTION_CHOICES, current}, key=lambda days: -days if days else float("-inf"))
     row = []
     for days in choices:
-        value = _retention_value(ctx, days)
-        label = _tr("settings.retention.row", ctx, value=value) if days == 0 else value
+        # Short labels, like the stats periods: four or five buttons share one row on a phone.
+        label = _tr("settings.retention.forever_button", ctx) if days == 0 else _retention_value(ctx, days)
         row.append(((CURRENT_MARK if days == current else "") + label, _callback(ctx, f"r.{days}")))
     return row
 
@@ -243,15 +255,17 @@ def _main_view(ctx: _owner_panel.PanelContext, manager: bool, notice: str | None
         lines.append(_tr("settings.one_chat", ctx))
     if current["dossiers"] and not current["history"]:
         lines.append(_tr("settings.paused", ctx))
+    keep = _tr("settings.status.retention", ctx, value=_retention_value(ctx, retention))
     if not manager:
         for feature in _settings.FEATURES:
             state = _tr(f"settings.state.{'on' if current[feature] else 'off'}", ctx)
             lines.append(_tr(f"settings.status.{feature}", ctx, state=state))
             if feature == "history":
-                lines.append(_tr("settings.status.retention", ctx, value=_retention_value(ctx, retention)))
+                lines.append(keep)
         lines += _model_lines(ctx)
         lines.append(_tr("settings.read_only", ctx))
         return _owner_panel.PanelView(text="\n".join(lines))
+    lines.append(keep)  # the value in effect stays readable when a narrow screen cuts the buttons
     lines += _model_lines(ctx)
     buttons = [
         _choice_row(ctx, "transcription", current["transcription"], "t.on"),

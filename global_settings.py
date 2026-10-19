@@ -270,6 +270,10 @@ def set_enabled(feature: str, on: bool, *, via: str, now: datetime | None = None
     Idempotent like the dossier switch: a stored value that already matches keeps its time and
     source. Returns the stored item plus "changed" and "backup_path" (a repaired corrupt file).
     Gateway callers wake the dossier worker after a dossier or history change.
+
+    A write that starts a new file (missing, empty or repaired) also stores retention as forever, so a
+    leftover ``TELESEC_HISTORY_RETENTION_DAYS`` is never moved in again after a reset and cannot delete
+    months the owner chose to keep. Only ``migrate_legacy`` creates a file without it.
     """
     _check_feature(feature)
     if via not in UPDATED_VIA:
@@ -282,7 +286,10 @@ def set_enabled(feature: str, on: bool, *, via: str, now: datetime | None = None
         current = payload.get(feature)
         if isinstance(current, dict) and current["enabled"] is bool(on):
             return {**current, "changed": False, "backup_path": None}
-        item = {"enabled": bool(on), "updated_at": _modes._format_timestamp(now), "updated_via": via}
+        stamp = _modes._format_timestamp(now)
+        if not payload:
+            payload = {RETENTION: {"days": DEFAULT_RETENTION_DAYS, "updated_at": stamp, "updated_via": via}}
+        item = {"enabled": bool(on), "updated_at": stamp, "updated_via": via}
         _modes._write_private_json_atomic(path, {**payload, "schema_version": SCHEMA_VERSION, feature: item})
     logger.info("%s: %s switched enabled=%s via=%s", _history.PLUGIN_NAME, feature, bool(on), via)
     return {**item, "changed": True, "backup_path": backup}
@@ -514,9 +521,10 @@ def _set_retention(raw: str) -> int:
         print(f"warning: corrupt {SETTINGS_FILENAME} backed up to {result['backup_path']}")
     print(f"retention: {retention_text(days)}" + ("" if result["changed"] else " (unchanged)"))
     if days:
-        print(f"Saved history is deleted a whole month at a time: a month goes at the next hourly cleanup once all "
-              f"of it is older than {retention_text(days)}.")
-    print("The gateway applies it to the next cleanup; no restart is needed.")
+        print(f"Saved history is deleted a whole month at a time: a month goes at the next cleanup once all of it is "
+              f"older than {retention_text(days)}.")
+    print("Cleanup runs when the gateway starts, when a hermes command loads Telesec, and at most hourly while "
+          "messages arrive; no restart is needed.")
     return 0
 
 
