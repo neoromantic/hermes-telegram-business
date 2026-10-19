@@ -46,8 +46,8 @@ HEAT = ("·", "🟨", "🟧", "🟥")  # zero, then thirds of the largest value 
 YEARS_PER_TABLE = 8
 NONE = "–"  # a value that is not known, e.g. a reply time without replies
 ELLIPSIS = "…"
-LRM = "‎"  # left-to-right mark: zero width, a strong left-to-right character
-_ZWJ = "‍"
+LRM = "\u200e"  # left-to-right mark: zero width, a strong left-to-right character
+_ZWJ = "\u200d"
 # Bidi classes that lay text out right to left in a left-to-right line.
 _RTL_CLASSES = frozenset({"R", "AL", "AN"})
 _EMPTY_CELL = "<td></td>"
