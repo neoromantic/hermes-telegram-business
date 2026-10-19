@@ -11,7 +11,7 @@ The image uses synthetic data captured through the real history module and queri
 Add this to the active Hermes profile's `.env`, then run `hermes gateway restart`:
 
 ```dotenv
-HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1
+TELESEC_HISTORY_ENABLE=1
 ```
 
 By default, capture includes private chats Telegram delivers through the bot's Business connections. Connection and chat filters are optional. Your own chat with the bot (where the owner panel and your agent chat live) is never captured: Telegram also delivers it as Business updates, but it is not a Business chat. The plugin knows it by the bot's id (from the running bot, or from the digits before `:` in `TELEGRAM_BOT_TOKEN`), and readers (history, stats, dossiers, the panel) also skip such a chat if an older version captured it. Groups, supergroups, and channels require explicit configuration. The plugin does not retrieve conversations from before capture started.
@@ -21,11 +21,11 @@ Text, edits, deletions, reply relationships, sender/direction, and available con
 ## Find a conversation
 
 ```bash
-hermes telegram-business history contacts --search alice --limit 20
-hermes telegram-business history show --contact @alice --since 7d --limit 100
-hermes telegram-business history search --contact @alice --text estimate --since 30d --limit 100
-hermes telegram-business history search --text estimate --since 7d --limit 100
-hermes telegram-business history export --contact @alice --format jsonl --limit 200
+hermes telesec history contacts --search alice --limit 20
+hermes telesec history show --contact @alice --since 7d --limit 100
+hermes telesec history search --contact @alice --text estimate --since 30d --limit 100
+hermes telesec history search --text estimate --since 7d --limit 100
+hermes telesec history export --contact @alice --format jsonl --limit 200
 ```
 
 `show`, `search`, and `export` accept either `--contact` or numeric `--chat`; `--connection` disambiguates Business accounts. Duplicate contact names require an explicit choice. Observed names and usernames remain aliases when a contact changes their profile.
@@ -37,7 +37,7 @@ The bundled `history` skill gives Hermes the same bounded contact-first recipes.
 ## Edits and deletions
 
 ```bash
-hermes telegram-business history deletions --status unexplained --limit 20
+hermes telesec history deletions --status unexplained --limit 20
 ```
 
 Edits append the full updated text. Deletions append a tombstone while preserving earlier text. After the correction window, a deterministic classification is appended:
@@ -55,22 +55,22 @@ These are observable text-similarity categories, not judgments about a person's 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE` | false | Enable capture. |
-| `HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS` | unset | Optional comma-separated connection filter or `*`. |
-| `HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS` | unset | Optional exact chat filter or `*`; exact IDs can opt in a chat outside the default types. |
-| `HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES` | `private` | Eligible chat types; explicitly add `group`, `supergroup`, or `channel`. |
-| `HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW` | `120` | Post-delete replacement window and classification delay, in seconds. |
-| `HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | Pre-delete replacement window, in seconds. |
-| `HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS` | `0` | Closed-partition retention target; `0` disables age pruning. |
-| `HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES` | `1073741824` | Total storage target before pruning old closed partitions. |
-| `HERMES_TELEGRAM_BUSINESS_TIMEZONE` | UTC | Default `--tz` for [correspondence stats](STATS.md); it does not affect capture. |
+| `TELESEC_HISTORY_ENABLE` | false | Enable capture. |
+| `TELESEC_HISTORY_CONNECTIONS` | unset | Optional comma-separated connection filter or `*`. |
+| `TELESEC_HISTORY_CHATS` | unset | Optional exact chat filter or `*`; exact IDs can opt in a chat outside the default types. |
+| `TELESEC_HISTORY_CHAT_TYPES` | `private` | Eligible chat types; explicitly add `group`, `supergroup`, or `channel`. |
+| `TELESEC_HISTORY_CORRECTION_WINDOW` | `120` | Post-delete replacement window and classification delay, in seconds. |
+| `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | Pre-delete replacement window, in seconds. |
+| `TELESEC_HISTORY_RETENTION_DAYS` | `0` | Closed-partition retention target; `0` disables age pruning. |
+| `TELESEC_HISTORY_MAX_BYTES` | `1073741824` | Total storage target before pruning old closed partitions. |
+| `TELESEC_TIMEZONE` | UTC | Default `--tz` for [correspondence stats](STATS.md); it does not affect capture. |
 
 Unknown chat types are excluded unless an exact chat ID or earlier canonical profile evidence establishes eligibility. No member-count requests run on capture.
 
 ## Storage and recovery
 
 ```text
-$HERMES_HOME/data/telegram-business/history/
+$HERMES_HOME/data/telesec/history/
   <connection-key>/<chat-id>/YYYY-MM.jsonl
   contacts.json
 ```
@@ -78,15 +78,15 @@ $HERMES_HOME/data/telegram-business/history/
 JSONL is canonical. Events have durable identities and are appended under a lock with `fsync`; retries do not append the same event twice. The contact catalog is a small derived directory, not a second message database. Monthly partitions follow observation time. Contact queries select the relevant conversation and date partitions before streaming records.
 
 ```bash
-hermes telegram-business history stats
-hermes telegram-business history catalog
-hermes telegram-business history catalog --rebuild
-hermes telegram-business history verify
-hermes telegram-business history verify --repair-tails
-hermes telegram-business history maintain
+hermes telesec history stats
+hermes telesec history catalog
+hermes telesec history catalog --rebuild
+hermes telesec history verify
+hermes telesec history verify --repair-tails
+hermes telesec history maintain
 ```
 
-`history stats` shows storage stats: records, bytes, and settings. For correspondence stats per contact (text messages received and sent, active days, sessions, and deletions by Telegram send time), use `hermes telegram-business stats`. See [Correspondence stats](STATS.md).
+`history stats` shows storage stats: records, bytes, and settings. For correspondence stats per contact (text messages received and sent, active days, sessions, and deletions by Telegram send time), use `hermes telesec stats`. See [Correspondence stats](STATS.md).
 
 Read commands do not repair canonical files. `verify --repair-tails` explicitly repairs a torn final line; invalid interior records need investigation. Startup recovery and maintenance operate on persisted history, and the catalog can be rebuilt from retained JSONL. Query results and verification diagnostics are bounded. Human-readable output escapes terminal control characters; JSONL export retains raw text.
 
@@ -96,7 +96,7 @@ Telegram-side deletion does **not** erase the archive. The archive deliberately 
 
 Automatic retention and size pruning remove whole closed monthly partitions. The current month and partitions needed for pending deletion classification are preserved, so a configured target is not a hard storage ceiling. The contact catalog is rebuilt from retained evidence after pruning.
 
-No record-level erasure command ships in this version. To remove an entire local archive, disable capture, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history does not remove dossiers; use `hermes telegram-business dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
+No record-level erasure command ships in this version. To remove an entire local archive, disable capture, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history does not remove dossiers; use `hermes telesec dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
 
 ## Runtime boundary
 

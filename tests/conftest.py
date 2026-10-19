@@ -18,11 +18,11 @@ import dossier_helpers
 import pytest
 import test_history
 
-DOSSIER_ENV_PREFIX = "HERMES_TELEGRAM_BUSINESS_DOSSIER_"
+DOSSIER_ENV_PREFIX = "TELESEC_DOSSIER_"
 CLEANUP_ENV = (
-    "TG_BUSINESS_VOICE_CLEANUP_PROVIDER",
-    "TG_BUSINESS_VOICE_CLEANUP_MODEL",
-    "TG_BUSINESS_VOICE_CLEANUP_TIMEOUT",
+    "TELESEC_CLEANUP_PROVIDER",
+    "TELESEC_CLEANUP_MODEL",
+    "TELESEC_CLEANUP_TIMEOUT",
 )
 
 
@@ -52,7 +52,7 @@ def dossier_env(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
     """Clear every dossier env var and the cleanup provider/model/timeout vars.
 
     Returns ``set_env(**values)``: ``set_env(ENABLE=1, BACKFILL_MESSAGES=10)`` sets
-    ``HERMES_TELEGRAM_BUSINESS_DOSSIER_<NAME>``; a value of None unsets it.
+    ``TELESEC_DOSSIER_<NAME>``; a value of None unsets it.
     """
     for name in list(os.environ):
         if name.startswith(DOSSIER_ENV_PREFIX):
@@ -78,8 +78,8 @@ def dossier_history(
     dossier_env: Callable[..., None],
 ) -> ModuleType:
     """The plugin with history capture on (like ``test_history.enabled_history``) and dossiers off."""
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     dossier_plugin._history_support.reset_in_memory_caches()
     return dossier_plugin
 
@@ -90,7 +90,7 @@ def dossiers(
     dossier_history: ModuleType,
     dossier_env: Callable[..., None],
 ) -> Iterator[ModuleType]:
-    """History on, ``HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1``; yields this plugin's ``dossier_support``.
+    """History on, ``TELESEC_DOSSIER_ENABLE=1``; yields this plugin's ``dossier_support``.
 
     ``INITIAL_DELAY_SECONDS`` is 3600, so a started worker never runs a cycle unless the
     test lowers it. Teardown stops workers, checks that no worker thread survived, and

@@ -172,7 +172,7 @@ async def test_run_cli_refuses_when_disabled(dossier_history: ModuleType, monkey
         ds.bind_llm(None)
     assert code == 1
     assert "dossiers are disabled" in out + err
-    assert "HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1" in out + err
+    assert "TELESEC_DOSSIER_ENABLE=1" in out + err
     assert fake.calls == []
     assert not ds.dossier_root().exists()  # no lock file was created
 
@@ -448,7 +448,7 @@ async def test_qualification_requires_received_and_sent_in_window(plug: ModuleTy
 @pytest.mark.asyncio
 async def test_groups_never_processed(plug: ModuleType, dossiers: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     ds = dossiers
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES", "private,group")
+    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", "private,group")
     plug._history_support.reset_in_memory_caches()
     await seed(plug, -5516, None, [
         (1, "in", "GROUP-SECRET question", 60),
@@ -1105,9 +1105,9 @@ async def test_capture_is_llm_free_with_dossier_enabled_and_history_separate(
     fake = FakeLlm(quote_first)
     ds.bind_llm(fake)
     connect_gateway(plug)  # the worker exists, but its first cycle is an hour away
-    monkeypatch.delenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE")
+    monkeypatch.delenv("TELESEC_HISTORY_ENABLE")
     assert await seed(plug, 5552, "capture", [(1, "in", "CAPTURE off", 10)], check=False) == [False]
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     await two_sided(plug, 5552, "CAPTURE", minutes=8, first_id=2)
     assert fake.calls == []
     assert ds.list_dossiers() == [] and not (ds.dossier_root() / "chats").exists()
@@ -1216,14 +1216,14 @@ async def test_dossier_subcommand_coexists_with_history_cli(plug: ModuleType, do
 
     code, out, _err = cli(plug, "dossier")
     assert code == 1
-    assert out.startswith("Usage: hermes telegram-business dossier <")
+    assert out.startswith("Usage: hermes telesec dossier <")
     for command in ("status", "list", "show", "preview", "correct", "pin", "unpin", "remove", "note", "changes",
                     "export", "forget", "run"):
         assert command in out.splitlines()[0]
 
     code, out, _err = cli(plug, "history")
     assert code == 1
-    assert out == ("Usage: hermes telegram-business history "
+    assert out == ("Usage: hermes telesec history "
                    "<chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>\n")
 
     code, _out, _err = cli(plug, "dossier", "no-such-command")

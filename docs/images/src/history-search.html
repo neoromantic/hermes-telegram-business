@@ -1,6 +1,6 @@
 <!doctype html>
 <!-- Real CLI output from synthetic Business events; no real contacts or credentials. Render at1440x740. -->
-<html lang="en"><head><meta charset="utf-8"><title>Hermes Telegram Business — history search</title>
+<html lang="en"><head><meta charset="utf-8"><title>Telesec — history search</title>
 <style>
 * { box-sizing: border-box; }
 body { margin:0; width:1440px; height:740px; background:#f1eee7; color:#242d2c; font-family:-apple-system,BlinkMacSystemFont,sans-serif; padding:55px 60px; }
@@ -16,13 +16,13 @@ p { font-size:21px; color:#626a65; margin:0 0 32px; }
 pre { padding:26px 30px 30px; margin:0; font:17px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
 footer { display:flex; justify-content:space-between; font-size:15px; color:#7d7d70; margin-top:26px; }
 </style></head><body>
-<header><div class="brand">Hermes Telegram Business</div><div class="badge">Implemented · Synthetic CLI capture</div></header>
+<header><div class="brand">Telesec</div><div class="badge">Implemented · Synthetic CLI capture</div></header>
 <h1>Find the conversation. Keep the evidence.</h1>
 <p>Contact lookup and bounded text search from the canonical history log. No LLM required.</p>
-<section class="terminal"><div class="bar"><i class="dot"></i><i class="dot"></i><i class="dot"></i><span class="title">hermes telegram-business history</span></div><pre>$ hermes telegram-business history contacts --search maya --limit 5
+<section class="terminal"><div class="bar"><i class="dot"></i><i class="dot"></i><i class="dot"></i><span class="title">hermes telesec history</span></div><pre>$ hermes telesec history contacts --search maya --limit 5
 @mayachen username=@mayachen connection=demo-business chat=2000 type=private messages=2 edits=0 deleted=0 unexplained=0 range=2026-10-18T16:57:25.317827Z..2026-10-18T16:57:25.322353Z
 
-$ hermes telegram-business history search --contact @mayachen --text estimate --since 7d --limit 10
+$ hermes telesec history search --contact @mayachen --text estimate --since 7d --limit 10
 2026-10-18T16:57:25.317827Z message.created source=business_message connection=demo-business chat=2000 message=1 direction=inbound sender=2000 text=Could you send the revised estimate on Thursday?
 2026-10-18T16:57:25.322353Z message.created source=business_message connection=demo-business chat=2000 message=2 direction=outbound sender=1000 text=Yes, I will send the estimate on Thursday. Launch date is still unconfirmed.
 

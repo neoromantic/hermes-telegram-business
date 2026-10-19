@@ -1,4 +1,4 @@
-"""Hermes Telegram Business — modular non-agent Business event processing.
+"""Telesec — modular non-agent Business event processing.
 
 Telegram Business updates are normalized and offered to small, isolated
 modules before the ordinary Hermes agent path. The first shipped module handles
@@ -76,6 +76,7 @@ else:
 
 from . import dossier_support as _dossier_support
 from . import history_support as _history_support
+from .migration import migrate
 from . import owner_panel as _owner_panel
 from . import stats_panel as _stats_panel
 from . import transcription_modes as _transcription_modes
@@ -83,25 +84,25 @@ from . import transcription_modes as _transcription_modes
 
 logger = logging.getLogger(__name__)
 
-# Legacy-stable Hermes runtime ID. Keep aligned with plugin.yaml so existing
-# install directories, config keys, update/remove commands, and cache paths work.
-_PLUGIN_NAME = "telegram-business-voice-transcriber"
-_DISABLE_ENV = "TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE"
-_SEND_ERRORS_ENV = "TG_BUSINESS_VOICE_TRANSCRIBER_SEND_ERRORS"
-_CLEANUP_DISABLE_ENV = "TG_BUSINESS_VOICE_CLEANUP_DISABLE"
-_CLEANUP_PROVIDER_ENV = "TG_BUSINESS_VOICE_CLEANUP_PROVIDER"
-_CLEANUP_MODEL_ENV = "TG_BUSINESS_VOICE_CLEANUP_MODEL"
-_CLEANUP_STYLE_ENV = "TG_BUSINESS_VOICE_CLEANUP_STYLE"
-_CLEANUP_TIMEOUT_ENV = "TG_BUSINESS_VOICE_CLEANUP_TIMEOUT"
-_CLEANUP_MIN_CHARS_ENV = "TG_BUSINESS_VOICE_CLEANUP_MIN_CHARS"
-_CLEANUP_MIN_WORDS_ENV = "TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS"
-_TITLE_MIN_CHARS_ENV = "TG_BUSINESS_VOICE_TITLE_MIN_CHARS"
-_TITLE_MIN_WORDS_ENV = "TG_BUSINESS_VOICE_TITLE_MIN_WORDS"
-_ADAPTER_AUTH_BYPASS_ENV = "HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH"
-_AUDIO_FILE_MAX_DURATION_ENV = "TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS"
-_AUDIO_FILE_MAX_BYTES_ENV = "TG_BUSINESS_AUDIO_FILE_MAX_BYTES"
-_AUDIO_FILE_PROBE_SECONDS_ENV = "TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS"
-_AUDIO_FILE_MIN_WORDS_ENV = "TG_BUSINESS_AUDIO_FILE_MIN_WORDS"
+# Keep aligned with the manifest and the migration target.
+_PLUGIN_NAME = "telesec"
+_deprecated_env_warned = False
+_DISABLE_ENV = "TELESEC_DISABLE"
+_SEND_ERRORS_ENV = "TELESEC_SEND_ERRORS"
+_CLEANUP_DISABLE_ENV = "TELESEC_CLEANUP_DISABLE"
+_CLEANUP_PROVIDER_ENV = "TELESEC_CLEANUP_PROVIDER"
+_CLEANUP_MODEL_ENV = "TELESEC_CLEANUP_MODEL"
+_CLEANUP_STYLE_ENV = "TELESEC_CLEANUP_STYLE"
+_CLEANUP_TIMEOUT_ENV = "TELESEC_CLEANUP_TIMEOUT"
+_CLEANUP_MIN_CHARS_ENV = "TELESEC_CLEANUP_MIN_CHARS"
+_CLEANUP_MIN_WORDS_ENV = "TELESEC_CLEANUP_MIN_WORDS"
+_TITLE_MIN_CHARS_ENV = "TELESEC_TITLE_MIN_CHARS"
+_TITLE_MIN_WORDS_ENV = "TELESEC_TITLE_MIN_WORDS"
+_ADAPTER_AUTH_BYPASS_ENV = "TELESEC_VOICE_BYPASS_AUTH"
+_AUDIO_FILE_MAX_DURATION_ENV = "TELESEC_AUDIO_FILE_MAX_DURATION_SECONDS"
+_AUDIO_FILE_MAX_BYTES_ENV = "TELESEC_AUDIO_FILE_MAX_BYTES"
+_AUDIO_FILE_PROBE_SECONDS_ENV = "TELESEC_AUDIO_FILE_PROBE_SECONDS"
+_AUDIO_FILE_MIN_WORDS_ENV = "TELESEC_AUDIO_FILE_MIN_WORDS"
 
 _DEFAULT_CLEANUP_PROVIDER = "gemini"
 _DEFAULT_CLEANUP_MODEL = "gemini-3.8-flash"
@@ -393,8 +394,8 @@ _DEFINITE_CAPTION_EDIT_REJECTION_MARKERS = (
 )
 
 
-def _truthy_env(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+def _truthy_env(name: str, default: bool = False) -> bool:
+    return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _is_business_voice_media(message: Any) -> bool:
@@ -437,7 +438,7 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
             gateway = SimpleNamespace(adapters={adapter.platform: adapter})
             if _on_pre_gateway_dispatch(event, gateway) is not None:
                 raise ApplicationHandlerStop
-        if not _truthy_env("HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE"):
+        if not _truthy_env("TELESEC_AGENT_ENABLE", _history_support.get_config("agent_enable", False)):
             logger.info("%s: business update consumed update=%s chat=%s",
                         _PLUGIN_NAME, update.update_id, update.effective_chat.id)
             raise ApplicationHandlerStop
@@ -591,7 +592,7 @@ def _cleanup_model() -> str:
 
 
 def _cleanup_style() -> str:
-    style = os.environ.get(_CLEANUP_STYLE_ENV, "conservative").strip().lower()
+    style = os.environ.get(_CLEANUP_STYLE_ENV, _history_support.get_config("cleanup_style", "conservative")).strip().lower()
     return "enriched" if style == "enriched" else "conservative"
 
 
@@ -2446,17 +2447,20 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
 
 
 def _setup_cli(subparser: Any) -> None:
-    subs = subparser.add_subparsers(dest="telegram_business_command")
+    subparser.set_defaults(_telesec_cli=subparser.prog.split()[-1])
+    subs = subparser.add_subparsers(dest="telesec_command")
     _history_support.add_history_parser(subs)
     _transcription_modes.add_mode_parser(subs)
 
 
 def _handle_cli(args: Any) -> int:
-    command = getattr(args, "telegram_business_command", None)
+    if getattr(args, "_telesec_cli", "telesec") == "telegram-business":
+        logger.warning("hermes telegram-business is deprecated; use hermes telesec")
+    command = getattr(args, "telesec_command", None)
     if getattr(args, "_mode_action", None) or command == "mode":
         return _transcription_modes.handle_mode_cli(args)
     if command is None:
-        print("Usage: hermes telegram-business <history|stats|dossier|mode> ...")
+        print("Usage: hermes telesec <history|stats|dossier|mode> ...")
         return 1
     return _history_support.handle_cli(args)
 
@@ -2593,7 +2597,7 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
     return {"action": "skip", "reason": result.reason or "telegram_business_event_handled"}
 
 
-AGENT_REFERENCE_SECTION_ID = "telegram-business.reference"
+AGENT_REFERENCE_SECTION_ID = "telesec.reference"
 # Frozen into each new session's system prompt. It must stay neutral: the
 # section only sees the platform, never the chat or the user.
 AGENT_REFERENCE = f"""\
@@ -2601,11 +2605,11 @@ Telegram Business tools (plugin {_PLUGIN_NAME}). Use them when the user asks abo
 Telegram Business chats, contacts, voice transcription, or the owner panel. Run them with the \
 terminal tool on this gateway host and prefer `--format json`.
 
-- Transcription mode per chat (both, own, peer, off): `hermes telegram-business mode list --format json`, \
-`hermes telegram-business mode get <chat_id or @username> --format json`. `effective_mode` is what the \
+- Transcription mode per chat (both, own, peer, off): `hermes telesec mode list --format json`, \
+`hermes telesec mode get <chat_id or @username> --format json`. `effective_mode` is what the \
 next voice note gets; `source` is stored, default, or disabled. Change a mode only when the user asks: \
-`hermes telegram-business mode set <chat> <mode>` or `hermes telegram-business mode reset <chat>`.
-- Correspondence stats: `hermes telegram-business stats --chat <chat_id> --format json` (or \
+`hermes telesec mode set <chat> <mode>` or `hermes telesec mode reset <chat>`.
+- Correspondence stats: `hermes telesec stats --chat <chat_id> --format json` (or \
 `--contact @username`; without either it lists contacts).
 - History and dossiers, when enabled: skills `{_PLUGIN_NAME}:history` and `{_PLUGIN_NAME}:dossiers`.
 - Owner panel: a bot message that starts with "Owner panel:" or "Панель владельца:" controls one \
@@ -2625,19 +2629,38 @@ def _register_agent_reference(ctx: Any) -> None:
 
 
 def register(ctx: Any) -> None:
-    global _llm_facade
+    global _llm_facade, _deprecated_env_warned
+    migrate(get_hermes_home())
+    _history_support.get_config = ctx.get_config
+    deprecated = []
+    for name, value in list(os.environ.items()):
+        for prefix, replacement in (
+            ("HERMES_TELEGRAM_BUSINESS_", "TELESEC_"),
+            ("TG_BUSINESS_VOICE_TRANSCRIBER_", "TELESEC_"),
+            ("TG_BUSINESS_VOICE_", "TELESEC_"),
+            ("TG_BUSINESS_AUDIO_FILE_", "TELESEC_AUDIO_FILE_"),
+        ):
+            if name.startswith(prefix):
+                target = replacement + name.removeprefix(prefix)
+                os.environ.setdefault(target, value)
+                deprecated.append(f"{name} -> {target}")
+                break
+    if deprecated and not _deprecated_env_warned:
+        logger.warning("Deprecated Telesec environment aliases (removed next release): %s", ", ".join(deprecated))
+        _deprecated_env_warned = True
     _llm_facade = getattr(ctx, "llm", None)
     _dossier_support.bind_llm(_llm_facade)
     ctx.register_telegram_handler(_register_telegram_handlers)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
     _stats_panel.register_section()
-    ctx.register_cli_command(
-        name="telegram-business",
-        help="Read Telegram Business history and manage transcription modes",
-        setup_fn=_setup_cli,
-        handler_fn=_handle_cli,
-        description="Telegram Business history, transcription modes, verification, and maintenance",
-    )
+    for name in ("telesec", "telegram-business"):
+        ctx.register_cli_command(
+            name=name,
+            help="Read Telegram Business history and manage transcription modes",
+            setup_fn=_setup_cli,
+            handler_fn=_handle_cli,
+            description="Telegram Business history, transcription modes, verification, and maintenance",
+        )
     ctx.register_skill(
         "history",
         _history_support.skill_path(),

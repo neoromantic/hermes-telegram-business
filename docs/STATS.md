@@ -1,16 +1,16 @@
 # Correspondence stats
 
-`hermes telegram-business stats` is a deterministic report over retained [correspondence history](HISTORY.md). For each contact it counts text messages received and sent, active days, conversation sessions, latest activity, and deletions. It also says which history is missing.
+`hermes telesec stats` is a deterministic report over retained [correspondence history](HISTORY.md). For each contact it counts text messages received and sent, active days, conversation sessions, latest activity, and deletions. It also says which history is missing.
 
 It reads only what history has already retained, so capture must be enabled first. It uses no LLM, stores nothing new, and never prints message text.
 
 ## Commands
 
 ```bash
-hermes telegram-business stats
-hermes telegram-business stats --contact @alice --since 30d
-hermes telegram-business stats --chat 991 --connection business-123 --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow
-hermes telegram-business stats --contact @alice --format json
+hermes telesec stats
+hermes telesec stats --contact @alice --since 30d
+hermes telesec stats --chat 991 --connection business-123 --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow
+hermes telesec stats --contact @alice --format json
 ```
 
 Without `--contact` or `--chat`, the command prints a table of contacts with activity in the range, newest first. With either option, it prints a detailed report for one contact. `--contact`, `--chat`, and `--connection` use the same contact resolver as `history show`. An ambiguous name requires an explicit choice.
@@ -22,7 +22,7 @@ Without `--contact` or `--chat`, the command prints a table of contacts with act
 | `--connection` | Business connection ID. Filters the table and disambiguates `--chat` or `--contact`. |
 | `--since` | Inclusive start. Default: all retained history. See [Time and time zone](#time-and-time-zone). |
 | `--until` | Inclusive end. Default: now. |
-| `--tz` | IANA time zone for dates, day boundaries, and active days. Default: `HERMES_TELEGRAM_BUSINESS_TIMEZONE`, otherwise `UTC`. |
+| `--tz` | IANA time zone for dates, day boundaries, and active days. Default: `TELESEC_TIMEZONE`, otherwise `UTC`. |
 | `--session-gap` | Silence that starts a new session. A whole number with `s`, `m`, `h`, `d`, or `w`, such as `90m` or `1d`. Default: `6h`. |
 | `--limit` | Contacts shown in the table, from 1 to 5000. Default: 20. Ignored for one contact. |
 | `--format` | `text` or `json`. Default: `text`. |
@@ -34,7 +34,7 @@ The blocks below are real CLI output over fictional history. Four made-up contac
 One contact:
 
 ```bash
-hermes telegram-business stats --contact @alice --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow
+hermes telesec stats --contact @alice --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow
 ```
 
 ```text
@@ -47,13 +47,13 @@ Alice Example (@alice) connection=business-123 chat=991
   sessions 4 (gap 6h): started by contact 2, by owner 2; ended on received 2
   deletions 4: unexplained 1 (received 1, sent 0), likely correction 1, likely duplicate 1, pending 1
   missing history: retained from 2026-10-03 (range is partial); 1 deletion of a message not in history; 1 message known only from an edit
-  deletion details: hermes telegram-business history deletions --connection business-123 --chat 991 --status unexplained
+  deletion details: hermes telesec history deletions --connection business-123 --chat 991 --status unexplained
 ```
 
 All contacts:
 
 ```bash
-hermes telegram-business stats --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow
+hermes telesec stats --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow
 ```
 
 ```text
@@ -64,7 +64,7 @@ latest            last      msgs  recv  sent  unk  days  sess  del  unexpl  part
 -                 -            0     0     0    0     0     0    1       0  no       business-456  994   Carol
 shown 3 of 4 contacts; not shown: 1 with no activity in range
 missing history in shown contacts: 1 deletion of a message not in history; 1 message known only from an edit; use --contact for details
-deletion details: hermes telegram-business history deletions --status unexplained
+deletion details: hermes telesec history deletions --status unexplained
 ```
 
 Carol has only a deletion in the range, so her row comes last. Dave wrote only in September, so he is not shown, and the footer says so.
@@ -72,7 +72,7 @@ Carol has only a deletion in the range, so her row comes last. Dave wrote only i
 JSON for one contact. It is trimmed here: `chat_type`, `name`, `username`, `active_days`, and `sessions` are left out. Real output always has every key.
 
 ```bash
-hermes telegram-business stats --contact @alice --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow --format json
+hermes telesec stats --contact @alice --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow --format json
 ```
 
 ```json
@@ -120,7 +120,7 @@ hermes telegram-business stats --contact @alice --since 2026-10-01 --until 2026-
         "likely_duplicate": 1,
         "unclassifiable": 0,
         "pending": 1,
-        "details_command": "hermes telegram-business history deletions --connection business-123 --chat 991 --status unexplained"
+        "details_command": "hermes telesec history deletions --connection business-123 --chat 991 --status unexplained"
       },
       "missing_history": {
         "retained_from": "2026-10-03T11:00:05+03:00",
@@ -163,7 +163,7 @@ Stats are computed live from retained JSONL. Retention removes whole monthly par
 ## Time and time zone
 
 - Messages are placed by Telegram's send time (`message_at`), not by the time the bot observed them. If the send time is missing, the first observation time is used.
-- `--tz` takes an IANA name such as `Europe/Moscow`. The default is `HERMES_TELEGRAM_BUSINESS_TIMEZONE` when it is set, otherwise UTC. The report always prints the time zone it used. An unknown name is an error. Named zones need the system time zone database or the Python `tzdata` package; `UTC` always works.
+- `--tz` takes an IANA name such as `Europe/Moscow`. The default is `TELESEC_TIMEZONE` when it is set, otherwise UTC. The report always prints the time zone it used. An unknown name is an error. Named zones need the system time zone database or the Python `tzdata` package; `UTC` always works.
 - `--since` and `--until` accept:
   - relative values such as `30m`, `6h`, `7d`, or `2w`, counted back from now;
   - plain dates such as `2026-10-01`: the start of that day for `--since`, and the end of that day for `--until`, in `--tz`. Other ISO date forms, such as `20261001`, work too;
@@ -177,7 +177,7 @@ These rules differ from `history show` and `history search`. Their bounds apply 
 To set the default time zone, add this to the active Hermes profile's `.env`:
 
 ```dotenv
-HERMES_TELEGRAM_BUSINESS_TIMEZONE=Europe/Moscow
+TELESEC_TIMEZONE=Europe/Moscow
 ```
 
 ## Contacts table
@@ -251,11 +251,11 @@ The buttons under the report pick the period:
 | `90d` | The last 90 days. | `--since 90d` |
 | `All` | All retained history. | no `--since` |
 
-The current period is marked `•`. Tap it again to refresh. The report runs to now. It uses `HERMES_TELEGRAM_BUSINESS_TIMEZONE` (otherwise UTC) and the default 6-hour session gap. So the numbers are the same as `hermes telegram-business stats --chat <id> --connection <id>` with that `--since`, run at the same moment.
+The current period is marked `•`. Tap it again to refresh. The report runs to now. It uses `TELESEC_TIMEZONE` (otherwise UTC) and the default 6-hour session gap. So the numbers are the same as `hermes telesec stats --chat <id> --connection <id>` with that `--since`, run at the same moment.
 
 The first line shows the contact and the period. The second shows the time zone and, except for All, where the period starts. The counting lines follow, exactly as in the CLI. The last line shows when the report was made. The `deletion details` line is CLI-only and is left out.
 
-Example (synthetic): Alice from the [example above](#example-synthetic), period `30d`, `HERMES_TELEGRAM_BUSINESS_TIMEZONE=Europe/Moscow`, clock at 2026-10-19 11:32 UTC. The last line shows the period buttons; the panel adds a Back button below them. A test checks that this block still matches the real view.
+Example (synthetic): Alice from the [example above](#example-synthetic), period `30d`, `TELESEC_TIMEZONE=Europe/Moscow`, clock at 2026-10-19 11:32 UTC. The last line shows the period buttons; the panel adds a Back button below them. A test checks that this block still matches the real view.
 
 ```text
 📊 Alice Example (@alice) · last 30 days
@@ -274,9 +274,9 @@ as of 2026-10-19 14:32
 
 Other states:
 
-- **History is off.** `Stats need history: set HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1 and restart the gateway.`
+- **History is off.** `Stats need history: set TELESEC_HISTORY_ENABLE=1 and restart the gateway.`
 - **Connection not known yet.** The bot has not seen the Business connection for this chat yet.
-- **Bad time zone.** `HERMES_TELEGRAM_BUSINESS_TIMEZONE` is not a known IANA name.
+- **Bad time zone.** `TELESEC_TIMEZONE` is not a known IANA name.
 - **No history for this chat.** History records new text messages only, so a chat with no message since capture started has no report yet. It also shows when the chat is outside the history scope settings (see [HISTORY.md](HISTORY.md)); widen the scope to include it.
 - **No activity in the period.** The report shows zeros. It is not an error, and the period buttons stay.
 - **History could not be read.** For example, a stale or damaged catalog, a torn final line, or a missing lock. The panel shows the `stats` command to run on the gateway host for details, and keeps the period buttons so you can retry. The gateway log gets a warning with only the error type: no names, paths, or error text.
@@ -290,7 +290,7 @@ Privacy:
 
 ## Storage stats
 
-`hermes telegram-business history stats` is a different command and is unchanged. It shows storage stats: records, bytes, and settings. `hermes telegram-business stats` shows correspondence stats per contact.
+`hermes telesec history stats` is a different command and is unchanged. It shows storage stats: records, bytes, and settings. `hermes telesec stats` shows correspondence stats per contact.
 
 ## Privacy and safety
 
@@ -302,7 +302,7 @@ Privacy:
 
 ## Not in this version
 
-- An overview of all contacts in the owner panel ([#29](https://github.com/neoromantic/hermes-telegram-business/issues/29)).
-- Response-time and turn metrics ([#28](https://github.com/neoromantic/hermes-telegram-business/issues/28)).
-- Opt-in owner notifications for unexplained deletions and overdue incoming turns ([#27](https://github.com/neoromantic/hermes-telegram-business/issues/27)).
+- An overview of all contacts in the owner panel ([#29](https://github.com/neoromantic/telesec/issues/29)).
+- Response-time and turn metrics ([#28](https://github.com/neoromantic/telesec/issues/28)).
+- Opt-in owner notifications for unexplained deletions and overdue incoming turns ([#27](https://github.com/neoromantic/telesec/issues/27)).
 - Counting voice notes, video notes, and media. This needs a metadata-only capture change in history.

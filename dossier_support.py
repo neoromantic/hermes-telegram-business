@@ -43,16 +43,16 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-ENABLE_ENV = "HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE"
-INTERVAL_ENV = "HERMES_TELEGRAM_BUSINESS_DOSSIER_INTERVAL_MINUTES"
-QUIET_ENV = "HERMES_TELEGRAM_BUSINESS_DOSSIER_QUIET_MINUTES"
-BACKFILL_DAYS_ENV = "HERMES_TELEGRAM_BUSINESS_DOSSIER_BACKFILL_DAYS"
-BACKFILL_MESSAGES_ENV = "HERMES_TELEGRAM_BUSINESS_DOSSIER_BACKFILL_MESSAGES"
-MAX_CALLS_ENV = "HERMES_TELEGRAM_BUSINESS_DOSSIER_MAX_CALLS_PER_MINUTE"
-PROVIDER_ENV = "HERMES_TELEGRAM_BUSINESS_DOSSIER_PROVIDER"
-MODEL_ENV = "HERMES_TELEGRAM_BUSINESS_DOSSIER_MODEL"
-CLEANUP_PROVIDER_ENV = "TG_BUSINESS_VOICE_CLEANUP_PROVIDER"
-CLEANUP_MODEL_ENV = "TG_BUSINESS_VOICE_CLEANUP_MODEL"
+ENABLE_ENV = "TELESEC_DOSSIER_ENABLE"
+INTERVAL_ENV = "TELESEC_DOSSIER_INTERVAL_MINUTES"
+QUIET_ENV = "TELESEC_DOSSIER_QUIET_MINUTES"
+BACKFILL_DAYS_ENV = "TELESEC_DOSSIER_BACKFILL_DAYS"
+BACKFILL_MESSAGES_ENV = "TELESEC_DOSSIER_BACKFILL_MESSAGES"
+MAX_CALLS_ENV = "TELESEC_DOSSIER_MAX_CALLS_PER_MINUTE"
+PROVIDER_ENV = "TELESEC_DOSSIER_PROVIDER"
+MODEL_ENV = "TELESEC_DOSSIER_MODEL"
+CLEANUP_PROVIDER_ENV = "TELESEC_CLEANUP_PROVIDER"
+CLEANUP_MODEL_ENV = "TELESEC_CLEANUP_MODEL"
 DEFAULT_PROVIDER = "gemini"
 DEFAULT_MODEL = "gemini-3.8-flash"
 
@@ -131,7 +131,7 @@ def load_config() -> DossierConfig:
     """Read the dossier env surface; never cached so every cycle sees edits."""
     warnings: list[str] = []
     return DossierConfig(
-        enabled=_history._truthy_env(ENABLE_ENV),
+        enabled=_history._truthy_env(ENABLE_ENV, _history.get_config("dossier_enable", False)),
         interval_minutes=_env_int_bounded(INTERVAL_ENV, 30, 5, 1440, warnings),
         quiet_minutes=_env_int_bounded(QUIET_ENV, 10, 0, 1440, warnings),
         backfill_days=_env_int_bounded(BACKFILL_DAYS_ENV, 90, 1, 3650, warnings),
@@ -328,7 +328,7 @@ def load_dossier(path: Path) -> dict[str, Any] | None:
         except ValueError:
             rel = str(file)
         raise ValueError(f"dossier file is corrupt or unsupported: {rel}; "
-                         "run 'hermes telegram-business dossier forget ...' to reset")
+                         "run 'hermes telesec dossier forget ...' to reset")
     return data
 
 
@@ -2012,7 +2012,7 @@ def ensure_worker_started() -> bool:
             worker = _Worker(key, threading.Event())
             snapshot = contextvars.copy_context()  # keeps the profile scope (HERMES_HOME ContextVar)
             worker.thread = threading.Thread(target=snapshot.run, args=(_worker_loop, llm, worker),
-                                             name="telegram-business-dossiers", daemon=True)
+                                             name="telesec-dossiers", daemon=True)
             _WORKERS[key] = worker
             worker.thread.start()
         logger.info("%s: dossier worker started initial_delay_s=%d interval_m=%d", _history.PLUGIN_NAME,

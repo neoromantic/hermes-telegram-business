@@ -33,7 +33,7 @@ plugin = th.plugin
 enabled_history = th.enabled_history
 modes = ttm.modes
 
-HISTORY_ENABLE_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE"
+HISTORY_ENABLE_ENV = "TELESEC_HISTORY_ENABLE"
 ICON = "\U0001f4ca"
 BASIS = "by Telegram send time; text messages only"
 # (sub-argument, CLI --since, header label)
@@ -47,7 +47,7 @@ CHATS = [(991, "business-123"), (992, "business-123"), (994, "business-456"), (9
 SUB_RE = re.compile(r"[A-Za-z0-9_.-]{1,32}")
 READ_ERROR = (
     f"{ICON} Stats\nStats unavailable: history could not be read. For details, run on the gateway host:\n"
-    "hermes telegram-business stats --chat 991 --connection business-123"
+    "hermes telesec stats --chat 991 --connection business-123"
 )
 
 
@@ -183,14 +183,14 @@ def test_history_off(plugin, sp):
     _alice_fixture(plugin)
     view = _view(sp)
     assert view.text == (
-        f"{ICON} Stats\nStats need history: set HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1 and restart the gateway."
+        f"{ICON} Stats\nStats need history: set TELESEC_HISTORY_ENABLE=1 and restart the gateway."
     )
     assert view.buttons == ()
 
 
 def test_state_order(plugin, sp, monkeypatch: pytest.MonkeyPatch):
     history_off = (
-        f"{ICON} Stats\nStats need history: set HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1 and restart the gateway."
+        f"{ICON} Stats\nStats need history: set TELESEC_HISTORY_ENABLE=1 and restart the gateway."
     )
     no_connection = f"{ICON} Stats\nStats unavailable: the Business connection for this chat is not known yet."
     bad_tz = {TIMEZONE_ENV: "Mars/Olympus"}
@@ -215,7 +215,7 @@ def test_connection_missing(enabled_history, sp, conn: str | None):
 def test_bad_timezone(enabled_history, sp, monkeypatch: pytest.MonkeyPatch):
     _alice_fixture(enabled_history)
     expected = (
-        f"{ICON} Stats\nStats unavailable: HERMES_TELEGRAM_BUSINESS_TIMEZONE is not a known time zone; "
+        f"{ICON} Stats\nStats unavailable: TELESEC_TIMEZONE is not a known time zone; "
         "use an IANA name such as Europe/Moscow."
     )
     assert _view(sp, environ={TIMEZONE_ENV: "Mars/Olympus"}).text == expected
@@ -288,7 +288,7 @@ def test_read_error_shows_cli_command(enabled_history, sp, caplog: pytest.LogCap
     assert view.buttons == _buttons("7d")
     [record] = _panel_records(caplog, sp)
     assert record.levelno == logging.WARNING
-    assert re.fullmatch(r"telegram-business stats panel: history could not be read \((\w+)\)", record.getMessage())
+    assert re.fullmatch(r"telesec stats panel: history could not be read \((\w+)\)", record.getMessage())
     logged = "\n".join(record.getMessage() for record in caplog.records)
     for secret in ("Alice", "alice", "business-123", "991", str(enabled_history._history_support.history_root())):
         assert secret not in logged
@@ -315,7 +315,7 @@ def test_read_error_logs_only_exception_type(
     assert view.text == READ_ERROR
     assert view.buttons == _buttons("30d")
     assert [record.getMessage() for record in _panel_records(caplog, sp)] == [
-        f"telegram-business stats panel: history could not be read ({error.__name__})"
+        f"telesec stats panel: history could not be read ({error.__name__})"
     ]
     for secret in (message, "Alice", "SECRET", "/home/owner"):
         assert secret not in caplog.text
@@ -329,10 +329,10 @@ def test_read_error_command_quotes_values(enabled_history, sp, cs, monkeypatch, 
 
     view = _view(sp, chat=-100123, conn="-Ab C")
 
-    assert view.text.splitlines()[-1] == "hermes telegram-business stats --chat=-100123 --connection='-Ab C'"
+    assert view.text.splitlines()[-1] == "hermes telesec stats --chat=-100123 --connection='-Ab C'"
     assert view.text.splitlines()[-1].endswith(cs._cli_option("--connection", "-Ab C"))
     assert [record.getMessage() for record in _panel_records(caplog, sp)] == [
-        "telegram-business stats panel: history could not be read (ValueError)"
+        "telesec stats panel: history could not be read (ValueError)"
     ]
 
 
@@ -415,6 +415,7 @@ def test_register_adds_the_stats_section(plugin):
         llm=None,
         register_telegram_handler=lambda handler: None,
         register_hook=lambda name, callback: None,
+        get_config={}.get,
         register_cli_command=lambda **kwargs: None,
         register_skill=lambda name, path, description="": None,
     )

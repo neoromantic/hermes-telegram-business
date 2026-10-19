@@ -10,7 +10,18 @@ CI runs the suite on Python 3.11–3.14. Telegram, STT, and LLM network calls ar
 
 History checks must cover one-time opt-in, private-chat defaults, explicit scope overrides, create/edit/delete capture, correction classification, restart/retry behavior, partial final writes, contact renames and ambiguity, bounded date/text queries, retention, catalog rebuilds, and CLI failure exits.
 
-Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
+Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
+
+## Telesec rename checks: 2026-10-19
+
+Before production cutover:
+
+- [CI passed on Python 3.11–3.14](https://github.com/neoromantic/telesec/actions/runs/39276103429), including migration, conflicting destinations, private permissions, deprecated aliases, and the five settings.
+- The production Hermes 0.21.6 CLI validated the candidate in isolation: manifest v2, config schema, registration/capabilities, security scan, and core-override checks passed. This version reported no warnings; newer Hermes versions' private STT warning remains documented in the catalog readiness checks below.
+- In a separate temporary profile on `baus`, the real `PluginContext.set_config` persisted all five settings and `get_config` returned them to the registered plugin. History, dossier enablement, cleanup style, timezone, and agent passthrough used the saved values; an explicit environment value overrode the form. The config stayed `0600`; production config was untouched.
+- A private copy of the current production data/config migrated to `telesec`: all 13 file SHA-256 hashes stayed identical, every file was `0600`, and the second migration left config bytes unchanged. History, the contact catalog, transcription modes, and any dossier/state files share the same directory migration.
+
+Production cutover and live Telegram acceptance are recorded after the final merge.
 
 ## Production Business text investigation: 2026-10-19
 
@@ -47,7 +58,7 @@ The validator's recording context lacks the documented `ctx.llm` property. The p
 
 ## Live gateway smoke: Business update isolation, 2026-10-19
 
-[PR #37](https://github.com/neoromantic/hermes-telegram-business/pull/37) deployed plugin `d2201a8bf88f2743e0f48d38d6c5461bfc741d60` to `baus`. [All 700 tests passed on Python 3.11–3.14 with PTB 22.8](https://github.com/neoromantic/hermes-telegram-business/actions/runs/39272026538). The separate local `telegram-business-dm-passive-guard` was disabled; its files remain installed. `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` was not enabled.
+[PR #37](https://github.com/neoromantic/telesec/pull/37) deployed plugin `d2201a8bf88f2743e0f48d38d6c5461bfc741d60` to `baus`. [All 700 tests passed on Python 3.11–3.14 with PTB 22.8](https://github.com/neoromantic/telesec/actions/runs/39272026538). The separate local `telegram-business-dm-passive-guard` was disabled; its files remain installed. `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` was not enabled.
 
 - `hermes-gateway-baus.service` restarted at 14:51:08 UTC. Telegram, API, and webhook reported `connected`, the gateway reported `running`, and its session store reported `ok`.
 - Hermes core remained `818c13be1dc4fd28987e1e881a9408224afd4535` (0.21.6). The `hermes plugins disable` launcher unexpectedly completed a pending source-update dependency tail before disabling the guard. The running gateway used managed Python 3.14.7 and PTB 22.8; `uv pip check` reported all 152 installed packages compatible in that active environment. The older Python 3.11.16 venv also passed `python -m pip check`. No core source upgrade was requested.
@@ -78,11 +89,11 @@ On the owner's gateway at `de52645`: sending `/start bizChat<chat_id>` to the bo
 
 ## Live gateway smoke: 0.9.0, 2026-10-19
 
-Plugin `0.9.0` ran on the owner's production gateway (Hermes `0.21.6`) with a real Business connection. In a real private chat, `/transcribe off` was confirmed in place and the next voice note was skipped silently (`decision=skip reason=mode_off`). `/transcribe both` restored transcription, and the next voice note got its transcript caption. `/transcribe`, `/transcribe reset` and an unknown argument returned the expected status lines. The modes file was written `0600` and listed by `hermes telegram-business mode list`. The live run showed that the contact could see command messages, so 0.9.0 deletes the command and its status about 5 seconds after confirming.
+Plugin `0.9.0` ran on the owner's production gateway (Hermes `0.21.6`) with a real Business connection. In a real private chat, `/transcribe off` was confirmed in place and the next voice note was skipped silently (`decision=skip reason=mode_off`). `/transcribe both` restored transcription, and the next voice note got its transcript caption. `/transcribe`, `/transcribe reset` and an unknown argument returned the expected status lines. The modes file was written `0600` and listed by `hermes telesec mode list`. The live run showed that the contact could see command messages, so 0.9.0 deletes the command and its status about 5 seconds after confirming.
 
 ## Current-core smoke: 2026-10-18
 
-Plugin `0.8.0` at [`0e758ffc`](https://github.com/neoromantic/hermes-telegram-business/commit/0e758ffc1bbbc759b6b81e8f6bd557927a15ec7a) was installed and enabled through the actual CLI in an isolated profile using tagged Hermes `v0.22.2`, Python `3.14.5`, and PTB `22.8`. [CI passed 243 tests on every Python version from 3.11 through 3.14](https://github.com/neoromantic/hermes-telegram-business/actions/runs/39147890386).
+Plugin `0.8.0` at [`0e758ffc`](https://github.com/neoromantic/telesec/commit/0e758ffc1bbbc759b6b81e8f6bd557927a15ec7a) was installed and enabled through the actual CLI in an isolated profile using tagged Hermes `v0.22.2`, Python `3.14.5`, and PTB `22.8`. [CI passed 243 tests on every Python version from 3.11 through 3.14](https://github.com/neoromantic/telesec/actions/runs/39147890386).
 
 - Real `PluginManager`/`PluginContext` discovery registered the hook, CLI, history skill, and one Telegram handler factory. Unload and forced rediscovery removed and restored the registrations without duplication.
 - Real `TelegramAdapter` and `TelegramApplication` processed an in-memory Telegram transport. History opt-out, create/edit/retry/delete capture, and delayed classification produced eight canonical events, including `likely_duplicate` and `unexplained` deletions. Text capture made no model calls; handled voice updates did not reach the ordinary handler.

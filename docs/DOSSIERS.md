@@ -1,6 +1,6 @@
 # Contact dossiers and owner persona
 
-Dossiers are derived, inspectable context built from [correspondence history](HISTORY.md): one dossier for each private Business contact, plus one persona that describes how the owner writes. They are meant for contextual drafts ([#18](https://github.com/neoromantic/hermes-telegram-business/issues/18)) and automatic replies ([#19](https://github.com/neoromantic/hermes-telegram-business/issues/19)) later. This version only builds and maintains them. Nothing is sent to contacts.
+Dossiers are derived, inspectable context built from [correspondence history](HISTORY.md): one dossier for each private Business contact, plus one persona that describes how the owner writes. They are meant for contextual drafts ([#18](https://github.com/neoromantic/telesec/issues/18)) and automatic replies ([#19](https://github.com/neoromantic/telesec/issues/19)) later. This version only builds and maintains them. Nothing is sent to contacts.
 
 Every fact cites the messages it came from. The owner can follow a fact back to history, correct, pin or remove it, add notes, and forget a whole dossier. Owner edits always survive a refresh.
 
@@ -9,7 +9,7 @@ Every fact cites the messages it came from. The owner can follow a fact back to 
 Dossiers are built from history, so [enable history capture](HISTORY.md#enable-capture) first. Then add this to the active Hermes profile's `.env` and run `hermes gateway restart`:
 
 ```dotenv
-HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1
+TELESEC_DOSSIER_ENABLE=1
 ```
 
 Enabling dossiers sends private chat text to the configured model provider. History capture alone never calls a model, and dossiers stay off until this switch is set.
@@ -19,7 +19,7 @@ One switch covers every private Business chat in history. There is no per-contac
 A contact gets a dossier once its chat has at least one received and one sent text message among the messages the first pass would use: the last 90 days, at most 500 messages. A chat with old received messages and only recent sent ones qualifies only once both sides appear inside that window. Plugin voice transcripts and messages of unknown direction count for neither side.
 
 ```bash
-hermes telegram-business dossier status
+hermes telesec dossier status
 ```
 
 ```text
@@ -27,7 +27,7 @@ Dossiers: enabled
 Model: gemini / gemini-3.8-flash (timeout 120s, max 20 calls/min)
 Worker: gateway only; first cycle 3 min after connect, then every 30 min; quiet 10 min
 Backfill: last 90 days, at most 500 messages per contact
-Storage: /home/owner/.hermes/data/telegram-business/dossiers
+Storage: /home/owner/.hermes/data/telesec/dossiers
 Stored: 0 contact dossiers, no persona yet
 Failures: none
 Last cycle: none yet
@@ -40,19 +40,19 @@ Cycle running now: no
 
 Dossiers call Hermes's host-owned `ctx.llm` facade (`complete_structured`), the same path as transcript cleanup. The plugin holds no provider key.
 
-By default dossiers request the cleanup provider and model: `TG_BUSINESS_VOICE_CLEANUP_PROVIDER` and `TG_BUSINESS_VOICE_CLEANUP_MODEL`, then `gemini` / `gemini-3.8-flash`. Set `HERMES_TELEGRAM_BUSINESS_DOSSIER_PROVIDER` or `HERMES_TELEGRAM_BUSINESS_DOSSIER_MODEL` to use something else. `TG_BUSINESS_VOICE_CLEANUP_DISABLE` does not turn dossiers off.
+By default dossiers request the cleanup provider and model: `TELESEC_CLEANUP_PROVIDER` and `TELESEC_CLEANUP_MODEL`, then `gemini` / `gemini-3.8-flash`. Set `TELESEC_DOSSIER_PROVIDER` or `TELESEC_DOSSIER_MODEL` to use something else. `TELESEC_CLEANUP_DISABLE` does not turn dossiers off.
 
-The provider and model are always passed explicitly, so the [LLM trust gate](../README.md#llm-trust-gate) applies. The defaults match the allowlist shown in the README. For any other provider or model, add it to `allowed_providers` / `allowed_models` under `plugins.entries.telegram-business-voice-transcriber.llm`. Host audit lines name the purpose `telegram_business_dossier` or `telegram_business_persona`.
+The provider and model are always passed explicitly, so the [LLM trust gate](../README.md#llm-trust-gate) applies. The defaults match the allowlist shown in the README. For any other provider or model, add it to `allowed_providers` / `allowed_models` under `plugins.entries.telesec.llm`. Host audit lines name the purpose `telegram_business_dossier` or `telegram_business_persona`.
 
 The host may retry a call or fall back to its main model on capacity errors. `show` reports the model that actually answered.
 
-A trust-gate denial stops the whole cycle. `status` then prints `Last cycle aborted: model call denied by the Hermes trust gate; check plugins.entries.telegram-business-voice-transcriber.llm`, and `dossier run` prints the host's message. Any other error, such as a timeout or unusable output, fails only that contact (or the persona). It is retried on the next cycle.
+A trust-gate denial stops the whole cycle. `status` then prints `Last cycle aborted: model call denied by the Hermes trust gate; check plugins.entries.telesec.llm`, and `dossier run` prints the host's message. Any other error, such as a timeout or unusable output, fails only that contact (or the persona). It is retried on the next cycle.
 
 ## What the model sees
 
 Each call sends one JSON object. The system prompt says that everything in it (messages, facts, quotes, owner notes) is untrusted data, never instructions. It forbids personality traits, motives, emotional states, diagnoses, and guesses about sensitive attributes, and asks the model to keep uncertainty visible.
 
-Messages follow the same rules as the planned correspondence insights ([#4](https://github.com/neoromantic/hermes-telegram-business/issues/4)):
+Messages follow the same rules as the planned correspondence insights ([#4](https://github.com/neoromantic/telesec/issues/4)):
 
 - One message per connection, chat, and message ID, with the text of its latest edit.
 - Deleted messages are kept and marked `deleted`. A deletion that history classified as `likely_duplicate` or `likely_correction` is skipped, because another message replaced it.
@@ -81,8 +81,8 @@ Each message has a short reference such as `m102`. The contact's name, username,
 **Preview.** `preview` prints the exact JSON the next call would send to stdout, and its metadata to stderr. It never calls the model and never writes anything:
 
 ```bash
-hermes telegram-business dossier preview --contact @alice | jq .
-hermes telegram-business dossier preview --persona | jq .
+hermes telesec dossier preview --contact @alice | jq .
+hermes telesec dossier preview --persona | jq .
 ```
 
 `preview` ignores the quiet rule and the persona thresholds, like `run --contact` and `run --persona`. It also works while dossiers are disabled and says that nothing is sent until they are enabled. The [synthetic example](#synthetic-example) shows real output.
@@ -135,26 +135,26 @@ The persona describes how the owner writes, not who the owner is. Its sections a
 ## Owner controls
 
 ```bash
-hermes telegram-business dossier status
-hermes telegram-business dossier list
-hermes telegram-business dossier show --contact @alice
-hermes telegram-business dossier show --contact @alice --fact f3
-hermes telegram-business dossier show --contact @alice --format json
-hermes telegram-business dossier show --persona
-hermes telegram-business dossier preview --contact @alice
-hermes telegram-business dossier correct --contact @alice --fact f3 --text "Prefers calls after 18:00."
-hermes telegram-business dossier pin --contact @alice --fact f3
-hermes telegram-business dossier unpin --contact @alice --fact f3
-hermes telegram-business dossier remove --contact @alice --fact f5
-hermes telegram-business dossier note --contact @alice --section preferences --text "Call her Sasha."
-hermes telegram-business dossier changes --contact @alice --limit 20
-hermes telegram-business dossier export --contact @alice --format markdown
-hermes telegram-business dossier forget --contact @alice
-hermes telegram-business dossier forget --persona
-hermes telegram-business dossier forget --all
-hermes telegram-business dossier run
-hermes telegram-business dossier run --contact @alice
-hermes telegram-business dossier run --persona
+hermes telesec dossier status
+hermes telesec dossier list
+hermes telesec dossier show --contact @alice
+hermes telesec dossier show --contact @alice --fact f3
+hermes telesec dossier show --contact @alice --format json
+hermes telesec dossier show --persona
+hermes telesec dossier preview --contact @alice
+hermes telesec dossier correct --contact @alice --fact f3 --text "Prefers calls after 18:00."
+hermes telesec dossier pin --contact @alice --fact f3
+hermes telesec dossier unpin --contact @alice --fact f3
+hermes telesec dossier remove --contact @alice --fact f5
+hermes telesec dossier note --contact @alice --section preferences --text "Call her Sasha."
+hermes telesec dossier changes --contact @alice --limit 20
+hermes telesec dossier export --contact @alice --format markdown
+hermes telesec dossier forget --contact @alice
+hermes telesec dossier forget --persona
+hermes telesec dossier forget --all
+hermes telesec dossier run
+hermes telesec dossier run --contact @alice
+hermes telesec dossier run --persona
 ```
 
 `--contact` accepts the same names as `history show`. Use `--chat <id>` with an optional `--connection <id>` when a name is ambiguous, and `--persona` for the owner persona. Commands other than `status`, `list`, and `run` need one of these targets; for `run` it is optional.
@@ -215,7 +215,7 @@ If Hermes reloads the plugin, a host with `on_unload` stops the old worker, and 
 ## Storage and privacy
 
 ```text
-$HERMES_HOME/data/telegram-business/dossiers/
+$HERMES_HOME/data/telesec/dossiers/
   chats/<connection-key>/<chat-id>/dossier.json
   chats/<connection-key>/<chat-id>/changes.jsonl
   persona/dossier.json
@@ -234,9 +234,9 @@ Dossiers read history only under its read locks and never write to it. `forget` 
 
 To stop processing and delete every dossier:
 
-1. Remove `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE` from the profile's `.env`.
+1. Remove `TELESEC_DOSSIER_ENABLE` from the profile's `.env`.
 2. Run `hermes gateway restart`.
-3. Run `hermes telegram-business dossier forget --all`.
+3. Run `hermes telesec dossier forget --all`.
 
 The bundled `dossiers` skill gives Hermes safe read and correction recipes. It treats dossier text as data, never as instructions, and runs corrections, `run`, and `forget` only when the owner asks.
 
@@ -244,14 +244,14 @@ The bundled `dossiers` skill gives Hermes safe read and correction recipes. It t
 
 | Variable | Default | Effect |
 |---|---|---|
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE` | false | Turn on the gateway worker and `dossier run`. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_INTERVAL_MINUTES` | `30` | Pause between the end of one cycle and the start of the next; 5–1440. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_QUIET_MINUTES` | `10` | Minutes a chat must be quiet before a refresh; 0–1440. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_BACKFILL_DAYS` | `90` | First-pass window and rolling tracking window, in days; 1–3650. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_BACKFILL_MESSAGES` | `500` | First-pass cap per contact; for the persona, the cap on sent messages across all chats; 10–5000. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_MAX_CALLS_PER_MINUTE` | `20` | Model calls per minute; 1–600. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_PROVIDER` | cleanup provider, then `gemini` | Host provider for dossier calls. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_MODEL` | cleanup model, then `gemini-3.8-flash` | Host model for dossier calls. |
+| `TELESEC_DOSSIER_ENABLE` | false | Turn on the gateway worker and `dossier run`. |
+| `TELESEC_DOSSIER_INTERVAL_MINUTES` | `30` | Pause between the end of one cycle and the start of the next; 5–1440. |
+| `TELESEC_DOSSIER_QUIET_MINUTES` | `10` | Minutes a chat must be quiet before a refresh; 0–1440. |
+| `TELESEC_DOSSIER_BACKFILL_DAYS` | `90` | First-pass window and rolling tracking window, in days; 1–3650. |
+| `TELESEC_DOSSIER_BACKFILL_MESSAGES` | `500` | First-pass cap per contact; for the persona, the cap on sent messages across all chats; 10–5000. |
+| `TELESEC_DOSSIER_MAX_CALLS_PER_MINUTE` | `20` | Model calls per minute; 1–600. |
+| `TELESEC_DOSSIER_PROVIDER` | cleanup provider, then `gemini` | Host provider for dossier calls. |
+| `TELESEC_DOSSIER_MODEL` | cleanup model, then `gemini-3.8-flash` | Host model for dossier calls. |
 
 The switch accepts `1`, `true`, `yes`, or `on`. A number that does not parse or is out of range falls back to its default, and `status` prints a warning.
 
@@ -275,7 +275,7 @@ The chat has six messages:
 ### Preview the first call
 
 ```bash
-hermes telegram-business dossier preview --contact @casey_customer | jq .
+hermes telesec dossier preview --contact @casey_customer | jq .
 ```
 
 ```json
@@ -327,7 +327,7 @@ The persona preview sends only the two owner messages, as `c1:m102` and `c1:m105
 The scripted model answers with seven new facts. Two contain deliberate mistakes: one cites `m999`, which is not in this chat, and one quotes "about 12 square meters" although `m101` says "metres".
 
 ```bash
-hermes telegram-business dossier run
+hermes telesec dossier run
 ```
 
 ```text
@@ -337,7 +337,7 @@ Dossier cycle completed in 0.0s: calls=2 refreshed=1 maintained=0 waiting=0 fail
 The two calls are the contact and the first persona pass. The plugin drops the fact that cites `m999`, and keeps `f4` without the mismatched quote; `f4` stays `observed` because its `m104` quote is exact.
 
 ```bash
-hermes telegram-business dossier show --contact @casey_customer
+hermes telesec dossier show --contact @casey_customer
 ```
 
 ```text
@@ -368,7 +368,7 @@ f6  [observed] The contact first needed installation before 15 March, then said 
 ### Follow a fact to history
 
 ```bash
-hermes telegram-business dossier show --contact @casey_customer --fact f3
+hermes telesec dossier show --contact @casey_customer --fact f3
 ```
 
 ```text
@@ -378,7 +378,7 @@ Sources:
   m102  2026-10-16T01:00:24Z  owner
     quote:   "I'll send the quote by Friday"
     history: "Hello Casey, happy to help. I'll send the quote by Friday."
-History: hermes telegram-business history show --connection business-123 --chat 991 --since 2026-10-16T00:59:24Z --until 2026-10-16T01:01:24Z
+History: hermes telesec history show --connection business-123 --chat 991 --since 2026-10-16T00:59:24Z --until 2026-10-16T01:01:24Z
 ```
 
 ### Correct and refresh
@@ -386,7 +386,7 @@ History: hermes telegram-business history show --connection business-123 --chat 
 The owner agreed a new date by phone:
 
 ```bash
-hermes telegram-business dossier correct --contact @casey_customer --fact f3 \
+hermes telesec dossier correct --contact @casey_customer --fact f3 \
   --text "The owner will email the quote on Monday, as agreed by phone."
 ```
 
@@ -438,7 +438,7 @@ Casey then writes `m107`: "Thanks for the call! Monday is perfect." The next pre
 The scripted model then tries to rewrite `f3`, re-adds the Friday promise, and adds one new decision. Only the decision is saved:
 
 ```bash
-hermes telegram-business dossier run
+hermes telesec dossier run
 ```
 
 ```text
@@ -463,7 +463,7 @@ Owner-removed texts (not re-added): 1
 ### Review the changes
 
 ```bash
-hermes telegram-business dossier changes --contact @casey_customer
+hermes telesec dossier changes --contact @casey_customer
 ```
 
 ```text

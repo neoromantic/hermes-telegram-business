@@ -46,15 +46,16 @@ except ModuleNotFoundError as exc:
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_NAME = "telegram-business-voice-transcriber"
-HISTORY_ENABLE_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE"
-HISTORY_CONNECTIONS_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS"
-HISTORY_CHATS_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS"
-HISTORY_CHAT_TYPES_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES"
-HISTORY_CORRECTION_WINDOW_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW"
-HISTORY_NEARBY_BEFORE_SECONDS_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS"
-HISTORY_RETENTION_DAYS_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS"
-HISTORY_MAX_BYTES_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES"
+PLUGIN_NAME = "telesec"
+get_config = {}.get
+HISTORY_ENABLE_ENV = "TELESEC_HISTORY_ENABLE"
+HISTORY_CONNECTIONS_ENV = "TELESEC_HISTORY_CONNECTIONS"
+HISTORY_CHATS_ENV = "TELESEC_HISTORY_CHATS"
+HISTORY_CHAT_TYPES_ENV = "TELESEC_HISTORY_CHAT_TYPES"
+HISTORY_CORRECTION_WINDOW_ENV = "TELESEC_HISTORY_CORRECTION_WINDOW"
+HISTORY_NEARBY_BEFORE_SECONDS_ENV = "TELESEC_HISTORY_NEARBY_BEFORE_SECONDS"
+HISTORY_RETENTION_DAYS_ENV = "TELESEC_HISTORY_RETENTION_DAYS"
+HISTORY_MAX_BYTES_ENV = "TELESEC_HISTORY_MAX_BYTES"
 
 DEFAULT_CORRECTION_WINDOW_SECONDS = 120
 DEFAULT_NEARBY_BEFORE_SECONDS = 15
@@ -568,8 +569,8 @@ class CatalogStatus:
     history_empty: bool = False
 
 
-def _truthy_env(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+def _truthy_env(name: str, default: bool = False) -> bool:
+    return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -691,7 +692,7 @@ def history_config_from_env() -> HistoryConfig:
     retention_days = max(0, _env_int(HISTORY_RETENTION_DAYS_ENV, DEFAULT_RETENTION_DAYS))
     max_bytes = max(1, _env_int(HISTORY_MAX_BYTES_ENV, DEFAULT_MAX_BYTES))
     return HistoryConfig(
-        enabled=_truthy_env(HISTORY_ENABLE_ENV),
+        enabled=_truthy_env(HISTORY_ENABLE_ENV, get_config("history_enable", False)),
         connections=_parse_scope(os.environ.get(HISTORY_CONNECTIONS_ENV)),
         chats=_parse_scope(os.environ.get(HISTORY_CHATS_ENV)),
         chat_types=_parse_chat_types(os.environ.get(HISTORY_CHAT_TYPES_ENV)),
@@ -703,7 +704,7 @@ def history_config_from_env() -> HistoryConfig:
 
 
 def history_root() -> Path:
-    return get_hermes_home() / "data" / "telegram-business" / "history"
+    return get_hermes_home() / "data" / "telesec" / "history"
 
 
 def skill_path() -> Path:
@@ -841,8 +842,8 @@ def _root_lock_path() -> Path:
 
 def _lock_rebuild_instruction() -> str:
     return (
-        "run 'hermes telegram-business history catalog --rebuild' "
-        "or 'hermes telegram-business history maintain'"
+        "run 'hermes telesec history catalog --rebuild' "
+        "or 'hermes telesec history maintain'"
     )
 
 
@@ -1310,7 +1311,7 @@ def _read_catalog_locked() -> dict[str, Any] | None:
 
 
 def _catalog_rebuild_instruction() -> str:
-    return "run 'hermes telegram-business history catalog --rebuild'"
+    return "run 'hermes telesec history catalog --rebuild'"
 
 
 def _contact_catalog_status_locked(
@@ -1681,7 +1682,7 @@ def _file_has_complete_final_line(path: Path) -> bool:
 
 
 def _tail_repair_instruction() -> str:
-    return "run 'hermes telegram-business history verify --repair-tails'"
+    return "run 'hermes telesec history verify --repair-tails'"
 
 
 def _tail_repair_required_message(path: Path) -> str:
@@ -2719,7 +2720,7 @@ async def _resolve_direction(message: Any, *, bot: Any = None) -> str:
 
 
 # Mirrors the voice module's disable switch.
-TRANSCRIBER_DISABLE_ENV = "TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE"
+TRANSCRIBER_DISABLE_ENV = "TELESEC_DISABLE"
 
 # Transcription-mode vocabulary shared with transcription_modes and the owner panel.
 TRANSCRIBE_MODES = ("both", "own", "peer", "off")
@@ -3424,7 +3425,7 @@ def _chat_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def setup_cli(subparser: argparse.ArgumentParser) -> None:
-    subs = subparser.add_subparsers(dest="telegram_business_command")
+    subs = subparser.add_subparsers(dest="telesec_command")
     add_history_parser(subs)
 
 
@@ -3510,7 +3511,7 @@ def handle_cli(args: argparse.Namespace) -> int:
         return dossier_cli.handle_cli(args)
     action = getattr(args, "_history_action", None)
     if action is None:
-        print("Usage: hermes telegram-business history <chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>")
+        print("Usage: hermes telesec history <chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>")
         return 1
     try:
         if action == "chats":

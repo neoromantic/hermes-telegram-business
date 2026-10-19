@@ -80,7 +80,7 @@ OWNER_ID = 1000  # FakeBot's default owner: messages from this user are outbound
 CONTACT_ID = 2000  # sender of inbound messages
 BOT_ID = 4242  # sender_business_bot id for bot-posted outbound messages
 BUSINESS_ID = "business-123"
-WORKER_THREAD_NAME = "telegram-business-dossiers"
+WORKER_THREAD_NAME = "telesec-dossiers"
 
 # A time is a datetime, minutes before ``base`` (int/float), or a timedelta before ``base``.
 When = datetime | int | float | timedelta
@@ -492,14 +492,14 @@ def cycle(ds: ModuleType, llm: Any, **kwargs: Any) -> Any:
 
 
 def cli(plugin: ModuleType, *argv: Any) -> tuple[int, str, str]:
-    """Run ``hermes telegram-business <argv>`` in-process; returns ``(code, stdout, stderr)`` unstripped.
+    """Run ``hermes telesec <argv>`` in-process; returns ``(code, stdout, stderr)`` unstripped.
 
     The parser comes from ``history_support.setup_cli``, so it includes every subcommand
     that hooks into it (``history``, ``dossier``). Argparse usage errors return their exit
     code instead of raising.
     """
     history = plugin._history_support
-    parser = argparse.ArgumentParser(prog="hermes telegram-business")
+    parser = argparse.ArgumentParser(prog="hermes telesec")
     history.setup_cli(parser)
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -585,6 +585,7 @@ class FakeCtx:
 
     def __init__(self, llm: Any = None, *, with_unload: bool = False) -> None:
         self.llm = llm
+        self.get_config = {}.get
         self.telegram_handlers: list[Any] = []
         self.hooks: list[tuple[str, Any]] = []
         self.cli_commands: list[dict[str, Any]] = []

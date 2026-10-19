@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping. Questions and ideas go to [Discussions](https://github.com/neoromantic/hermes-telegram-business/discussions). Bugs go to [issues](https://github.com/neoromantic/hermes-telegram-business/issues/new/choose). Security problems go through a [private report](SECURITY.md).
+Thanks for helping. Questions and ideas go to [Discussions](https://github.com/neoromantic/telesec/discussions). Bugs go to [issues](https://github.com/neoromantic/telesec/issues/new/choose). Security problems go through a [private report](SECURITY.md).
 
 ## Set up and run the tests
 
@@ -37,7 +37,7 @@ To try a change in a real gateway, install your checkout into a test Hermes prof
 
 ## Rules for changes
 
-- Keep the runtime plugin ID `telegram-business-voice-transcriber` and the existing environment variable names. Existing installs, config keys, and update commands depend on them.
+- Keep the runtime plugin ID `telesec` and the existing environment variable names. Existing installs, config keys, and update commands depend on them.
 - Keep a change focused. Add or update tests for any behavior change.
 - Update the docs in the same PR: `README.md`, `CHANGELOG.md` (under `Unreleased`), and the matching `docs/*.md`.
 - No telemetry. Do not add analytics, usage reporting, or new network calls. The plugin talks only to Telegram through the Hermes gateway, the Hermes STT backend, and the host `ctx.llm`.
