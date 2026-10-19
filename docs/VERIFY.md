@@ -45,6 +45,19 @@ One validation warning remains on 0.22.2 and current main: `__init__.py:1687 too
 
 The validator's recording context lacks the documented `ctx.llm` property. The plugin tolerates its absence during registration; the minimum-version smoke confirmed a real context still supplies `PluginLlm`. This does not change model-provider or trust-gate behavior.
 
+## Live gateway smoke: Business update isolation, 2026-10-19
+
+[PR #37](https://github.com/neoromantic/hermes-telegram-business/pull/37) deployed plugin `d2201a8bf88f2743e0f48d38d6c5461bfc741d60` to `baus`. [All 700 tests passed on Python 3.11–3.14 with PTB 22.8](https://github.com/neoromantic/hermes-telegram-business/actions/runs/39272026538). The separate local `telegram-business-dm-passive-guard` was disabled; its files remain installed. `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` was not enabled.
+
+- `hermes-gateway-baus.service` restarted at 14:51:08 UTC. Telegram, API, and webhook reported `connected`, the gateway reported `running`, and its session store reported `ok`.
+- Hermes core remained `818c13be1dc4fd28987e1e881a9408224afd4535` (0.21.6). The `hermes plugins disable` launcher unexpectedly completed a pending source-update dependency tail before disabling the guard. The running gateway used managed Python 3.14.7 and PTB 22.8; `uv pip check` reported all 152 installed packages compatible in that active environment. The older Python 3.11.16 venv also passed `python -m pip check`. No core source upgrade was requested.
+- The real owner account sent the Manage Bot `/start bizChat<id>` payload in the bot DM. The panel showed the chat label, stored `off` mode, all four modes, Reset, and Refresh. Selecting `own` returned `Transcription: own`; after the voice check, selecting `off` returned `Transcription: off` and restored the selected button.
+- A six-second synthetic owner voice note in the existing controlled Business conversation was accepted with `mode=own direction=own decision=transcribe reason=own_message`. It received the complete transcript in its original caption. The test voice was then deleted for both parties; the bot-DM fixture and its generated replies were also removed.
+- A separate panel-follow-up deployment advanced the plugin to `0b4ea669f6035e5ef2d559b31219873f7cbd3010` and restarted the gateway at 15:16:44 UTC; all platforms reconnected by 15:17:29. That revision includes `d2201a8` as an ancestor and retains the Business-update isolation; the local passive guard remains disabled. Exclude this 45-second interruption from the traffic observation.
+- Observation from 14:51:43 to 15:22:59 UTC covered more than 30 healthy minutes after excluding that interruption. The plugin consumed eight updates across the bot-DM Business mirror and the controlled voice/deletion fixture; the old local guard recorded zero skips, and `state.db` had zero new Telegram user/assistant messages for those consumed Business chat IDs. No natural human-contact text arrived in this window, so fresh incoming-contact isolation is **pending**, not a passed live check. By coordinator decision, the post-rename deployment smoke will collect that evidence.
+
+The separate local guard can be restored with `HERMES_HOME=/root/bots/baus/.hermes-runtime-baus hermes plugins enable telegram-business-dm-passive-guard` and a gateway restart. Keep `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` unset for this plugin's default protection.
+
 ## Live gateway smoke: owner panel, 2026-10-19
 
 On the owner's gateway at `de52645`: sending `/start bizChat<chat_id>` to the bot from the owner's account (what "Manage Bot" sends) opened the panel with the chat label, the current mode (`off`), the four mode buttons, Reset, and Refresh. Tapping the current mode answered with the toast "Transcription: off" and kept the mode. Nothing appeared in the Business chat.
