@@ -13,6 +13,21 @@ Source = "https://github.com/neoromantic/telesec"
 Issues = "https://github.com/neoromantic/telesec/issues"
 Changelog = "https://github.com/neoromantic/telesec/blob/main/CHANGELOG.md"
 
+# Telesec runs inside a Hermes gateway and has no runtime dependencies of its own.
+# The dev group mirrors what Hermes provides (PTB, YAML) plus the test and lint tools.
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "python-telegram-bot==22.8",
+    "pyyaml>=6.0.3",
+    "ruamel.yaml>=0.19.1",
+    "ruff==0.17.1",
+]
+
+[tool.uv]
+package = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --confcutdir=tests"
