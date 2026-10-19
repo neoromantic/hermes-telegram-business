@@ -9,9 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import test_plugin
 import yaml
 
-from test_plugin import plugin
+# The shared plugin fixture. An assignment, not an import, so ruff doesn't treat the
+# test parameters that use it as redefinitions (F811).
+plugin = test_plugin.plugin
 
 
 def test_first_start_migrates_all_private_files_and_config_idempotently(plugin, tmp_path, monkeypatch):

@@ -5,8 +5,8 @@ import asyncio
 import contextlib
 import errno
 import hashlib
-import io
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -15,7 +15,7 @@ import threading
 import types
 import uuid
 from contextvars import ContextVar
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -120,7 +120,7 @@ def make_business_text_update(
             last_name=from_user_last_name,
             language_code=from_user_language_code,
         ),
-        date=date or datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc),
+        date=date or datetime(2026, 7, 19, 10, 0, tzinfo=UTC),
         text=text,
         caption=caption,
         reply_to_message=None
@@ -161,7 +161,7 @@ def make_business_media_update(
             last_name="Customer",
             language_code="en",
         ),
-        date=date or datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc),
+        date=date or datetime(2026, 7, 19, 10, 0, tzinfo=UTC),
         text=None,
         caption=caption,
         voice=SimpleNamespace(file_id="voice-1"),
@@ -406,7 +406,7 @@ def test_fsync_parent_directory_surfaces_real_io_failures(plugin, monkeypatch: p
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync only")
 def test_first_append_fsyncs_new_directories_and_first_month_file_in_order(plugin, monkeypatch: pytest.MonkeyPatch):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     root = history.history_root()
     data_dir = root.parent.parent
     transport_dir = root.parent
@@ -450,7 +450,7 @@ def test_first_append_fsyncs_new_directories_and_first_month_file_in_order(plugi
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync only")
 def test_subsequent_append_to_existing_month_skips_parent_directory_fsync(plugin, monkeypatch: pytest.MonkeyPatch):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     chat_dir = history._history_chat_dir("business-123", 991)
     first_record = history._build_event(
         event_type="message.created",
@@ -495,7 +495,7 @@ def test_subsequent_append_to_existing_month_skips_parent_directory_fsync(plugin
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync only")
 def test_first_append_surfaces_directory_fsync_failures(plugin, monkeypatch: pytest.MonkeyPatch):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     chat_dir = history._history_chat_dir("business-123", 991)
     month_path = chat_dir / history._month_filename(base)
 
@@ -527,7 +527,7 @@ def test_first_append_surfaces_directory_fsync_failures(plugin, monkeypatch: pyt
 
 class TimerHarness:
     class FakeTimer:
-        def __init__(self, registry: list["TimerHarness.FakeTimer"], interval: float, function, args=None, kwargs=None):
+        def __init__(self, registry: list[TimerHarness.FakeTimer], interval: float, function, args=None, kwargs=None):
             self._registry = registry
             self.interval = interval
             self.function = function
@@ -762,7 +762,7 @@ async def test_caption_only_media_update_creates_no_history_file(enabled_history
 @pytest.mark.asyncio
 async def test_raw_history_records_create_edit_delete_without_needing_gateway_dispatch(enabled_history, tmp_path: Path, monkeypatch):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     bot = FakeBot()
 
     await plugin._history_support.observe_ptb_update(
@@ -831,7 +831,7 @@ async def test_raw_history_records_create_edit_delete_without_needing_gateway_di
 @pytest.mark.asyncio
 async def test_history_records_store_canonical_source_for_all_event_types(enabled_history):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     bot = FakeBot()
 
     await plugin._history_support.observe_ptb_update(
@@ -870,7 +870,7 @@ async def test_history_records_store_canonical_source_for_all_event_types(enable
 @pytest.mark.asyncio
 async def test_create_and_edit_records_store_profile_snapshots_and_catalog_aliases(enabled_history):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(
@@ -958,7 +958,7 @@ async def test_catalog_status_is_read_only_and_contacts_fail_closed_without_muta
 ):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="first contact", update_id=1, date=base),
         bot=FakeBot(),
@@ -1026,7 +1026,7 @@ async def test_catalog_backed_cli_reads_fail_closed_on_stale_catalog_without_mut
 ):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="first contact", update_id=1, date=base),
         bot=FakeBot(),
@@ -1075,7 +1075,7 @@ async def test_missing_root_lock_fails_closed_without_mutation(
 ):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="root lock archive", update_id=1, date=base),
         bot=FakeBot(),
@@ -1109,7 +1109,7 @@ async def test_missing_chat_lock_fails_closed_without_mutation(
 ):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="chat lock archive", update_id=1, date=base),
         bot=FakeBot(),
@@ -1137,7 +1137,7 @@ def test_catalog_rebuild_supports_old_jsonl_without_profile_snapshots(plugin, mo
             plugin,
             event_type="message.created",
             source="business_message",
-            observed_at=datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc),
+            observed_at=datetime(2026, 7, 19, 10, 0, tzinfo=UTC),
             telegram_update_id=1,
             direction="inbound",
             text="record",
@@ -1160,7 +1160,7 @@ async def test_catalog_missing_and_corrupt_can_be_rebuilt_explicitly_without_tou
 ):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="hello", update_id=1, date=base),
         bot=FakeBot(),
@@ -1211,7 +1211,7 @@ async def test_catalog_missing_and_corrupt_can_be_rebuilt_explicitly_without_tou
 async def test_catalog_rebuild_updates_only_derived_state(enabled_history):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="first contact", message_id=77, update_id=1, date=base),
         bot=FakeBot(),
@@ -1253,7 +1253,7 @@ async def test_catalog_rebuild_updates_only_derived_state(enabled_history):
 async def test_catalog_rebuild_fails_on_torn_tail_without_mutation_then_succeeds_after_verify_repair(enabled_history):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="hello", message_id=77, update_id=1, date=base),
         bot=FakeBot(),
@@ -1292,7 +1292,7 @@ async def test_catalog_rebuild_fails_on_torn_tail_without_mutation_then_succeeds
 async def test_catalog_rebuild_reinitializes_missing_locks_and_restores_normal_reads(enabled_history):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="rebuild init", update_id=1, date=base),
         bot=FakeBot(),
@@ -1316,7 +1316,7 @@ async def test_catalog_rebuild_reinitializes_missing_locks_and_restores_normal_r
 async def test_capture_write_reinitializes_missing_locks_and_restores_normal_reads(enabled_history):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="before reinit", message_id=77, update_id=1, date=base),
         bot=FakeBot(),
@@ -1345,7 +1345,7 @@ async def test_capture_write_reinitializes_missing_locks_and_restores_normal_rea
 async def test_verify_repair_reinitializes_missing_locks_and_restores_normal_verify(enabled_history):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await history.observe_ptb_update(
         make_business_text_update(text="verify init", update_id=1, date=base),
         bot=FakeBot(),
@@ -1405,7 +1405,7 @@ async def test_catalog_rebuild_exhaustion_returns_cli_error(
     expected_output: str,
 ):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="hello", update_id=1, date=base),
@@ -1437,7 +1437,7 @@ async def test_catalog_rebuild_exhaustion_returns_cli_error(
 def test_catalog_concurrent_refresh_preserves_all_entries(plugin):
     history = plugin._history_support
     history.rebuild_contact_catalog()
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     record_one = history._build_event(
         event_type="message.created",
         source="business_message",
@@ -1495,7 +1495,7 @@ def test_capture_root_lock_serializes_canonical_append_and_catalog_publish(enabl
     plugin = enabled_history
     history = plugin._history_support
     history.rebuild_contact_catalog()
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     update_one = make_business_text_update(
         business_id="business-123",
         chat_id=991,
@@ -1603,7 +1603,7 @@ async def test_numeric_chat_lookup_without_connection_checks_canonical_duplicate
     capsys,
 ):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(
@@ -1676,7 +1676,7 @@ async def test_numeric_chat_lookup_without_connection_checks_canonical_duplicate
 @pytest.mark.asyncio
 async def test_torn_tail_is_repaired_before_next_append_without_full_read_bytes(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="one", message_id=77, update_id=1, date=base),
@@ -1711,7 +1711,7 @@ async def test_torn_tail_is_repaired_before_next_append_without_full_read_bytes(
 @pytest.mark.asyncio
 async def test_streamed_show_errors_on_torn_tail_without_mutation(enabled_history, capsys):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="one", message_id=77, update_id=1, date=base),
@@ -1737,7 +1737,7 @@ async def test_streamed_show_errors_on_torn_tail_without_mutation(enabled_histor
 async def test_streamed_read_waits_for_concurrent_append_and_never_exposes_partial_json(enabled_history):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await history.observe_ptb_update(
         make_business_text_update(text="one", message_id=77, update_id=1, date=base),
@@ -1769,16 +1769,15 @@ async def test_streamed_read_waits_for_concurrent_append_and_never_exposes_parti
     reader_result: dict[str, Any] = {}
 
     def _writer() -> None:
-        with history._chat_writer_lock(chat_dir):
-            with history_file.open("a", encoding="utf-8") as handle:
-                handle.write(serialized[:midpoint])
-                handle.flush()
-                os.fsync(handle.fileno())
-                writer_started.set()
-                assert release_writer.wait(timeout=5)
-                handle.write(serialized[midpoint:])
-                handle.flush()
-                os.fsync(handle.fileno())
+        with history._chat_writer_lock(chat_dir), history_file.open("a", encoding="utf-8") as handle:
+            handle.write(serialized[:midpoint])
+            handle.flush()
+            os.fsync(handle.fileno())
+            writer_started.set()
+            assert release_writer.wait(timeout=5)
+            handle.write(serialized[midpoint:])
+            handle.flush()
+            os.fsync(handle.fileno())
 
     def _reader() -> None:
         try:
@@ -1815,8 +1814,8 @@ async def test_streamed_read_waits_for_concurrent_prune_and_keeps_selected_parti
 ):
     plugin = enabled_history
     history = plugin._history_support
-    old_time = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
-    current_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    old_time = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
+    current_time = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await history.observe_ptb_update(
         make_business_text_update(text="old month", message_id=77, update_id=1, date=old_time),
@@ -1886,7 +1885,7 @@ async def test_streamed_read_waits_for_concurrent_prune_and_keeps_selected_parti
 def test_streamed_reader_holding_chat_does_not_deadlock_capture(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     asyncio.run(
         history.observe_ptb_update(
@@ -1968,7 +1967,7 @@ def test_streamed_reader_holding_chat_does_not_deadlock_capture(enabled_history,
 def test_reinitialized_read_lock_still_serializes_capture_writer(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     asyncio.run(
         history.observe_ptb_update(
@@ -2052,7 +2051,7 @@ def test_reinitialized_read_lock_still_serializes_capture_writer(enabled_history
 @pytest.mark.asyncio
 async def test_second_append_uses_cached_chat_state_without_full_reload(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     original_loader = plugin._history_support._load_chat_state_from_disk
     loads = 0
 
@@ -2081,7 +2080,7 @@ async def test_second_append_uses_cached_chat_state_without_full_reload(enabled_
 @pytest.mark.asyncio
 async def test_external_file_signature_change_invalidates_cached_chat_state(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     original_loader = plugin._history_support._load_chat_state_from_disk
     loads = 0
 
@@ -2134,7 +2133,7 @@ async def test_external_file_signature_change_invalidates_cached_chat_state(enab
 @pytest.mark.asyncio
 async def test_history_permissions_are_private_on_posix(enabled_history):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="permissions", message_id=77, update_id=1, date=base),
@@ -2161,7 +2160,7 @@ async def test_direction_resolution_accepts_sender_business_bot_and_owner_lookup
     monkeypatch: pytest.MonkeyPatch,
 ):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "*")
 
     await plugin._history_support.observe_ptb_update(
@@ -2267,8 +2266,8 @@ async def test_deletion_retry_after_original_partition_is_pruned_keeps_one_tombs
     tmp_path: Path,
 ):
     history = enabled_history._history_support
-    created_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    deleted_at = datetime(2026, 7, 19, tzinfo=timezone.utc)
+    created_at = datetime(2026, 6, 1, tzinfo=UTC)
+    deleted_at = datetime(2026, 7, 19, tzinfo=UTC)
     assert await history.observe_ptb_update(
         make_business_text_update(date=created_at, update_id=1), bot=FakeBot(), now=created_at,
     )
@@ -2326,7 +2325,7 @@ async def _delete_and_classify(
     base: datetime | None = None,
     reload_after_delete: bool = False,
 ):
-    base = base or datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = base or datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
@@ -2404,7 +2403,7 @@ async def test_deleted_message_without_original_is_unclassifiable(plugin, monkey
 @pytest.mark.asyncio
 async def test_identical_pre_delete_message_within_nearby_before_window_is_likely_duplicate(enabled_history):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     bot = FakeBot()
 
     await plugin._history_support.observe_ptb_update(
@@ -2434,7 +2433,7 @@ async def test_identical_pre_delete_message_within_nearby_before_window_is_likel
 @pytest.mark.asyncio
 async def test_post_delete_exact_duplicate_is_preferred_over_nearer_pre_delete_duplicate(enabled_history):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     bot = FakeBot()
 
     await plugin._history_support.observe_ptb_update(
@@ -2470,7 +2469,7 @@ async def test_post_delete_exact_duplicate_is_preferred_over_nearer_pre_delete_d
 @pytest.mark.asyncio
 async def test_post_delete_correction_beats_pre_delete_duplicate_and_similar_candidates(enabled_history):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     bot = FakeBot()
     original_text = "Hello wrld"
     correction_text = "Hello world"
@@ -2520,7 +2519,7 @@ async def test_post_delete_correction_beats_pre_delete_duplicate_and_similar_can
 @pytest.mark.asyncio
 async def test_identical_pre_delete_message_outside_nearby_before_window_is_unexplained(enabled_history):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     bot = FakeBot()
 
     await plugin._history_support.observe_ptb_update(
@@ -2553,7 +2552,7 @@ async def test_deleted_message_classification_survives_restart(plugin, monkeypat
     monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="Please call me back", message_id=77, update_id=1, date=base),
@@ -2587,7 +2586,7 @@ async def test_idle_deletion_is_classified_by_scheduler_without_manual_maintain(
     monkeypatch: pytest.MonkeyPatch,
 ):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     timers = TimerHarness()
     monkeypatch.setattr(plugin._history_support.threading, "Timer", timers.timer)
 
@@ -2619,7 +2618,7 @@ async def test_startup_maintenance_classifies_overdue_deletions(plugin, monkeypa
     monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     timers = TimerHarness()
     monkeypatch.setattr(plugin._history_support.threading, "Timer", timers.timer)
 
@@ -2650,7 +2649,7 @@ async def test_startup_maintenance_recovers_pending_timer_before_window(plugin, 
     monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     first_timers = TimerHarness()
     monkeypatch.setattr(plugin._history_support.threading, "Timer", first_timers.timer)
 
@@ -2693,11 +2692,11 @@ async def test_month_boundary_pending_deletion_protects_closed_partition_until_c
     monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
-    june_message_at = datetime(2026, 6, 30, 23, 59, 50, tzinfo=timezone.utc)
-    deleted_at = datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
-    replacement_at = datetime(2026, 7, 1, 0, 0, 5, tzinfo=timezone.utc)
-    before_due = datetime(2026, 7, 1, 0, 0, 6, tzinfo=timezone.utc)
-    after_due = datetime(2026, 7, 1, 0, 0, 20, tzinfo=timezone.utc)
+    june_message_at = datetime(2026, 6, 30, 23, 59, 50, tzinfo=UTC)
+    deleted_at = datetime(2026, 6, 30, 23, 59, 59, tzinfo=UTC)
+    replacement_at = datetime(2026, 7, 1, 0, 0, 5, tzinfo=UTC)
+    before_due = datetime(2026, 7, 1, 0, 0, 6, tzinfo=UTC)
+    after_due = datetime(2026, 7, 1, 0, 0, 20, tzinfo=UTC)
     first_timers = TimerHarness()
     monkeypatch.setattr(plugin._history_support.threading, "Timer", first_timers.timer)
 
@@ -2795,8 +2794,8 @@ async def test_month_boundary_pending_deletion_protects_closed_partition_until_c
 @pytest.mark.asyncio
 async def test_retention_and_size_prune_closed_partitions_but_preserve_active(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
-    old_time = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
-    current_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    old_time = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+    current_time = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="old month", message_id=77, update_id=1, date=old_time),
@@ -2828,8 +2827,8 @@ async def test_retention_prune_rebuilds_catalog_from_remaining_canonical_history
     monkeypatch: pytest.MonkeyPatch,
 ):
     plugin = enabled_history
-    june_time = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
-    july_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    june_time = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
+    july_time = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(
@@ -2900,8 +2899,8 @@ async def test_post_prune_catalog_rebuild_failure_marks_dirty_until_explicit_reb
 ):
     plugin = enabled_history
     history = plugin._history_support
-    june_time = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
-    july_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    june_time = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
+    july_time = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await history.observe_ptb_update(
         make_business_text_update(text="old month", message_id=77, update_id=1, date=june_time),
@@ -2949,7 +2948,7 @@ async def test_post_prune_catalog_rebuild_failure_marks_dirty_until_explicit_reb
 @pytest.mark.asyncio
 async def test_active_month_cap_failure_is_explicit(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
-    current_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="x" * 1500, message_id=77, update_id=1, date=current_time),
         bot=FakeBot(),
@@ -2972,10 +2971,10 @@ async def test_verify_warns_not_errors_when_retention_prunes_old_delete_tombston
     monkeypatch: pytest.MonkeyPatch,
 ):
     plugin = enabled_history
-    original_time = datetime(2026, 6, 30, 23, 59, 40, tzinfo=timezone.utc)
-    deleted_time = datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
-    classified_time = datetime(2026, 7, 1, 0, 0, 20, tzinfo=timezone.utc)
-    verify_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    original_time = datetime(2026, 6, 30, 23, 59, 40, tzinfo=UTC)
+    deleted_time = datetime(2026, 6, 30, 23, 59, 59, tzinfo=UTC)
+    classified_time = datetime(2026, 7, 1, 0, 0, 20, tzinfo=UTC)
+    verify_time = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="carry forward", message_id=77, update_id=1, date=original_time),
@@ -3005,7 +3004,7 @@ async def test_verify_warns_not_errors_when_retention_prunes_old_delete_tombston
 
 def test_collect_history_stats_streams_bounded_snapshot_without_full_load(plugin, monkeypatch: pytest.MonkeyPatch):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     records: list[dict[str, Any]] = []
     update_id = 1
 
@@ -3158,8 +3157,8 @@ async def test_collect_history_stats_holds_root_snapshot_against_concurrent_capt
 ):
     plugin = enabled_history
     history = plugin._history_support
-    june_time = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
-    july_time = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    june_time = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
+    july_time = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await history.observe_ptb_update(
         make_business_text_update(text="old month", message_id=77, update_id=1, date=june_time),
@@ -3270,7 +3269,7 @@ async def test_collect_history_stats_holds_root_snapshot_against_concurrent_capt
 
 def test_verify_history_streams_bounded_archive_and_detects_duplicates(plugin, monkeypatch: pytest.MonkeyPatch):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     records: list[dict[str, Any]] = []
     update_id = 1
 
@@ -3544,7 +3543,7 @@ def test_verify_history_streams_bounded_archive_and_detects_duplicates(plugin, m
 
 def test_verify_history_reports_active_month_torn_tail_without_repair(plugin):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     record = make_history_record(
         plugin,
         event_type="message.created",
@@ -3575,7 +3574,7 @@ def test_verify_history_reports_active_month_torn_tail_without_repair(plugin):
 
 def test_verify_history_repairs_valid_final_record_missing_newline(plugin):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     record = make_history_record(
         plugin,
         event_type="message.created",
@@ -3608,7 +3607,7 @@ def test_verify_history_repairs_valid_final_record_missing_newline(plugin):
 
 def test_verify_history_repairs_partial_torn_tail_without_full_load(plugin, monkeypatch: pytest.MonkeyPatch):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     record = make_history_record(
         plugin,
         event_type="message.created",
@@ -3657,7 +3656,7 @@ def test_verify_history_repairs_partial_torn_tail_without_full_load(plugin, monk
 
 def test_verify_history_cleans_duplicate_temp_files_when_duplicate_audit_errors(plugin, monkeypatch: pytest.MonkeyPatch):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     record = make_history_record(
         plugin,
         event_type="message.created",
@@ -3691,7 +3690,7 @@ def test_verify_history_cleans_duplicate_temp_files_when_duplicate_audit_errors(
 
 def test_verify_history_allows_multiple_classifications_for_one_retained_tombstone_out_of_order(plugin):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     deleted = make_history_record(
         plugin,
         event_type="message.deleted",
@@ -3754,7 +3753,7 @@ def test_verify_history_allows_multiple_classifications_for_one_retained_tombsto
 def test_streamed_read_path_does_not_truncate_during_root_scoped_verify_pass(enabled_history, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     asyncio.run(
         history.observe_ptb_update(
             make_business_text_update(text="root scoped verify", message_id=77, update_id=1, date=base),
@@ -3827,7 +3826,7 @@ def test_streamed_read_path_does_not_truncate_during_root_scoped_verify_pass(ena
 def test_known_chat_type_fallback_does_not_repair_torn_tail(enabled_history):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     asyncio.run(
         history.observe_ptb_update(
             make_business_text_update(text="known type source", message_id=77, update_id=1, date=base),
@@ -3867,7 +3866,7 @@ def test_known_chat_type_fallback_does_not_repair_torn_tail(enabled_history):
 def test_history_cli_read_paths_error_on_torn_tail_without_mutation(enabled_history, argv: tuple[str, ...]):
     plugin = enabled_history
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     asyncio.run(
         history.observe_ptb_update(
             make_business_text_update(text="cli torn tail", message_id=77, update_id=1, date=base),
@@ -3892,7 +3891,7 @@ def test_history_cli_read_paths_error_on_torn_tail_without_mutation(enabled_hist
 
 def test_verify_history_caps_diagnostics_and_cli_output(plugin, monkeypatch: pytest.MonkeyPatch):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     records: list[dict[str, Any]] = []
     update_id = 1
 
@@ -4044,7 +4043,7 @@ def _run_history_cli(plugin, *argv: str) -> tuple[int, str]:
 @pytest.mark.asyncio
 async def test_history_cli_show_search_export_deletions_and_verify(enabled_history, capsys, monkeypatch: pytest.MonkeyPatch):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="first alpha", message_id=77, update_id=1, date=base),
         bot=FakeBot(),
@@ -4111,7 +4110,7 @@ async def test_history_cli_show_search_export_deletions_and_verify(enabled_histo
 @pytest.mark.asyncio
 async def test_history_cli_contacts_catalog_and_contact_resolution(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
     monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(
             chat_id=991,
@@ -4177,7 +4176,7 @@ async def test_history_cli_numeric_chat_resolution_uses_fresh_catalog_for_duplic
     capsys,
 ):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(
@@ -4243,7 +4242,7 @@ async def test_history_cli_numeric_chat_resolution_surfaces_catalog_freshness_er
     capsys,
 ):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="catalog error", update_id=1, date=base),
@@ -4286,7 +4285,7 @@ async def test_history_cli_contact_lookup_normalizes_unicode_nfkc_and_casefold(
     capsys,
 ):
     monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     decomposed_name = "Cafe\u0301 Customer"
     composed_name = "Caf\u00e9 Customer"
 
@@ -4351,7 +4350,7 @@ async def test_history_cli_contact_lookup_normalizes_unicode_nfkc_and_casefold(
 @pytest.mark.asyncio
 async def test_history_cli_chat_search_normalizes_unicode_nfkc_and_casefold(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
     monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     decomposed_text = "Cafe\u0301 follow-up"
     fullwidth_text = "Ｆｕｌｌｗｉｄｔｈ invoice"
     ascii_text = "plain ascii refund"
@@ -4403,7 +4402,7 @@ async def test_history_cli_global_search_normalizes_unicode_nfkc_and_casefold(
     capsys,
 ):
     monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     decomposed_text = "Cafe\u0301 refund"
     fullwidth_text = "Ｆｕｌｌｗｉｄｔｈ receipt"
     ascii_text = "plain ascii refund"
@@ -4469,29 +4468,29 @@ async def test_history_cli_prunes_months_and_answers_contact_last_week_workflow(
     capsys,
 ):
     monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
-    fixed_now = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(plugin._history_support, "_utcnow", lambda: fixed_now)
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(
             text="june recap",
-            date=datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2026, 6, 29, 12, 0, tzinfo=UTC),
             update_id=1,
             chat_username="casey-weekly",
             from_user_username="casey-weekly",
         ),
         bot=FakeBot(),
-        now=datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 29, 12, 0, tzinfo=UTC),
     )
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(
             text="last week plan",
-            date=datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2026, 7, 20, 12, 0, tzinfo=UTC),
             update_id=2,
             chat_username="casey-weekly",
             from_user_username="casey-weekly",
         ),
         bot=FakeBot(),
-        now=datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 7, 20, 12, 0, tzinfo=UTC),
     )
 
     selected: list[str] = []
@@ -4518,7 +4517,7 @@ async def test_history_cli_prunes_months_and_answers_contact_last_week_workflow(
 @pytest.mark.asyncio
 async def test_history_cli_global_search_is_bounded(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
     monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     for offset, chat_id, text in (
         (0, 991, "refund alpha"),
         (1, 992, "refund beta"),
@@ -4556,7 +4555,7 @@ def test_streaming_query_scale_prunes_partitions_and_keeps_results_bounded(plugi
     records = []
     for month, total in ((6, 250), (7, 1250)):
         for index in range(total):
-            observed_at = datetime(2026, month, 10, 12, 0, tzinfo=timezone.utc) + timedelta(seconds=index)
+            observed_at = datetime(2026, month, 10, 12, 0, tzinfo=UTC) + timedelta(seconds=index)
             records.append(
                 history._build_event(
                     event_type="message.created",
@@ -4617,7 +4616,7 @@ def test_streaming_query_scale_prunes_partitions_and_keeps_results_bounded(plugi
 @pytest.mark.asyncio
 async def test_history_cli_escapes_control_text_but_keeps_unicode_readable(enabled_history, capsys):
     plugin = enabled_history
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     text = "prefix\r\t\x1b[31mred\x00\x7f\x85\n🙂suffix"
 
     await plugin._history_support.observe_ptb_update(
@@ -4649,7 +4648,7 @@ async def test_history_cli_escapes_control_text_but_keeps_unicode_readable(enabl
 
 def test_history_cli_deletions_streams_latest_classified_rows_without_full_load(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     records: list[dict[str, Any]] = []
     update_id = 1
 
@@ -4763,7 +4762,7 @@ def test_history_cli_deletions_pending_streams_live_tombstones_with_bounded_stat
     capsys,
 ):
     history = plugin._history_support
-    base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     records: list[dict[str, Any]] = []
     update_id = 1
 

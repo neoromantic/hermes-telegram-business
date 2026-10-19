@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import re
 import json
+import re
 import sys
 import tomllib
 import types
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -198,7 +198,7 @@ def make_message(
         "chat": SimpleNamespace(id=991),
         "message_id": 77,
         "from_user": SimpleNamespace(id=from_user_id),
-        "date": date or datetime.now(timezone.utc),
+        "date": date or datetime.now(UTC),
         "voice": None,
         "video_note": None,
         "caption": caption,
@@ -497,7 +497,7 @@ def test_nonmatching_events_pass_through(plugin, event):
 
 
 def test_normalizes_business_message_identity_relationships_and_media(plugin):
-    timestamp = datetime(2026, 7, 18, 10, 30, tzinfo=timezone.utc)
+    timestamp = datetime(2026, 7, 18, 10, 30, tzinfo=UTC)
     edit_timestamp = timestamp + timedelta(minutes=2)
     message = make_message(date=timestamp)
     message.edit_date = edit_timestamp
@@ -812,7 +812,7 @@ async def test_hook_skips_agent_path_and_suppresses_duplicate_update(plugin):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("media_kind", ["voice", "video_note"])
 async def test_edited_voice_media_is_skipped_without_retranscription(plugin, media_kind):
-    timestamp = datetime(2026, 7, 18, 10, 30, tzinfo=timezone.utc)
+    timestamp = datetime(2026, 7, 18, 10, 30, tzinfo=UTC)
     original = make_event(make_message(media_kind=media_kind, date=timestamp))
     original.update_id = 100
     original.update_type = "business_message"
@@ -978,7 +978,7 @@ async def test_uneditable_outgoing_transcript_falls_back_to_separate_reply(
     monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     if failure == "expired":
-        message.date = datetime.now(timezone.utc) - timedelta(hours=49)
+        message.date = datetime.now(UTC) - timedelta(hours=49)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
     if failure == "api":

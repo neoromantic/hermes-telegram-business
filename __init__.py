@@ -20,13 +20,14 @@ import subprocess
 import threading
 import time
 import unicodedata
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Iterable, Optional, cast
+from typing import Any, cast
 
 try:
     from hermes_constants import get_hermes_home
@@ -76,11 +77,10 @@ else:
 
 from . import dossier_support as _dossier_support
 from . import history_support as _history_support
-from .migration import migrate
 from . import owner_panel as _owner_panel
 from . import stats_panel as _stats_panel
 from . import transcription_modes as _transcription_modes
-
+from .migration import migrate
 
 logger = logging.getLogger(__name__)
 
@@ -170,12 +170,12 @@ class MediaMetadata:
     kind: str
     file_id: Any = None
     file_unique_id: Any = None
-    mime_type: Optional[str] = None
-    file_size: Optional[int] = None
-    duration: Optional[int] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    file_name: Optional[str] = None
+    mime_type: str | None = None
+    file_size: int | None = None
+    duration: int | None = None
+    width: int | None = None
+    height: int | None = None
+    file_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -191,12 +191,12 @@ class TelegramBusinessEvent:
     update_id: Any
     direction: str
     update_type: str
-    timestamp: Optional[datetime]
-    edit_timestamp: Optional[datetime]
+    timestamp: datetime | None
+    edit_timestamp: datetime | None
     reply_to_message_id: Any
     edited_message_id: Any
     deleted_message_ids: tuple[Any, ...]
-    media: Optional[MediaMetadata]
+    media: MediaMetadata | None
     raw_message: Any = field(repr=False, compare=False)
     gateway_event: Any = field(repr=False, compare=False)
 
@@ -224,12 +224,12 @@ class ModuleResult:
     """An explicit decision returned by a module during synchronous routing."""
 
     behavior: ModuleBehavior
-    reason: Optional[str] = None
-    duplicate_reason: Optional[str] = None
-    work: Optional[Callable[[], Awaitable[Any]]] = field(default=None, repr=False, compare=False)
+    reason: str | None = None
+    duplicate_reason: str | None = None
+    work: Callable[[], Awaitable[Any]] | None = field(default=None, repr=False, compare=False)
 
     @classmethod
-    def pass_through(cls) -> "ModuleResult":
+    def pass_through(cls) -> ModuleResult:
         return cls(ModuleBehavior.PASS_THROUGH)
 
     @classmethod
@@ -237,9 +237,9 @@ class ModuleResult:
         cls,
         reason: str,
         *,
-        duplicate_reason: Optional[str] = None,
-        work: Optional[Callable[[], Awaitable[Any]]] = None,
-    ) -> "ModuleResult":
+        duplicate_reason: str | None = None,
+        work: Callable[[], Awaitable[Any]] | None = None,
+    ) -> ModuleResult:
         return cls(
             ModuleBehavior.HANDLED,
             reason=reason,
@@ -424,7 +424,7 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
             logger.debug("%s: business chat note failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         try:
             await _history_support.observe_ptb_update(update, bot=context.bot)
-        except Exception as exc:  # noqa: BLE001 - capture failures must not break dispatch
+        except Exception as exc:
             logger.warning("%s: business history observation failed: %s", _PLUGIN_NAME, exc, exc_info=True)
         message = update.effective_message
         if _is_business_voice_media(message) and (
@@ -690,14 +690,14 @@ _MEDIA_KINDS = (
 )
 
 
-def _normalize_timestamp(value: Any) -> Optional[datetime]:
+def _normalize_timestamp(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(value, tz=timezone.utc)
+            return datetime.fromtimestamp(value, tz=UTC)
         except (OSError, OverflowError, ValueError):
             return None
     return None
@@ -750,7 +750,7 @@ def _event_direction(event: Any, message: Any) -> str:
     return "unknown"
 
 
-def _media_metadata(message: Any) -> Optional[MediaMetadata]:
+def _media_metadata(message: Any) -> MediaMetadata | None:
     for kind in _MEDIA_KINDS:
         payload = _get(message, kind)
         if payload is None:
@@ -786,7 +786,7 @@ def _event_identity(
     update_type: str,
     message_id: Any,
     update_id: Any,
-    edit_timestamp: Optional[datetime],
+    edit_timestamp: datetime | None,
     deleted_message_ids: tuple[Any, ...],
 ) -> tuple[str, ...]:
     if not business_connection_id or chat_id is None:
@@ -814,7 +814,7 @@ def _event_identity(
     return identity
 
 
-def _normalize_business_event(event: Any) -> Optional[TelegramBusinessEvent]:
+def _normalize_business_event(event: Any) -> TelegramBusinessEvent | None:
     """Return the module-facing Business event, or None for unsupported input."""
     if not _is_telegram_event(event):
         return None
@@ -873,7 +873,7 @@ def _normalize_business_event(event: Any) -> Optional[TelegramBusinessEvent]:
     )
 
 
-def _business_voice_message(event: Any) -> Optional[Any]:
+def _business_voice_message(event: Any) -> Any | None:
     if _disabled() or not _is_telegram_event(event):
         return None
     message = getattr(event, "raw_message", None)
@@ -930,9 +930,7 @@ def _audio_probe_has_meaningful_speech(transcript: str, min_words: int) -> bool:
     elif len(set(words)) < 2:
         return False
     normalized = " ".join(words)
-    if any(phrase in normalized for phrase in _AUDIO_PROBE_FALSE_SPEECH_PHRASES):
-        return False
-    return True
+    return not any(phrase in normalized for phrase in _AUDIO_PROBE_FALSE_SPEECH_PHRASES)
 
 
 def _audio_file_extension(media: Any) -> str:
@@ -943,7 +941,7 @@ def _audio_file_extension(media: Any) -> str:
     return _AUDIO_MIME_EXTENSIONS.get(mime_type, ".audio")
 
 
-def _transcribable_payload(message: Any) -> Optional[tuple[Any, str, str]]:
+def _transcribable_payload(message: Any) -> tuple[Any, str, str] | None:
     """Return (Telegram payload, label, extension) for supported Business media."""
     voice = getattr(message, "voice", None)
     if voice is not None:
@@ -1142,7 +1140,7 @@ def _format_transcript_messages(transcript: str) -> list[str]:
     return messages
 
 
-def _build_transcript_caption(message: Any, transcript: str) -> Optional[str]:
+def _build_transcript_caption(message: Any, transcript: str) -> str | None:
     """Build a plain short-transcript caption without truncating either text."""
     transcript = (transcript or "").strip()
     if not transcript:
@@ -1167,7 +1165,7 @@ def _expandable_blockquote_entity(text: str, *, offset: int = 0) -> dict[str, An
 def _build_transcript_caption_payload(
     message: Any,
     transcript: str,
-) -> Optional[tuple[str, tuple[Any, ...]]]:
+) -> tuple[str, tuple[Any, ...]] | None:
     """Build a fitting caption plus an entity that collapses the transcript block."""
     caption = _build_transcript_caption(message, transcript)
     if caption is None:
@@ -1184,16 +1182,16 @@ def _build_transcript_caption_payload(
     return caption, (*existing_entities, transcript_entity)
 
 
-def _within_business_edit_window(message: Any, *, now: Optional[datetime] = None) -> bool:
+def _within_business_edit_window(message: Any, *, now: datetime | None = None) -> bool:
     """Fail fast for manual Business messages Telegram will no longer edit."""
     message_date = _get(message, "date")
     if not isinstance(message_date, datetime):
         return True
     if message_date.tzinfo is None:
-        message_date = message_date.replace(tzinfo=timezone.utc)
-    current = now or datetime.now(timezone.utc)
+        message_date = message_date.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
     if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
+        current = current.replace(tzinfo=UTC)
     return (current - message_date).total_seconds() <= _BUSINESS_EDIT_WINDOW_SECONDS
 
 
@@ -1414,13 +1412,13 @@ def _cleanup_enriched_rejection_reasons(original: str, cleaned: str) -> tuple[st
     ratio = len(cleaned_words) / len(original_words)
     if ratio < _DEFAULT_ENRICHED_MIN_WORD_RATIO:
         return (
-            f"candidate retained only {ratio:.3f} of source words; "
-            "return the complete enhanced transcript",
+            (f"candidate retained only {ratio:.3f} of source words; "
+            "return the complete enhanced transcript"),
         )
     if ratio > _DEFAULT_ENRICHED_MAX_WORD_RATIO:
         return (
-            f"candidate expanded to {ratio:.3f} of source words; "
-            "return only the enhanced transcript",
+            (f"candidate expanded to {ratio:.3f} of source words; "
+            "return only the enhanced transcript"),
         )
     return ()
 
@@ -1480,7 +1478,7 @@ async def _cleanup_transcript(
     transcript: str,
     *,
     llm: Any = None,
-    cleanup_fn: Optional[Callable[..., Any]] = None,
+    cleanup_fn: Callable[..., Any] | None = None,
 ) -> str:
     """Return cleaned transcript, or the original transcript on skip/failure."""
     transcript = (transcript or "").strip()
@@ -1593,7 +1591,7 @@ def _notification_kwargs(adapter: Any) -> dict[str, Any]:
         try:
             raw = fn(None) or {}
             return raw if isinstance(raw, dict) else {}
-        except Exception:
+        except Exception:  # noqa: BLE001 - optional adapter hook; a broken one means no extra kwargs
             return {}
     return {}
 
@@ -1609,7 +1607,7 @@ def _get_adapter_and_bot(event: Any, gateway: Any) -> tuple[Any, Any]:
         if callable(get_bot):
             try:
                 bot = get_bot()
-            except Exception:
+            except Exception:  # noqa: BLE001 - a message without a bound bot is handled as no bot
                 bot = None
     return adapter, bot
 
@@ -1816,8 +1814,8 @@ async def _process_business_voice_event(
     *,
     event: Any,
     gateway: Any,
-    transcribe_fn: Optional[Callable[[str], dict[str, Any]]] = None,
-    cleanup_fn: Optional[Callable[..., Any]] = None,
+    transcribe_fn: Callable[[str], dict[str, Any]] | None = None,
+    cleanup_fn: Callable[..., Any] | None = None,
     llm: Any = None,
 ) -> None:
     """Download, transcribe, optionally clean, and reply to one Business voice/video note."""
@@ -1884,7 +1882,7 @@ async def _process_business_voice_event(
             final_text != transcript,
             caption_outcome.value,
         )
-    except Exception as exc:  # noqa: BLE001 - hook task must never kill gateway
+    except Exception as exc:
         logger.warning("%s: business voice handling failed: %s", _PLUGIN_NAME, exc, exc_info=True)
         await _send_error_if_enabled(bot=bot, adapter=adapter, message=message, error=str(exc))
     finally:
@@ -2517,7 +2515,7 @@ def _route_modules(
     *,
     normalized_event: TelegramBusinessEvent,
     gateway: Any,
-    modules: Optional[Iterable[EventModule]] = None,
+    modules: Iterable[EventModule] | None = None,
     llm: Any = None,
 ) -> ModuleResult:
     """Return the first handled result while containing each module's failures."""
@@ -2526,7 +2524,7 @@ def _route_modules(
     for module in selected_modules:
         try:
             enabled = module.enabled()
-        except Exception as exc:  # noqa: BLE001 - one bad module cannot break dispatch
+        except Exception as exc:
             logger.warning("%s: module %s enable check failed: %s", _PLUGIN_NAME, module.name, exc, exc_info=True)
             continue
         if not enabled:
@@ -2538,7 +2536,7 @@ def _route_modules(
         )
         try:
             result = module.route(normalized_event, context)
-        except Exception as exc:  # noqa: BLE001 - later modules must still get the event
+        except Exception as exc:
             logger.warning("%s: module %s routing failed: %s", _PLUGIN_NAME, module.name, exc, exc_info=True)
             continue
         if not isinstance(result, ModuleResult):
@@ -2563,7 +2561,7 @@ async def _run_module_work(work: Callable[[], Awaitable[Any]]) -> None:
     await _maybe_await(work())
 
 
-def _schedule_module_work(work: Optional[Callable[[], Awaitable[Any]]]) -> None:
+def _schedule_module_work(work: Callable[[], Awaitable[Any]] | None) -> None:
     if work is None:
         return
     try:
@@ -2576,7 +2574,7 @@ def _schedule_module_work(work: Optional[Callable[[], Awaitable[Any]]]) -> None:
     task.add_done_callback(_task_done)
 
 
-def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -> Optional[dict[str, str]]:
+def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -> dict[str, str] | None:
     normalized_event = _normalize_business_event(event)
     if normalized_event is None:
         return None
@@ -2591,7 +2589,7 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
 
     try:
         _schedule_module_work(result.work)
-    except Exception as exc:  # noqa: BLE001 - dispatch must survive scheduling failure
+    except Exception as exc:
         _forget_identity(normalized_event.identity)
         logger.warning("%s: failed to schedule module work: %s", _PLUGIN_NAME, exc, exc_info=True)
     return {"action": "skip", "reason": result.reason or "telegram_business_event_handled"}
@@ -2677,7 +2675,7 @@ def register(ctx: Any) -> None:
         on_unload(_dossier_support.stop_workers)
     try:
         result = _history_support.run_startup_maintenance()
-    except Exception as exc:  # noqa: BLE001 - plugin load must stay available
+    except Exception as exc:
         logger.warning("%s: startup history maintenance failed: %s", _PLUGIN_NAME, exc, exc_info=True)
         return
     if result.cap_exceeded:
