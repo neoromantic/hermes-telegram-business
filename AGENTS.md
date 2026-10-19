@@ -16,7 +16,7 @@ Delegate items 2 and 3 through the `/orchestration` skill: one Orca worker in th
 
 - `main` is protected; merge with `gh pr merge --squash --admin --delete-branch`.
 - Release: bump `plugin.yaml` and `pyproject.toml`, date the CHANGELOG section, tag `vX.Y.Z`, publish a GitHub release.
-- Production is the `baus` gateway. Update only the plugin there (plugin directory and `hermes-gateway-baus.service`), restart only when the gateway is idle, then do a live smoke test and record it in `docs/VERIFY.md`. Update `~/Vault/2 - Зоны/Server/baus/hermes-baus.md` with the live revision.
+- Production is the `baus` gateway. Update only the plugin there (plugin directory and `hermes-gateway-baus.service`), restart it right away (no need to wait for idle), then do a live smoke test and record it in `docs/VERIFY.md`. Update `~/Vault/2 - Зоны/Server/baus/hermes-baus.md` with the live revision.
 
 ## Code
 
