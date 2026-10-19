@@ -12,8 +12,8 @@ history capture and dossiers pause for every chat until the file is repaired. Of
 saved history and the stored dossier stay until the owner erases them (``history_support.forget_chat``).
 Stdlib-only; the file never holds message text or names.
 
-Up to 0.12, TELESEC_HISTORY_CONNECTIONS, _CHATS and _CHAT_TYPES decided which chats history recorded.
-``migrate_history_scope()`` stores that filter once, as 0.12 parsed it, under "legacy_scope": the old
+Up to 0.13, TELESEC_HISTORY_CONNECTIONS, _CHATS and _CHAT_TYPES decided which chats history recorded.
+``migrate_history_scope()`` stores that filter once, as 0.13 parsed it, under "legacy_scope": the old
 scope rule. It still keeps chats out of history per (connection, chat), and their dossiers pause, unless
 the owner turns a chat on: that one value is stored as an explicit "on". Until the rule is stored the
 variables apply as before; after that they are never read. ``hermes telesec chat scope clear`` drops it.
@@ -80,9 +80,9 @@ class ChatEntry:
 
 @dataclass(frozen=True)
 class OldScope:
-    """The 0.12 history scope as 0.12 parsed TELESEC_HISTORY_CONNECTIONS, _CHATS and _CHAT_TYPES.
+    """The 0.13 history scope as 0.13 parsed TELESEC_HISTORY_CONNECTIONS, _CHATS and _CHAT_TYPES.
 
-    A value 0.12 matched nothing with (a chat type typo, a stale connection) still matches nothing.
+    A value 0.13 matched nothing with (a chat type typo, a stale connection) still matches nothing.
     """
 
     connections: _history.Scope | None = None
@@ -96,7 +96,7 @@ class OldScope:
                    _history._parse_chat_types(os.environ.get(_history.HISTORY_CHAT_TYPES_ENV)))
 
     def allows(self, connection: Any, chat: Any, chat_type: str = "private") -> bool:
-        """0.12's check for one update; an unknown connection (None) passes only a wildcard or no filter."""
+        """0.13's check for one update; an unknown connection (None) passes only a wildcard or no filter."""
         if self.connections is not None and not (
                 self.connections.wildcard or (connection is not None and self.connections.contains_exact(connection))):
             return False
@@ -483,7 +483,7 @@ def known_owner(business_connection_id: Any) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# The old scope rule (TELESEC_HISTORY_CONNECTIONS / _CHATS / _CHAT_TYPES up to 0.12)
+# The old scope rule (TELESEC_HISTORY_CONNECTIONS / _CHATS / _CHAT_TYPES up to 0.13)
 # ---------------------------------------------------------------------------
 
 SCOPE_ENV = (_history.HISTORY_CONNECTIONS_ENV, _history.HISTORY_CHATS_ENV, _history.HISTORY_CHAT_TYPES_ENV)
@@ -492,7 +492,7 @@ _ENV_SCOPE: tuple[tuple[str | None, ...], OldScope | None] = ((None, None, None)
 
 
 def _env_scope() -> OldScope | None:
-    """The variables as 0.12 read them, while they are set; parsed again only when they change."""
+    """The variables as 0.13 read them, while they are set; parsed again only when they change."""
     global _ENV_SCOPE
     raw = tuple(os.environ.get(name) for name in SCOPE_ENV)
     cached_raw, cached = _ENV_SCOPE
@@ -638,7 +638,7 @@ def cli_scope() -> ChatScope:
 
 
 # ---------------------------------------------------------------------------
-# One-time migration: the 0.12 history scope becomes the stored old scope rule
+# One-time migration: the 0.13 history scope becomes the stored old scope rule
 # ---------------------------------------------------------------------------
 
 def _store_scope(store: ChatSettingsStore, rule: OldScope, *, now: datetime | None) -> bool:
@@ -663,7 +663,7 @@ def _store_scope(store: ChatSettingsStore, rule: OldScope, *, now: datetime | No
 
 
 def migrate_history_scope(*, now: datetime | None = None) -> list[str]:
-    """Store the old TELESEC_HISTORY_* filter once, as 0.12 parsed it, as the old scope rule.
+    """Store the old TELESEC_HISTORY_* filter once, as 0.13 parsed it, as the old scope rule.
 
     Runs while one of the variables is set and chat-settings.json has no record of this migration.
     When the write fails the variables keep applying in this process (``active_scope``) and the next start

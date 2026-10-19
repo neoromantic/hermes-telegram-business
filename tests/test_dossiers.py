@@ -815,7 +815,7 @@ async def test_qualification_requires_received_and_sent_in_window(plug: ModuleTy
 @pytest.mark.asyncio
 async def test_groups_never_processed(plug: ModuleType, dossiers: ModuleType) -> None:
     ds = dossiers
-    # Capture never records a group since 0.13; one recorded by an older version's TELESEC_HISTORY_CHAT_TYPES.
+    # Capture never records a group since 0.14; one recorded by an older version's TELESEC_HISTORY_CHAT_TYPES.
     raw(plug, -5516, [
         (1, "in", "GROUP-SECRET question", 60),
         (2, "out", "GROUP-SECRET answer", 55),

@@ -678,7 +678,7 @@ async def test_old_scope_variables_narrow_capture_until_the_rule_is_dropped(plug
 @pytest.mark.parametrize("chat_type", ["group", "supergroup", "channel"])
 async def test_history_never_records_non_private_chat_types(plugin, monkeypatch: pytest.MonkeyPatch, chat_type: str):
     set_switch(plugin, "history", True)
-    # The 0.12 opt-ins are gone: Business chats are private.
+    # The 0.13 opt-ins are gone: Business chats are private.
     monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", f"private,{chat_type}")
     monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
 

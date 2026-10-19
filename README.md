@@ -179,9 +179,9 @@ Telesec 0.11.0 and older do not read `chat-settings.json`: after a downgrade, Do
 
 ### Moving from the history environment variables
 
-Telesec 0.12 and older chose which chats history records with `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES`. Since 0.13 history is set per chat in Telegram, and group chats are never recorded.
+Telesec 0.13 and older chose which chats history records with `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES`. Since 0.14 history is set per chat in Telegram, and group chats are never recorded.
 
-On the first start with any of them set, the plugin keeps the old filter as a stored rule: it saves the filter as 0.12 read it under `legacy_scope` in `chat-settings.json`, records that it ran, and never reads the variables again. The rule still works per connection and chat, as before: a chat it keeps out saves no history and its dossier pauses, and that holds for a chat that never wrote to you before too. A value that matched nothing in 0.12, such as a misspelled chat type, still matches nothing. Until the rule is stored, for example while `chat-settings.json` can't be written, the variables keep applying, and the next start tries again.
+On the first start with any of them set, the plugin keeps the old filter as a stored rule: it saves the filter as 0.13 and older read it under `legacy_scope` in `chat-settings.json`, records that it ran, and never reads the variables again. The rule still works per connection and chat, as before: a chat it keeps out saves no history and its dossier pauses, and that holds for a chat that never wrote to you before too. A value that matched nothing in 0.12, such as a misspelled chat type, still matches nothing. Until the rule is stored, for example while `chat-settings.json` can't be written, the variables keep applying, and the next start tries again.
 
 - In a chat's panel, a chat the rule keeps out shows **Don't save** with "•" and the line `History: off by the old server scope`. **Save history** turns it on, and so does `hermes telesec chat set <chat> --history on`: the chat is then stored with history on, which overrides the rule.
 - `hermes telesec chat scope` shows the rule, with counts only. `chat list`, `chat get`, and `hermes telesec settings` say when it applies.

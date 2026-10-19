@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "telesec"
 get_config = {}.get
-# The 0.12 history scope. Since 0.13 chat_settings reads it only until it stores it as the old scope rule.
+# The 0.13 history scope. Since 0.14 chat_settings reads it only until it stores it as the old scope rule.
 HISTORY_CONNECTIONS_ENV = "TELESEC_HISTORY_CONNECTIONS"
 HISTORY_CHATS_ENV = "TELESEC_HISTORY_CHATS"
 HISTORY_CHAT_TYPES_ENV = "TELESEC_HISTORY_CHAT_TYPES"

@@ -65,7 +65,7 @@ def stored(cs) -> dict:
 
 
 def store_scope(cs, monkeypatch, **env: str) -> None:
-    """Set the 0.12 TELESEC_HISTORY_<name> variables, store them as the old scope rule at a start, then
+    """Set the 0.13 TELESEC_HISTORY_<name> variables, store them as the old scope rule at a start, then
     remove them: the stored rule applies on its own."""
     for name, value in env.items():
         monkeypatch.setenv(f"TELESEC_HISTORY_{name}", value)
@@ -728,7 +728,7 @@ def test_chat_cli_without_a_known_owner_fails_closed_and_finds_the_holder(cs, pl
 @pytest.mark.asyncio
 async def test_cli_lists_apply_the_chat_type(both_on, plugin):
     await capture(plugin, text_update(77))
-    raw(plugin, -100123, [(1, "in", "group text", 50)], business_id=BCID, chat_type="supergroup")  # kept from 0.12
+    raw(plugin, -100123, [(1, "in", "group text", 50)], business_id=BCID, chat_type="supergroup")  # kept from 0.13
     for chat in ("991", "-100123"):
         assert ttm.run_cli(plugin, "chat", "set", chat, "--dossier", "off", "--owner", "1000")[0] == 0
     assert ttm.run_cli(plugin, "mode", "set", "991", "off", "--owner", "1000")[0] == 0
@@ -762,7 +762,7 @@ def test_agent_reference_names_the_chat_command(plugin):
     assert len(plugin.AGENT_REFERENCE) <= 2000
 
 
-# --- The 0.12 history scope becomes the stored old scope rule ---------------------------------------
+# --- The 0.13 history scope becomes the stored old scope rule ---------------------------------------
 
 
 @pytest.mark.parametrize(("env", "rule"), [
