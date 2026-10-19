@@ -5,11 +5,13 @@
 
 **Telesec — Telegram Business secretary for [Hermes](https://github.com/NousResearch/hermes-agent).** Voice messages, round video notes, and conservatively recognized attached audio files become readable text without a full agent turn. Optional correspondence history preserves text, edits, and deletions for contact-based search.
 
-[Product demonstration and setup](https://telesec.sergeybaus.com)
+[Product demonstration and setup](https://telesec.sergeybaus.com). Telesec is a community plugin and is not affiliated with Nous Research.
 
 ![Telesec in a Telegram Business chat: a client's 0:34 voice message gets a reply with its transcript as an expandable quote, split into paragraphs and a dash list; the owner's own 5-second voice message gets its transcript appended to its caption as a quote and is marked edited.](docs/images/telesec@2x.png)
 
 ## Current module: voice transcription
+
+![Real Telegram screenshot: the owner's 10-second voice message in a Business chat with its transcript added to the caption as an expandable quote. The voice was synthetic, recorded for this screenshot.](docs/images/voice-transcript.png)
 
 1. A native Telegram handler intercepts Business `voice`, `video_note`, `audio`, and conservatively identified audio `document` updates before ordinary media processing; generic documents and video are consumed without transcription.
 2. Requires a real Telegram Business connection and preserves its `business_connection_id`.
@@ -42,6 +44,8 @@ Transcription: off
 [Reset to default]
 [Refresh]
 ```
+
+![Real Telegram screenshot of the owner panel in the owner's private chat with the bot: Transcription: both, with mode buttons, Reset to default, Stats, and Refresh. The contact's name, username, and chat ID are blurred.](docs/images/owner-panel.png)
 
 Tap a mode to set it, or Reset to return to the default; the panel message updates in place. The header always ends with `chat <id>`, so when you reply to a panel message to ask the agent about that chat, the reply names the chat. The panel speaks Russian when your Telegram app is set to Russian (`Панель владельца`, `Расшифровка: выкл`, mode buttons `все`, `мои`, `собеседника`, `выкл`) and English otherwise; modes are still stored as `both`, `own`, `peer`, and `off`. Only you see the panel: it lives in your private chat with the bot and the contact sees nothing. Only a verified owner gets the panel. Anyone else's `/start bizChat…` is treated as an ordinary message, and a panel button pressed by anyone else gets a short "Not allowed" alert.
 
@@ -109,6 +113,8 @@ hermes telesec stats --contact @alice --format json
 Messages are placed by Telegram send time. Only text messages are counted. The report needs no LLM, stores nothing new, and never prints message text. [Counting rules, options, and a synthetic example](docs/STATS.md).
 
 The same report for one chat is in Telegram: tap **Manage Bot** in a Business chat, then **📊 Stats** in your private chat with the bot. It is never posted into the Business chat. [Owner panel stats](docs/STATS.md#in-telegram-owner-panel).
+
+![Real Telegram screenshot of the Stats view in the owner panel: one chat's message counts, active days, sessions, and deletions for the last 30 days, with 7d, 30d, 90d, All, and Back buttons. The contact's name is blurred.](docs/images/stats-panel.png)
 
 ## Contact dossiers (opt-in)
 

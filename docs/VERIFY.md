@@ -136,6 +136,8 @@ Keep evidence free of real contact details and message content. Record Hermes/PT
 
 ## Documentation images
 
+`voice-transcript.png`, `owner-panel.png`, and `stats-panel.png` are real Telegram for macOS screenshots from the production gateway on 2026-10-19 (code identical to 0.10.0). The voice note was a synthetic 10-second English recording sent by the owner in a controlled Business chat. Its transcript was added to the caption about 4 seconds later. The panel and Stats view were opened from the owner's private chat with the bot. Contact names, usernames, and chat IDs are blurred. Afterwards the chat's mode was set back to `off`, and the test voice and panel messages were deleted. `banner.png` (1200x600) is rendered from `docs/images/src/banner.html` and uses the voice screenshot.
+
 The transcript illustration depicts implemented delivery shapes. The history image contains actual CLI output captured from synthetic Business updates. The assistant illustration is explicitly a future-design concept. All use fictional content and have editable HTML sources in `docs/images/src/`.
 
 Render with `agent-browser --engine chrome`, inspect the image, and check for clipped text before replacing PNGs. A design illustration is not evidence of Telegram client rendering or successful delivery.

@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- Catalog banner. The chat image is the real voice-transcript screenshot. Render at 1200x600. -->
+<html lang="en"><head><meta charset="utf-8"><title>Telesec — banner</title>
+<style>
+* { box-sizing: border-box; }
+body { margin:0; width:1200px; height:600px; overflow:hidden; font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+  background:radial-gradient(circle at 78% 40%, #2b4d6f 0%, #18283a 45%, #101a26 100%); color:#eef3f8;
+  display:flex; align-items:center; padding:0 64px; gap:48px; }
+.text { flex:1 1 0; }
+.brand { font-size:16px; font-weight:650; letter-spacing:2.5px; text-transform:uppercase; color:#8fb4d8; margin-bottom:18px; }
+h1 { font-size:76px; letter-spacing:-2.5px; font-weight:700; margin:0 0 14px; }
+p { font-size:27px; line-height:1.3; color:#c3d2e0; margin:0 0 34px; }
+ul { list-style:none; margin:0; padding:0; font-size:21px; line-height:1.85; color:#dfe8f1; }
+li::before { content:"✓"; color:#6cc4ff; font-weight:700; margin-right:12px; }
+.shot { flex:0 0 auto; }
+.shot img { display:block; max-width:470px; max-height:500px; border-radius:22px; box-shadow:0 22px 60px #00000070; }
+</style></head><body>
+<div class="text">
+  <div class="brand">Hermes plugin</div>
+  <h1>Telesec</h1>
+  <p>Telegram Business secretary:<br>voice notes become text in the chat.</p>
+  <ul>
+    <li>Per-chat controls in Manage Bot</li>
+    <li>Opt-in history, stats, and dossiers</li>
+    <li>Uses your Hermes STT and model</li>
+  </ul>
+</div>
+<div class="shot"><img src="../voice-transcript.png" alt=""></div>
+</body></html>
