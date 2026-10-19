@@ -41,7 +41,7 @@ The main control is an in-chat command. As the connected Business account owner,
 /transcribe reset    return to the default (both)
 ```
 
-The bot edits your command into a short status such as `/transcribe off → Transcription: off`, or sends a Business reply when the edit does not apply. Unknown arguments get a short usage status the same way. Only the account owner's command counts; a contact who sends `/transcribe`, or a forwarded or inline-bot `/transcribe`, is just ordinary text. Commands and their status edits are never written to history and never reach the ordinary Hermes path.
+The bot edits your command into a short status such as `/transcribe off → Transcription: off`, or sends a Business reply when the edit does not apply, and deletes the command and its status about 5 seconds later so they do not stay in the chat. Deleting needs the bot's "Delete messages" permission in Telegram Business > Chatbots; without it the status stays and the gateway log says so. Unknown arguments get a short usage status the same way. Only the account owner's command counts; a contact who sends `/transcribe`, or a forwarded or inline-bot `/transcribe`, is just ordinary text. Commands and their status edits are never written to history and never reach the ordinary Hermes path.
 
 The same modes are available from the CLI:
 

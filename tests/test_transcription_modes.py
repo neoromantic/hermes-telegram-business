@@ -78,6 +78,14 @@ class CommandBot(FakeBot):
         self.text_edit_calls: list[dict] = []
         self.text_edit_error: Exception | None = None
         self.text_edit_result: object = True
+        self.delete_calls: list[dict] = []
+        self.delete_error: Exception | None = None
+
+    async def delete_business_messages(self, **kwargs):
+        self.delete_calls.append(kwargs)
+        if self.delete_error is not None:
+            raise self.delete_error
+        return True
 
     async def edit_message_text(self, **kwargs):
         self.text_edit_calls.append(kwargs)
@@ -927,6 +935,57 @@ async def test_failed_edit_falls_back_to_one_business_reply(plugin, modes, failu
 
     assert bot.calls == [EXPECTED_REPLY]
     assert modes.default_store().get(OWNER, CHAT).mode == "off"
+
+
+async def _drain_cleanup(plugin):
+    if plugin._pending_tasks:
+        await asyncio.gather(*list(plugin._pending_tasks))
+
+
+@pytest.mark.asyncio
+async def test_status_is_deleted_after_a_short_delay(plugin, modes, monkeypatch):
+    monkeypatch.setattr(plugin, "_COMMAND_STATUS_TTL_SECONDS", 0)
+    bot = CommandBot(business_owner_id=OWNER)
+
+    assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
+    assert bot.delete_calls == []  # the owner first sees the status
+    await _drain_cleanup(plugin)
+
+    assert bot.delete_calls == [{"business_connection_id": BCID, "message_ids": [77]}]
+    assert modes.default_store().get(OWNER, CHAT).mode == "off"
+
+
+@pytest.mark.asyncio
+async def test_fallback_reply_is_deleted_together_with_the_command(plugin, modes, monkeypatch):
+    monkeypatch.setattr(plugin, "_COMMAND_STATUS_TTL_SECONDS", 0)
+    bot = CommandBot(business_owner_id=OWNER)
+    bot.text_edit_error = BadRequest("Bad Request: message can't be edited")
+
+    async def send_message(**kwargs):
+        bot.calls.append(kwargs)
+        return SimpleNamespace(message_id=900)
+
+    bot.send_message = send_message
+
+    assert await _run_command(plugin, make_text_update("/transcribe"), bot) is True
+    await _drain_cleanup(plugin)
+
+    assert bot.delete_calls == [{"business_connection_id": BCID, "message_ids": [77, 900]}]
+
+
+@pytest.mark.asyncio
+async def test_failed_delete_only_logs_a_hint(plugin, modes, monkeypatch, caplog):
+    monkeypatch.setattr(plugin, "_COMMAND_STATUS_TTL_SECONDS", 0)
+    bot = CommandBot(business_owner_id=OWNER)
+    bot.delete_error = BadRequest("Bad Request: business connection does not have the right")
+
+    with caplog.at_level(logging.WARNING):
+        assert await _run_command(plugin, make_text_update("/transcribe off"), bot) is True
+        await _drain_cleanup(plugin)
+
+    assert modes.default_store().get(OWNER, CHAT).mode == "off"
+    assert "allow the bot to delete messages" in caplog.text
+    assert "business connection does not have" not in caplog.text
 
 
 @pytest.mark.asyncio
