@@ -5,7 +5,7 @@
 ### 0.10.0 — Renamed to Telesec
 
 - Rename the product, runtime plugin ID, catalog key, CLI, skills, and repository to Telesec.
-- Automatically migrate history, the contact catalog, transcription modes, dossiers, plugin state/cache, and Hermes config entries without changing content or private permissions. See the README upgrade script for the required name-based reinstall.
+- Automatically migrate history, the contact catalog, transcription modes, dossiers, plugin state/cache, and Hermes config entries without changing content or private permissions. See the README upgrade script for the required name-based reinstall, including explicit dependency consent for headless installation.
 - Use `TELESEC_*` environment variables; old names and `hermes telegram-business` remain deprecated aliases for this release.
 - Expose history, dossiers, cleanup style, timezone, and agent passthrough in Hermes Desktop settings, with environment overrides.
 
