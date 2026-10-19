@@ -412,6 +412,10 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
     from telegram.ext import ApplicationHandlerStop, BaseHandler
 
     async def on_business_update(update: Any, context: Any) -> None:
+        if _is_own_bot_chat_update(update, context.bot):
+            # The owner's DM with this bot, mirrored as a Business update: the
+            # ordinary update for the same message already reaches Hermes.
+            raise ApplicationHandlerStop
         try:
             _note_business_update_chat(update)
         except Exception as exc:  # noqa: BLE001 - bookkeeping must not break dispatch
@@ -2160,6 +2164,21 @@ def _note_business_chat(business_connection_id: Any, chat_id: Any) -> None:
     """Remember that this connection has this chat, so the panel may change its mode."""
     if business_connection_id and chat_id is not None:
         _bounded_put(_PANEL_SEEN_CHATS, (str(business_connection_id), str(chat_id)), None)
+
+
+def _business_update_chat_id(update: Any) -> Any:
+    for attribute in ("business_message", "edited_business_message", "deleted_business_messages"):
+        payload = getattr(update, attribute, None)
+        if payload is not None:
+            return _get(_get(payload, "chat"), "id")
+    return None
+
+
+def _is_own_bot_chat_update(update: Any, bot: Any) -> bool:
+    try:
+        return _history_support.is_own_bot_chat(_business_update_chat_id(update), bot)
+    except Exception:  # noqa: BLE001 - an unreadable update is handled as an ordinary Business update
+        return False
 
 
 def _note_business_update_chat(update: Any) -> None:

@@ -14,7 +14,7 @@ Add this to the active Hermes profile's `.env`, then run `hermes gateway restart
 HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1
 ```
 
-By default, capture includes private chats Telegram delivers through the bot's Business connections. Connection and chat filters are optional. Groups, supergroups, and channels require explicit configuration. The plugin does not retrieve conversations from before capture started.
+By default, capture includes private chats Telegram delivers through the bot's Business connections. Connection and chat filters are optional. Your own chat with the bot (where the owner panel and your agent chat live) is never captured: Telegram also delivers it as Business updates, but it is not a Business chat. The plugin knows it by the bot's id (from the running bot, or from the digits before `:` in `TELEGRAM_BOT_TOKEN`), and readers (history, stats, dossiers, the panel) also skip such a chat if an older version captured it. Groups, supergroups, and channels require explicit configuration. The plugin does not retrieve conversations from before capture started.
 
 Text, edits, deletions, reply relationships, sender/direction, and available contact snapshots are recorded. Media bytes, media metadata, and captions are excluded. Missing original text is recorded as missing rather than reconstructed.
 

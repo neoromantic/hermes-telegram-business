@@ -1266,3 +1266,76 @@ async def test_unknown_connection_hint_in_russian(plugin, modes):
 
     assert bot.calls == [{"chat_id": OWNER, "text": plugin._owner_panel.tr("unknown_connection", "ru")}]
     assert bot.calls[0]["text"].startswith("Пока не могу подтвердить")
+
+
+# --- The owner's own chat with the bot -----------------------------------------------------------
+
+BOT_ID = 8225039795
+
+
+def business_text(**kwargs):
+    update = test_history.make_business_text_update(**kwargs)
+    update.effective_message = update.business_message
+    update.effective_chat = update.business_message.chat
+    return update
+
+
+@pytest.mark.asyncio
+async def test_owners_chat_with_the_bot_is_not_a_business_chat(history_enabled, modes):
+    plugin = history_enabled
+    bot = PanelBot(business_owner_id=OWNER)
+    bot.id = BOT_ID
+    business = ttm.registered_business_handler(plugin, ttm.command_adapter(bot))
+    # Telegram mirrors the owner's DM with the bot as Business updates, both ways.
+    mirrored = [
+        business_text(text=f"/start bizChat{CHAT}", chat_id=BOT_ID, chat_username="bausai_bot", from_user_id=OWNER),
+        business_text(
+            text="Owner panel: chat 991", chat_id=BOT_ID, chat_username="bausai_bot",
+            from_user_id=BOT_ID, from_user_is_bot=True, message_id=78,
+        ),
+    ]
+    for update in mirrored:
+        with pytest.raises(ApplicationHandlerStop):
+            await business(update, SimpleNamespace(bot=bot))
+
+    assert plugin._panel_catalog() == []
+    assert plugin._PANEL_SEEN_CHATS == {}
+    assert bot.business_connection_calls == []  # not even an owner lookup
+
+    contact = business_text(text="hello", chat_id=CHAT)
+    with pytest.raises(ApplicationHandlerStop):
+        await business(contact, SimpleNamespace(bot=bot))
+    assert [entry["chat_id"] for entry in plugin._panel_catalog()] == [CHAT]
+
+
+@pytest.mark.asyncio
+async def test_history_already_captured_from_the_bot_chat_is_never_read(history_enabled, modes, monkeypatch):
+    plugin = history_enabled
+    bot = PanelBot(business_owner_id=OWNER)  # no bot id and no token: an older plugin captured it
+    business = ttm.registered_business_handler(plugin, ttm.command_adapter(bot))
+    for chat_id in (BOT_ID, CHAT):
+        update = business_text(text="hello", chat_id=chat_id, message_id=chat_id % 1000)
+        with pytest.raises(ApplicationHandlerStop):
+            await business(update, SimpleNamespace(bot=bot))
+    history = plugin._history_support
+    assert sorted(entry["chat_id"] for entry in history._catalog_entries_for_cli()) == [CHAT, BOT_ID]
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", f"{BOT_ID}:secret")
+
+    # Every reader (history and stats CLI, dossiers, the panel) goes through the catalog.
+    assert [entry["chat_id"] for entry in history._catalog_entries_for_cli()] == [CHAT]
+    assert history._filter_catalog_entries(chat_id=str(BOT_ID)) == []
+    assert history.is_own_bot_chat(BOT_ID) and not history.is_own_bot_chat(CHAT)
+
+
+def test_own_bot_id_ignores_a_malformed_token_and_an_uninitialized_bot(plugin, monkeypatch):
+    class Uninitialized:
+        @property
+        def id(self):
+            raise RuntimeError("Bot is not properly initialized")
+
+    history = plugin._history_support
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "not-a-token")
+    assert history.own_bot_ids(Uninitialized()) == set()
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    assert history.own_bot_ids(SimpleNamespace(id=456)) == {"123", "456"}
