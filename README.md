@@ -131,7 +131,7 @@ See the [roadmap](docs/ROADMAP.md) and [assistant design](docs/ASSISTANT.md).
 
 ## Requirements
 
-- Hermes Agent with `ctx.register_telegram_handler`, CLI/skill registration, `pre_gateway_dispatch`, and `ctx.llm` support. Integration targets Hermes 0.22.2 and PTB 22.8.
+- Hermes Agent 0.21.6 or newer with `ctx.register_telegram_handler`, CLI/skill registration, `pre_gateway_dispatch`, and `ctx.llm` support. Catalog validation targets Hermes 0.22.2 and PTB 22.8. [Compatibility evidence](docs/VERIFY.md).
 - Python 3.11 or newer.
 - A configured Telegram gateway with a Telegram Business connection.
 - A working Hermes STT provider. Configure it with `hermes setup` or the [`stt` settings](https://hermes-agent.nousresearch.com/docs/user-guide/configuration).
@@ -185,9 +185,11 @@ hermes gateway restart
 
 `hermes plugins update` uses the Git remote retained by the installer. Both the old redirected source URL and the canonical repository URL remain supported; do not copy the directory manually if you want supported updates. Hermes core updates and this plugin's updates are independent: the installed plugin persists across a core update, while the command above advances the plugin itself.
 
+Removing the plugin leaves its data under `$HERMES_HOME/data/telegram-business/`: history, dossiers, and transcription modes. To erase it, stop the gateway, remove that directory and any backups or exports you own, then restart. Remove the plugin's environment settings from the active profile too.
+
 ## Configuration
 
-All plugin variables are optional.
+All plugin variables are optional. Settings are read from the active profile's environment. `config_schema` is empty because Hermes's Desktop settings form writes `plugins.entries.<id>.settings`, which these readers do not use; ordinary fields have no automatic environment binding. Use the variables below and the [history settings](docs/HISTORY.md#configuration), including `HERMES_TELEGRAM_BUSINESS_TIMEZONE` for stats. Restart the gateway after changing the profile's `.env`.
 
 | Variable | Default | Meaning |
 |---|---:|---|
@@ -247,6 +249,16 @@ Contact dossiers use the same facade and allowlist. By default they request the 
 
 The plugin registers native Telegram handlers, a `pre_gateway_dispatch` hook, the `telegram-business` CLI, and the `history` and `dossiers` skills. Business text observations are persisted before normal dispatch; supported media is consumed directly before Hermes downloads it. The voice pipeline normalizes Telegram Business updates before its module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. Direction remains `unknown` when Telegram supplies no outgoing marker; the voice module retains its existing asynchronous Business-owner lookup before editing a caption.
 
+All three native PTB handlers use group `-100`, before Hermes's ordinary Telegram handlers. PTB runs only the first matching handler in a group:
+
+| Handler | Scope and propagation |
+|---|---|
+| `BusinessHandler` | Business messages, edits, and deletions. Captures history and routes transcription, then raises `ApplicationHandlerStop` unless unhandled agent routing is explicitly enabled. Owner commands and handled media always stop. |
+| `OwnerPanelHandler` | Manage Bot `/start bizChat…` and callback data starting with `tb:` only. Claimed panel actions raise `ApplicationHandlerStop`. |
+| `BusinessConnectionHandler` | Business connection updates only; records in-memory connection knowledge and lets core continue. |
+
+There is no `CallbackQueryHandler` registration. The custom panel handler checks the `tb:` prefix before matching, so it leaves core and other plugins' button callbacks alone. Any future `CallbackQueryHandler` must declare `pattern=r"^tb:"` and use the same scoped payload parser.
+
 Source files:
 
 - `__init__.py`: registration, the Telegram handlers and dispatch hook, and the voice pipeline.
@@ -278,8 +290,13 @@ Outgoing direction is checked against the owner returned by Telegram's `getBusin
 
 Incoming messages, transcripts that do not fit in one caption, messages outside Telegram's 48-hour Business edit window, uncertain direction, and definite caption-edit rejection, including generic PTB `BadRequest`, use the existing reply path. The first response chunk replies to the original message; continuation chunks use the same Business connection. Caption and reply surfaces follow the same capability policy: use `expandable_blockquote` first, then retry the selected surface once as plain text only after a recognized unsupported-entity rejection. Ambiguous caption-edit transport/backend failures after Telegram may already have seen the request suppress the separate reply instead of risking duplicate transcript delivery.
 
-## Privacy and security
+## Privacy and data
 
+- **No telemetry.** No analytics, usage reporting, tracking endpoint, or self-updater is included.
+- **Network.** The gateway's Telegram Bot API client downloads media, looks up Business owners, edits captions, sends transcripts/status messages, and handles owner-panel buttons. STT goes to the backend configured in Hermes, which may be local or external. Optional cleanup sends transcripts through `ctx.llm`; opt-in dossiers send retained private-chat text through the same host facade. Provider retention and costs follow your selected backend. The plugin has no separate credential store and does not read credential files.
+- **Local processes.** Attached-audio checks run `ffprobe` for duration and `ffmpeg` for prefix extraction and normalization, using argument lists without a shell. They operate on transient media in the active profile's cache.
+- **Background work.** Claimed transcription runs asynchronously. Opt-in history schedules deletion classification and maintenance; opt-in dossiers run a gateway background thread, starting 3 minutes after connection and normally waiting 30 minutes between cycles. It sends eligible private-chat text to the configured LLM without another prompt; disable dossiers to stop new cycles.
+- **Stored data and retention.** `$HERMES_HOME/data/telegram-business/` holds owner/chat modes and connection-owner mappings, opt-in history JSONL and its contact catalog, and opt-in dossier facts, source quotes, persona, revisions, and worker state. Modes and dossiers remain until explicitly removed. History defaults to no age pruning and a 1 GiB size target; pruning removes closed monthly partitions, so the current month and pending classifications can exceed the target. See [history removal](docs/HISTORY.md#retention-and-removal), [dossier removal](docs/DOSSIERS.md#storage-and-privacy), and [Update and remove](#update-and-remove).
 - Voice/video/audio data is written only to the active Hermes profile's cache while it is processed. The newly created download, attached-audio probe, and any normalized full-file WAV are deleted in a `finally` block after success or failure.
 - The configured STT backend receives the media. Depending on your Hermes configuration, that backend may be local or external.
 - When cleanup is enabled, the configured host LLM receives the transcript. The system prompt treats transcript contents as untrusted data and forbids following embedded instructions.
@@ -289,6 +306,15 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - History is disabled until explicitly enabled. Once enabled, retained text includes earlier edits and deleted messages. Telegram deletion is not erasure of the local archive; [retention and removal](docs/HISTORY.md#retention-and-removal) are separate controls.
 - Contact dossiers are disabled until explicitly enabled. Once enabled, private chat text from the backfill window and later messages goes to the configured host model; groups are never processed. Dossiers keep derived facts, quotes of at most 200 characters, and short message fingerprints, not a second archive. Their logs carry counts, IDs, and error types only. `dossier forget` deletes a dossier and its owner edits without touching history ([storage and privacy](docs/DOSSIERS.md#storage-and-privacy)).
 - Existing Hermes/Telegram media caches are outside this plugin's ownership and are never scanned or deleted.
+
+## Known limitations
+
+- Native Telegram handlers require Hermes's in-process plugin mode; `plugins.isolation: host` cannot pass the Telegram Application to this plugin.
+- STT currently calls the undocumented core `tools.transcription_tools.transcribe_audio` function. Hermes provides backend-registration APIs but no documented plugin facade to invoke configured STT. This produces a catalog warning and can break on a core update; [submission notes](docs/CATALOG_SUBMISSION.md) explain the dependency.
+- History starts when enabled and captures text only; it cannot retrieve old chats, media, or captions. Local history preserves deleted text until retention or explicit removal.
+- Dossiers need history and a separate opt-in. They cover private contacts, have no per-contact exclusion, and remain after history is removed. Drafts and automatic replies are planned.
+- Attached-audio speech detection is a heuristic; recognized vocals may pass. LLM cleanup can change meaning and adds latency. Raw-first delivery is planned.
+- Claimed updates stop before Hermes's group-99 ingress counter, which can produce a stale health warning. Telegram permissions and edit/send windows still apply.
 
 ## Failure behavior
 
