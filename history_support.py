@@ -92,6 +92,10 @@ _CACHE_LOCK = threading.RLock()
 _CHAT_STATE_CACHE: dict[str, ChatStateCacheEntry] = {}
 _DELETION_TIMERS: dict[tuple[str, str], DeletionTimerEntry] = {}
 _LAST_MAINTENANCE_AT: datetime | None = None
+# The owner's `/dossier` commands and the dossiers the bot posted: kept out of history, so their
+# deletion is control traffic too. Insertion-ordered, bounded, per process.
+_CONTROL_MESSAGES: dict[tuple[str, str, str], None] = {}
+CONTROL_MESSAGES_MAX = 512
 MutationResult = TypeVar("MutationResult")
 
 
@@ -2746,6 +2750,21 @@ def is_dossier_post(message: Any) -> bool:
     return rich is not None or (isinstance(api_kwargs, Mapping) and api_kwargs.get("rich_message") is not None)
 
 
+def remember_control_message(business_connection_id: Any, chat_id: Any, message_id: Any) -> None:
+    """Keep a later deletion of this control message (see is_dossier_control_message) out of history."""
+    if message_id is None:
+        return
+    with _CACHE_LOCK:
+        _CONTROL_MESSAGES[(str(business_connection_id), str(chat_id), str(message_id))] = None
+        while len(_CONTROL_MESSAGES) > CONTROL_MESSAGES_MAX:
+            del _CONTROL_MESSAGES[next(iter(_CONTROL_MESSAGES))]
+
+
+def _is_control_message(business_connection_id: Any, chat_id: Any, message_id: Any) -> bool:
+    with _CACHE_LOCK:
+        return (str(business_connection_id), str(chat_id), str(message_id)) in _CONTROL_MESSAGES
+
+
 def is_dossier_control_message(message: Any, text: Any) -> bool:
     """True for an outbound `/dossier` command or the dossier the bot posted for one.
 
@@ -2820,6 +2839,8 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
             wrote_record = False
             for message_id in message_ids:
                 original = state.messages.get(str(message_id))
+                if original is None and _is_control_message(business_connection_id, chat_id, message_id):
+                    continue
                 record = _build_event(
                     event_type="message.deleted",
                     source=source,
@@ -2862,6 +2883,7 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
             # control traffic, never conversation history. An edit of a stored
             # message into `/dossier` still records the edit.
             if event_type != "message.edited" or is_dossier_post(payload):
+                remember_control_message(business_connection_id, chat_id, _get(payload, "message_id"))
                 return False
             command_edit = True
         message_date = _normalize_timestamp(_get(payload, "date"))
@@ -3740,6 +3762,7 @@ def reset_in_memory_caches() -> None:
         timer_entries = list(_DELETION_TIMERS.values())
         _DELETION_TIMERS.clear()
         _CHAT_STATE_CACHE.clear()
+        _CONTROL_MESSAGES.clear()
         _LAST_MAINTENANCE_AT = None
     for entry in timer_entries:
         entry.timer.cancel()

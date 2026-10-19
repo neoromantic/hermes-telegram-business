@@ -902,11 +902,14 @@ def _overview_html(cx: _Cx) -> tuple[str, str]:
     groups, unsupported = _groups(cx)
     order = [f for _, facts in groups for f in facts] + unsupported
     n = len(order)
-    head = (f"<h3>{_title(cx)}</h3><p>{_freshness(cx)}</p>"
-            f"<p>{_coverage(cx)}<br>{s['model']}: {_model_name(cx, *_refresh_model(cx))}</p>"
+    model = f"<br>{s['model']}: {_model_name(cx, *_refresh_model(cx))}" if cx.owner else ""
+    head = (f"<h3>{_title(cx)}</h3><p>{_freshness(cx)}</p><p>{_coverage(cx)}{model}</p>"
             f"<p>{_counts(cx, stale)}</p>" + (_notes_html(_owner_notes(cx)) if cx.owner else ""))
-    foot = (f"<footer>{s['legend']}<br>{s['cli_hint']}</footer>" if cx.owner
-            else f"<footer>{s['legend_contact']}</footer>")
+    if cx.owner:
+        foot = f"<footer>{s['legend']}<br>{s['cli_hint']}</footer>"
+    else:  # the contact sees the legend only when a mark is shown
+        marked = any(f.get("kind") in ("owner", "inferred") or f.get("pinned") for f in order)
+        foot = f"<footer>{s['legend_contact']}</footer>" if marked else ""
     lis: dict[tuple[int, int], str] = {}
     costs: dict[tuple[int, int], tuple[int, int]] = {}
 

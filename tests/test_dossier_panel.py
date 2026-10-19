@@ -30,6 +30,7 @@ from dossier_helpers import (
     change,
     cycle,
     dossier_dir,
+    make_deleted_update,
     output,
     persona_dir,
     read_changes,
@@ -1056,6 +1057,34 @@ async def test_business_handler_keeps_command_and_echo_out_of_history_and_core(p
     records = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
     assert [(r["message_id"], r["direction"], r["text"]) for r in records[len(history_before):]] == [
         (601, "inbound", "/dossier")]
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_command_or_the_post_stays_out_of_history(plug, ds, panel):
+    await build(plug, ds)
+    history = plug._history_support
+    before = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
+    bot = PanelBot()  # sendRichMessage answers message_id 900
+    handlers: list[tuple[Any, int]] = []
+    plug._register_telegram_handlers(SimpleNamespace(add_handler=lambda h, group: handlers.append((h, group))),
+                                     SimpleNamespace(platform="telegram"))
+    (handler,) = [h for h, _group in handlers if type(h).__name__ == "BusinessHandler"]
+    with pytest.raises(ApplicationHandlerStop):
+        await handler.callback(command_update(message_id=610), SimpleNamespace(bot=bot))
+    assert len(posts(bot)) == 1 and bot.deletes[0]["message_ids"] == [610]
+
+    fake = test_history.FakeBot(owner_id=OWNER_ID)
+    for message_ids in ((610,), (900,)):  # the bot deletes the command; later the owner deletes the post
+        deleted = make_deleted_update(business_id=BUSINESS_ID, chat_id=CHAT, chat_type="private",
+                                      message_ids=message_ids, update_id=8000 + message_ids[0])
+        assert not await history.observe_ptb_update(deleted, bot=fake)
+    assert load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT) == before
+
+    other = make_deleted_update(business_id=BUSINESS_ID, chat_id=CHAT, chat_type="private", message_ids=(611,),
+                                update_id=8611)  # a message from before history still counts
+    assert await history.observe_ptb_update(other, bot=fake)
+    added = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)[len(before):]
+    assert [(r["event_type"], r["message_id"]) for r in added] == [("message.deleted", 611)]
 
 
 @pytest.mark.asyncio

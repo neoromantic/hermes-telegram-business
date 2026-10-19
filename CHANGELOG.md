@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The `/dossier` post no longer shows the model name, and shows the mark legend only when a fact carries a mark.
+- Deleting the `/dossier` command (the bot does it) or the posted dossier no longer adds a "deleted, not in history" event, so stats do not count it.
+- The one-time move of the old dossier variable or setting into the stored switch is now logged as a warning, so it shows in the gateway log.
+
 ## 0.11.0 - 2026-10-19
 
 - Add the panel's Dossier section ([#17](https://github.com/neoromantic/telesec/issues/17)): the chat's dossier as a Telegram rich message in the owner's app language (Russian or English), with an overview, a fact list, fact cards with current history text, Pin/Unpin, Remove with confirmation, and a background Refresh. The persona and the on/off switch are offered only to an owner of every Business connection the bot knows about (history, stored dossiers, the persona's chats, recorded owners, and connections seen since the gateway started). Stale buttons never edit a rebuilt dossier, long dossiers degrade to fit Telegram's limits, and a rejected rich message falls back to plain text.

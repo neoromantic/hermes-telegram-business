@@ -424,18 +424,21 @@ async def _post_dossier(bot: Any, payload: Any, *, business_connection_id: str, 
                         owner_user_id: Any) -> None:
     lang = _view.lang_for(_history._get(_history._get(payload, "from_user"), "language_code"))
     ref = _ds._log_ref(_stub(business_connection_id, chat_id))
-    await _delete_command(bot, business_connection_id, _history._get(payload, "message_id"))
+    command_id = _history._get(payload, "message_id")
+    _history.remember_control_message(business_connection_id, chat_id, command_id)
+    await _delete_command(bot, business_connection_id, command_id)
     snap = await asyncio.to_thread(load_contact_snapshot, business_connection_id, chat_id)
     reason, error = _view.post_blocker(snap), None
     if reason is None:
         view = _view.render_overview(snap, lang, audience="contact")
         try:
-            await bot.do_api_request("sendRichMessage", api_kwargs={
+            sent = await bot.do_api_request("sendRichMessage", api_kwargs={
                 "business_connection_id": business_connection_id, "chat_id": chat_id,
                 "rich_message": _view.rich_message(view)})
         except Exception as exc:  # noqa: BLE001 - told to the owner privately
             reason, error = "send_failed", type(exc).__name__
         else:
+            _history.remember_control_message(business_connection_id, chat_id, _history._get(sent, "message_id"))
             logger.info("%s: dossier posted chat_ref=%s facts=%d", _history.PLUGIN_NAME, ref,
                         _view.contact_fact_count(snap))
             return
