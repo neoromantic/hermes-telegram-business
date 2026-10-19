@@ -563,7 +563,7 @@ def test_contact_audience_excludes_notes_buttons_and_owner_lines(dv: ModuleType,
     assert view.buttons == () and view.notice is None
     assert "Call him Sasha" not in view.html and "f12" not in view.html and "Call him Sasha" not in view.text
     assert "The contact prefers calls after 7pm on weekdays." in view.html  # corrected facts stay
-    for owner_only in ("TimeoutError", "Refreshing", "hermes telesec", "Processing is off"):
+    for owner_only in ("TimeoutError", "Refreshing", "hermes telesec", "Processing is off", "Model:"):
         assert owner_only not in view.html and owner_only not in view.text
     assert "<footer>✎ owner edit · 📌 pinned · ~ model guess</footer>" in view.html
     # f12 note, f2 and f7 deleted-only, f8 gone from history, f9 unsupported, f10 without a source left
@@ -579,6 +579,19 @@ def test_contact_audience_excludes_notes_buttons_and_owner_lines(dv: ModuleType,
     assert "could not be checked against the chat history (OSError)" in reason.text
     assert "7pm" not in reason.html
     assert "(OSError)" in dv.render_post_reason(unchecked, "ru").text
+
+
+def test_contact_audience_shows_the_legend_only_with_a_mark(mods: SimpleNamespace, dv: ModuleType) -> None:
+    facts = [fact(1, "decisions", "Ships on Friday", sources=[source(1, "ok, Friday")])]
+    contact = dv.render_overview(snap_of(mods, dossier(mods, facts)), "en", audience="contact")
+    check_view(dv, contact)
+    assert "<b>f1</b>" in contact.html
+    assert "<footer>" not in contact.html and "Model:" not in contact.html
+    owner = dv.render_overview(snap_of(mods, dossier(mods, facts)), "en")
+    assert "Model: gemini / gemini-3.8-flash" in owner.html and "<footer>" in owner.html
+    facts[0]["pinned"] = True
+    pinned = dv.render_overview(snap_of(mods, dossier(mods, facts)), "en", audience="contact")
+    assert "<footer>✎ owner edit · 📌 pinned · ~ model guess</footer>" in pinned.html
 
 
 def test_contact_audience_hides_deleted_and_edited_source_text(dv: ModuleType, contact: SimpleNamespace) -> None:
@@ -988,7 +1001,7 @@ def test_budget_contact_audience_more_line_has_no_cli(mods: SimpleNamespace, dv:
     facts = [fact(i, "decisions", f"{i} " + "z" * 298, sources=[source(i, "z" * 200)], rev=i) for i in range(1, 400)]
     view = dv.render_overview(snap_of(mods, dossier(mods, facts)), "en", audience="contact")
     check_view(dv, view)
-    assert re.search(r"<p><i>… \d+ more facts</i></p><footer>", view.html)
+    assert re.search(r"<p><i>… \d+ more facts</i></p>(<footer>|$)", view.html)
     assert "hermes" not in view.html
 
 

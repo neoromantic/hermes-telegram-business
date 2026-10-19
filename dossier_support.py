@@ -423,7 +423,7 @@ def migrate_legacy_switch(now: datetime | None = None) -> bool:
         _history._write_json_atomic(settings_path(), {
             "schema_version": SCHEMA_VERSION, "enabled": True,
             "updated_at": _iso(now or _history._utcnow()), "updated_via": "migration"})
-    logger.info("%s: dossiers stay on: %s was moved to the stored switch and is no longer read; use the owner "
+    logger.warning("%s: dossiers stay on: %s was moved to the stored switch and is no longer read; use the owner "
                 "panel or '%s' to change it", _history.PLUGIN_NAME, source, DISABLE_COMMAND)
     return True
 

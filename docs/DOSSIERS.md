@@ -204,7 +204,7 @@ Tap "Manage Bot" in a Business chat. The bot opens your private chat with it and
 
 ### `/dossier` in a chat
 
-As the connected Business account owner, send exactly `/dossier` in a private Business chat. The bot deletes your command and posts that contact's dossier into the chat as a rich message, in your app's language. It shows the panel overview's facts that still have a source in history, and it has no buttons, panel hints, or CLI commands. The persona is never posted.
+As the connected Business account owner, send exactly `/dossier` in a private Business chat. The bot deletes your command and posts that contact's dossier into the chat as a rich message, in your app's language. It shows the panel overview's facts that still have a source in history, and it has no buttons, panel hints, CLI commands, or model name; the mark legend appears only when a fact carries a mark. The persona is never posted. Deleting the command or the post later does not add a deletion to history.
 
 The post leaves out owner notes (`dossier note`), unsupported facts, and facts with no source left in history: every source deleted, gone, or deleted and resent as a correction. It has no current history text and no change marks (⚠, stale counts, "deleted"). A source that was deleted, edited, or is gone shows only its reference, without its quote. Fact texts can still reflect what a cited message said after it was edited or deleted. A refresh asks the model to recheck a fact only when a cited message is edited; a deletion never does, and deleted messages still count as evidence. Pinned facts and owner corrections are never rewritten.
 
