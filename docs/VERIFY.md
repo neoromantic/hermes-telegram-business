@@ -45,6 +45,20 @@ One validation warning remains on 0.22.2 and current main: `__init__.py:1687 too
 
 The validator's recording context lacks the documented `ctx.llm` property. The plugin tolerates its absence during registration; the minimum-version smoke confirmed a real context still supplies `PluginLlm`. This does not change model-provider or trust-gate behavior.
 
+## Live gateway smoke: owner panel follow-ups, 2026-10-19
+
+Plugin `0b4ea66` (main after #40, #43–#46) ran on the owner's gateway with Hermes `0.21.6`. Only the plugin was updated, then the gateway was restarted.
+
+- Sending `/start bizChat<chat_id>` from the owner's account opened the panel. The header showed the chat label and `chat <chat_id>`. The mode line, the four mode buttons with the current mode marked, Reset to default, and Refresh were present. The test client does not report a Russian Telegram language, so the panel was in English. The Russian strings are covered by tests only.
+- Refresh answered "Refreshed". No mode was changed.
+- Telegram also sends the owner's private chat with the bot as Business updates. After the restart, the `/start` message and the panel reply were not written to history. `history contacts` and `stats --format json` do not list that chat. Records from before this fix stay on disk, but readers skip them.
+- `hermes telegram-business mode get <chat_id> --format json` returned the mode, `effective_mode`, `source: stored`, the label, and `business_connection_id`. `mode list --format json` returned the default mode, `transcription_enabled`, and the chats. On this host the history opt-in is set only in the gateway's service unit, so the CLI run needed it in its environment too.
+- The host rendered the plugin's `telegram-business.reference` system prompt section (1218 characters).
+
+Still open: whether a real "Manage Bot" tap sends the same chat id as `business_message.chat.id`. This smoke typed the `/start` text by hand.
+
+No message text, contact names, or raw contact IDs are included here.
+
 ## Live gateway smoke: owner panel, 2026-10-19
 
 On the owner's gateway at `de52645`: sending `/start bizChat<chat_id>` to the bot from the owner's account (what "Manage Bot" sends) opened the panel with the chat label, the current mode (`off`), the four mode buttons, Reset, and Refresh. Tapping the current mode answered with the toast "Transcription: off" and kept the mode. Nothing appeared in the Business chat.
