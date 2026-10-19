@@ -28,7 +28,11 @@ No message text, contact names, or raw contact IDs are included here.
 
 ## 0.12.2 release: 2026-10-20
 
-Before tagging, `hermes plugins validate --install-deps --json` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`, Python 3.14) passed: exit 0, `ok: true`, all 14 checks, security scan `safe`, and the dependency environment resolved with no "unsatisfiable" in stderr. The warnings are the known private imports (`transcribe_audio`, `hermes_time`). 1177 tests passed locally on Python 3.12.
+Before tagging, `hermes plugins validate --install-deps --json` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`, Python 3.14) passed: exit 0, `ok: true`, all 14 checks, security scan `safe`, and the dependency environment resolved with no "unsatisfiable" in stderr. The warnings are the known private imports (`transcribe_audio`, `hermes_time`). 1177 tests passed locally on Python 3.12. CI passed on Python 3.11–3.14.
+
+The production gateway (Hermes 0.21.6) was updated plugin-only: the plugin checkout was fast-forwarded to `v0.12.2` (`b8190d2022c5deeffdc1ae38d279defd6bb38aac`), the service drop-in that set `TELESEC_VOICE_BYPASS_AUTH=1` was removed, and the gateway restarted. It wired the `telesec` native handlers, started the dossier worker, and connected to Telegram; the gateway process no longer has the variable, `hermes plugins list` shows `telesec` 0.12.2 enabled, and `hermes telesec settings` kept transcription, history, and dossiers on. The log shows no Telesec error.
+
+- **Not run live:** a voice note from a contact outside the DM allowlist. It needs a real contact's message; `test_native_business_media_dispatch` covers allowlisted and non-allowlisted senders.
 
 ## 0.12.0 and 0.12.1 release and live smoke: 2026-10-19
 
