@@ -14,6 +14,18 @@ History checks must cover one-time opt-in, private-chat defaults, explicit scope
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## 0.13.0 release and live smoke: 2026-10-20
+
+Before tagging, `hermes plugins validate --install-deps --json` ran on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`, Python 3.14). It passed with exit 0, `ok: true`, and all 14 checks. The security scan was `safe`, and the dependency environment resolved with no "unsatisfiable" in stderr. Before [#78](https://github.com/neoromantic/telesec/pull/78), the scan said `caution` (`invisible_unicode`) about the literal left-to-right mark in `stats_render.py`. The one warning is the known private imports (`transcribe_audio`, `hermes_time`). 1219 tests passed locally on Python 3.13, and CI passed on Python 3.11–3.14.
+
+The production gateway (Hermes 0.21.6) got a plugin-only update. The plugin checkout was fast-forwarded to `v0.13.0` (`e3452dca925d03cc9220766901faabde5f5c8d62`) and the gateway restarted. It wired the `telesec` native handlers, started the dossier worker, and connected to Telegram. `hermes plugins list` shows `telesec` 0.13.0 enabled. `hermes telesec settings` shows transcription, history, and dossiers on, and retention forever (the default). The log shows no Telesec error.
+
+- **Panel.** In the owner's private chat with the bot, a controlled chat's panel already showed the Stats view. Tapping 30d edited that message into the new rich message report. Telegram reports the message as rich and edited, with the period buttons and « Back. The report has the balance bar, the per-side table, who is waiting, the heat maps of days and hours, the peak, the tiles, and the footer. The gateway logged the action, with no fallback and no error. Nothing appeared in the Business chat.
+- **History import.** Importing one chat from a Telegram Desktop export on production ([#76](https://github.com/neoromantic/telesec/pull/76)) added 11,442 messages. Running it again added 0.
+- **Not checked live.** The in-chat `/stats` card, because the contact would see it. The documentation screenshots of the card are its exact HTML, sent to the owner's private chat ([documentation images](#documentation-images)).
+
+No message text, contact names, or raw contact IDs are included here.
+
 ## Stats redesign live check: 2026-10-20
 
 The production gateway (Hermes 0.21.6) runs `v0.12.2` (`b8190d2`), which includes the stats redesign ([#64](https://github.com/neoromantic/telesec/pull/64)). The plugin checkout was fast-forwarded and the gateway restarted with it, so no extra restart was needed.
