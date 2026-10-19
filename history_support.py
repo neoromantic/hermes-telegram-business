@@ -54,7 +54,6 @@ HISTORY_CHATS_ENV = "TELESEC_HISTORY_CHATS"
 HISTORY_CHAT_TYPES_ENV = "TELESEC_HISTORY_CHAT_TYPES"
 HISTORY_CORRECTION_WINDOW_ENV = "TELESEC_HISTORY_CORRECTION_WINDOW"
 HISTORY_NEARBY_BEFORE_SECONDS_ENV = "TELESEC_HISTORY_NEARBY_BEFORE_SECONDS"
-HISTORY_RETENTION_DAYS_ENV = "TELESEC_HISTORY_RETENTION_DAYS"
 HISTORY_MAX_BYTES_ENV = "TELESEC_HISTORY_MAX_BYTES"
 
 DEFAULT_CORRECTION_WINDOW_SECONDS = 120
@@ -697,10 +696,17 @@ def capture_enabled() -> bool:
     return global_settings.enabled("history")
 
 
+def stored_retention_days() -> int:
+    """Retention from Settings (or `hermes telesec settings set retention`); 0 keeps history forever."""
+    from . import global_settings  # lazy: global_settings imports this module
+
+    return global_settings.retention_days()
+
+
 def history_config_from_env() -> HistoryConfig:
     correction_window = max(1, _env_int(HISTORY_CORRECTION_WINDOW_ENV, DEFAULT_CORRECTION_WINDOW_SECONDS))
     nearby_before_seconds = max(0, _env_int(HISTORY_NEARBY_BEFORE_SECONDS_ENV, DEFAULT_NEARBY_BEFORE_SECONDS))
-    retention_days = max(0, _env_int(HISTORY_RETENTION_DAYS_ENV, DEFAULT_RETENTION_DAYS))
+    retention_days = stored_retention_days()
     max_bytes = max(1, _env_int(HISTORY_MAX_BYTES_ENV, DEFAULT_MAX_BYTES))
     return HistoryConfig(
         enabled=capture_enabled(),

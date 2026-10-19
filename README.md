@@ -26,13 +26,17 @@ Handled updates are identified from stable Telegram Business connection, chat, u
 
 ## Settings
 
-Three switches cover all chats: transcription (on by default), history (off by default), and dossiers (off by default). Change them in your private chat with the bot: send `/telesec`, or tap **⚙️ Settings** on any chat's [owner panel](#per-chat-transcription-modes).
+Three switches cover all chats: transcription (on by default), history (off by default), and dossiers (off by default). One more row sets how long history is kept (forever by default). Change them in your private chat with the bot: send `/telesec`, or tap **⚙️ Settings** on any chat's [owner panel](#per-chat-transcription-modes).
 
 ```text
 Telesec settings · all chats
 One chat: Manage Bot in that chat.
+Keep history: forever
+Dossier model: gemini / gemini-3.8-flash
+Voice cleanup: gemini / gemini-3.8-flash
 [• Transcribe] [Don't transcribe]
 [Save history] [• Don't save]
+[• Forever] [1 year] [90 days] [30 days]
 [Keep dossiers] [• No dossiers]
 ```
 
@@ -45,13 +49,19 @@ hermes telesec settings
 hermes telesec settings --format json
 hermes telesec settings set history on
 hermes telesec settings set transcription off
+hermes telesec settings set retention 90
+hermes telesec settings set retention forever
 ```
 
 A change applies to the next update; no restart is needed. To turn history or the dossier off for one chat, use that chat's [owner panel](#per-chat-history-and-dossier); `hermes telesec settings` also counts such chats. Turning dossiers on asks first and names the model that will receive chat text. Dossiers are built from history, so while history is off they are paused, and Settings says so. Settings speaks Russian when your Telegram app is set to Russian (`Настройки Telesec`).
 
-Only an owner of every Business connection the bot knows about can change the switches; another verified owner sees them read-only. Anyone else's `/telesec`, `/telesec` with more text after it, and `/telesec` in a group go to Hermes as usual, where the `/telesec` command only says that Telesec settings are for the Business account owner. Settings are never posted into a Business chat, and a `/telesec` typed in a Business chat never gets an answer there.
+The **Forever · 1 year · 90 days · 30 days** row sets how long saved history is kept, and the `Keep history:` line shows the value in effect. A shorter time asks first; a longer one applies at once. History is deleted a whole month at a time: once all of a month is older than the chosen time, the next cleanup deletes it, so the current month always stays. Cleanup runs when the gateway starts, when a `hermes` command loads Telesec (such as `hermes telesec settings`), and at most hourly while Business messages arrive. The row stays while history is off, because cleanup keeps running. In the terminal, `hermes telesec settings set retention N` sets any number of days, and Settings shows such a value as its own button (for example `• 45 days`) until you pick another. See [retention and removal](docs/HISTORY.md#retention-and-removal).
 
-Transcription and history are stored in `$HERMES_HOME/data/telesec/settings.json`, dossiers in `$HERMES_HOME/data/telesec/dossiers/settings.json`, with `0600` permissions and atomic writes. The files hold only the switches and when and how (`telegram`, `cli`, or `migration`) each was set. If `settings.json` becomes corrupt or unreadable, the gateway keeps the switches it last read (transcription on and history off if it never read any) and logs it; Telegram shows an error instead of overwriting it, and only `hermes telesec settings set` backs it up and starts a new one.
+The last lines show the model that builds dossiers and the model that cleans up voice transcripts (or `off`), as configured. They are read-only: change models in the [configuration](#configuration).
+
+Only an owner of every Business connection the bot knows about can change the switches and retention; another verified owner sees them read-only. Anyone else's `/telesec`, `/telesec` with more text after it, and `/telesec` in a group go to Hermes as usual, where the `/telesec` command only says that Telesec settings are for the Business account owner. Settings are never posted into a Business chat, and a `/telesec` typed in a Business chat never gets an answer there.
+
+Transcription, history, and retention are stored in `$HERMES_HOME/data/telesec/settings.json`, dossiers in `$HERMES_HOME/data/telesec/dossiers/settings.json`, with `0600` permissions and atomic writes. The files hold only the switches, the retention in days (`0` is forever), and when and how (`telegram`, `cli`, or `migration`) each was set. If `settings.json` becomes corrupt or unreadable, the gateway keeps the switches it last read (transcription on and history off if it never read any) and logs it; Telegram shows an error instead of overwriting it, and only `hermes telesec settings set` backs it up and starts a new one.
 
 Hermes core has more commands than Telegram's "/" menu holds, so `/telesec` is not in the menu by default. To add it, set this in the Hermes config:
 
@@ -64,6 +74,8 @@ platforms:
 ```
 
 **Upgrade from 0.11.0 or earlier.** `TELESEC_DISABLE`, `TELESEC_HISTORY_ENABLE`, and the Desktop `history_enable` setting are no longer read. On the first start each value that differs from the default (transcription off, history on) is stored once in Settings, and the gateway log says so. The variable still wins over the Desktop setting, as before, so a `TELESEC_HISTORY_ENABLE=0` that overrides a Desktop `history_enable` is stored as history off. A stored choice is never overwritten. A CLI run without the gateway's environment can store only the Desktop setting's value. After that a leftover variable only causes one log warning per start; remove it once you no longer plan to go back to 0.11.0 or older, which read only the variables and the Desktop setting. No manual step is needed: a gateway with history on keeps it on, transcription stays as it was, and dossiers keep their 0.11.0 switch.
+
+**Upgrade from 0.12.** `TELESEC_HISTORY_RETENTION_DAYS` is no longer read. On the first start a value other than `0` is stored once as the retention in Settings (`via migration`), and the gateway log says so; a stored choice is never overwritten. A `hermes telesec settings set` that creates a new `settings.json` or replaces a corrupt one stores retention as forever, so the variable is not moved in after that; choose the time in Settings. Remove the variable after the upgrade: while it is set, each start logs a warning, and if `settings.json` is deleted, the next start moves it in again. Telesec 0.12 ignores the stored retention, so after going back to it the variable applies again.
 
 ## Per-chat transcription modes
 
@@ -287,7 +299,7 @@ Removing the plugin leaves its data under `$HERMES_HOME/data/telesec/`: history,
 
 ## Configuration
 
-All plugin variables are optional. Hermes Desktop's plugin settings form exposes `cleanup_style` and `agent_enable`. They are read through `ctx.get_config` under `plugins.entries.telesec.settings`; environment variables override the form. Settings are re-read when used. Restart the gateway after changing environment variables or these settings. Transcription, history, and dossiers have no variable or Desktop setting: they are switched in [Settings](#settings) (`/telesec` or `hermes telesec settings set`), with no restart. On upgrade, an old `TELESEC_DISABLE`, `TELESEC_HISTORY_ENABLE`, Desktop `history_enable`, `TELESEC_DOSSIER_ENABLE`, or Desktop `dossier_enable` value is moved into its switch once and then ignored.
+All plugin variables are optional. Hermes Desktop's plugin settings form exposes `cleanup_style` and `agent_enable`. They are read through `ctx.get_config` under `plugins.entries.telesec.settings`; environment variables override the form. Settings are re-read when used. Restart the gateway after changing environment variables or these settings. Transcription, history, dossiers, and history retention have no variable or Desktop setting: they are set in [Settings](#settings) (`/telesec` or `hermes telesec settings set`), with no restart. On upgrade, an old `TELESEC_DISABLE`, `TELESEC_HISTORY_ENABLE`, Desktop `history_enable`, `TELESEC_DOSSIER_ENABLE`, Desktop `dossier_enable`, or `TELESEC_HISTORY_RETENTION_DAYS` value is moved into Settings once and then ignored.
 
 ```yaml
 plugins:
@@ -322,8 +334,7 @@ See the [Hermes plugin settings API](https://hermes-agent.nousresearch.com/docs/
 | `TELESEC_HISTORY_CHAT_TYPES` | `private` | History: eligible chat types; add `group`, `supergroup`, or `channel` explicitly. |
 | `TELESEC_HISTORY_CORRECTION_WINDOW` | `120` | History: post-delete replacement window and classification delay, in seconds. |
 | `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | History: pre-delete replacement window, in seconds. |
-| `TELESEC_HISTORY_RETENTION_DAYS` | `0` | History: closed-partition retention target; `0` disables age pruning. |
-| `TELESEC_HISTORY_MAX_BYTES` | `1073741824` | History: total storage target before old closed partitions are pruned. |
+| `TELESEC_HISTORY_MAX_BYTES` | `1073741824` | History: disk-safety limit for operators. Above this total size the oldest closed months are pruned, whatever the retention in Settings. |
 | `TELESEC_DOSSIER_INTERVAL_MINUTES` | `30` | Pause between dossier cycles; bounded to 5–1440. |
 | `TELESEC_DOSSIER_QUIET_MINUTES` | `10` | Minutes a chat must be quiet before a dossier refresh; bounded to 0–1440. |
 | `TELESEC_DOSSIER_BACKFILL_DAYS` | `90` | First-pass and tracking window for dossiers, in days; bounded to 1–3650. |
@@ -417,7 +428,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - **Local processes.** Attached-audio checks run `ffprobe` for duration and `ffmpeg` for prefix extraction and normalization, using argument lists without a shell. They operate on transient media in the active profile's cache.
 - **Background work.** Claimed transcription runs asynchronously. Opt-in history schedules deletion classification and maintenance; dossiers use a gateway background thread that starts on adapter connect even while they are off and then only checks the stored switch every minute. Once they are on, cycles start at least 3 minutes after connection and normally 30 minutes apart, and send eligible private-chat text to the configured LLM without another prompt; disable dossiers to stop new cycles.
 - **The owner's chat with the bot.** Telegram delivers your own chat with the bot (the owner panel and your agent chat) as Business updates too. The plugin ignores those copies: they are not captured, transcribed, counted, or used for dossiers, and the ordinary update for the same message still reaches Hermes.
-- **Stored data and retention.** `$HERMES_HOME/data/telesec/` holds the switches for all chats, owner/chat modes and connection-owner mappings, per-chat history and dossier switches, opt-in history JSONL and its contact catalog, and opt-in dossier facts, source quotes, persona, revisions, and worker state. Modes and dossiers remain until explicitly removed. History defaults to no age pruning and a 1 GiB size target; pruning removes closed monthly partitions, so the current month and pending classifications can exceed the target. See [history removal](docs/HISTORY.md#retention-and-removal), [dossier removal](docs/DOSSIERS.md#storage-and-privacy), and [Update and remove](#update-and-remove).
+- **Stored data and retention.** `$HERMES_HOME/data/telesec/` holds the switches for all chats, owner/chat modes and connection-owner mappings, per-chat history and dossier switches, opt-in history JSONL and its contact catalog, and opt-in dossier facts, source quotes, persona, revisions, and worker state. Modes and dossiers remain until explicitly removed. History is kept forever by default (Settings can keep it 1 year, 90 days, or 30 days) with a 1 GiB size target; pruning removes closed monthly partitions, so the current month and pending classifications can exceed the target. See [history removal](docs/HISTORY.md#retention-and-removal), [dossier removal](docs/DOSSIERS.md#storage-and-privacy), and [Update and remove](#update-and-remove).
 - Voice/video/audio data is written only to the active Hermes profile's cache while it is processed. The newly created download, attached-audio probe, and any normalized full-file WAV are deleted in a `finally` block after success or failure.
 - The configured STT backend receives the media. Depending on your Hermes configuration, that backend may be local or external.
 - When cleanup is enabled, the configured host LLM receives the transcript. The system prompt treats transcript contents as untrusted data and forbids following embedded instructions.

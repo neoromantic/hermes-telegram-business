@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
+import test_history
 from dossier_helpers import (
     BUSINESS_ID,
     NOW,
@@ -46,7 +47,6 @@ from dossier_helpers import (
 
 CONTACT = "contact_dossier"
 PERSONA = "owner_persona"
-RETENTION_ENV = "TELESEC_HISTORY_RETENTION_DAYS"
 
 ALICE = 991
 BOB = 992
@@ -880,7 +880,7 @@ async def prune_lemons(dossier_plugin: Any, ds: Any, monkeypatch: pytest.MonkeyP
     assert cycle(ds, scripted(contact=[first])).refreshed == 1
     ds.apply_owner_edit(("contact", entry), "pin", fact_id="f2", now=ago(-1))
 
-    monkeypatch.setenv(RETENTION_ENV, "30")
+    test_history.set_retention(dossier_plugin, 30)
     assert maintain(dossier_plugin, 0).pruned_files >= 1
     rep = cycle(ds, scripted(), now=ago(-5))
     assert (rep.maintained, rep.calls) == (1, 0)
@@ -1056,7 +1056,7 @@ async def test_old_cited_source_checked_by_partition_without_reading_it(dossier_
     views = ds.views_for_dossier(d, now=later)
     assert [s["state"] for s in ds.sources_now(d, f1, views)] == ["old"]
 
-    monkeypatch.setenv(RETENTION_ENV, "20")
+    test_history.set_retention(dossier_plugin, 20)
     assert maintain(dossier_plugin, later).pruned_files >= 1
     contact_calls = len(payloads(fake, CONTACT))
     rep = cycle(ds, fake, now=later + timedelta(minutes=1))
@@ -1087,7 +1087,7 @@ async def test_orphan_dossier_reconciled_after_whole_chat_prune(dossier_plugin, 
     assert (rep.refreshed, rep.unqualified) == (1, 1)
     ds.apply_owner_edit(("contact", entry), "pin", fact_id="f2", now=ago(-1))
 
-    monkeypatch.setenv(RETENTION_ENV, "30")
+    test_history.set_retention(dossier_plugin, 30)
     assert maintain(dossier_plugin, 0).pruned_files >= 1
     assert ALICE not in [e["chat_id"] for e in ds.private_entries()]
 

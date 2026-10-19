@@ -39,6 +39,10 @@ The product connects readable Telegram voice messages with useful personal corre
 - Stats redesign ([#4](https://github.com/neoromantic/telesec/issues/4)): the panel's 📊 Stats section is a compact report in Russian or English with bars and sparklines. The owner's in-chat `/stats` (all history, or `7d`, `30d`, `90d`) edits the command into a shareable card that the contact sees too, without owner-only details; the command and card never reach history. With `/dossier`, it is one of the two owner commands typed in a Business chat. [Owner panel stats](STATS.md#in-telegram-owner-panel), [in-chat `/stats`](STATS.md#in-a-business-chat-stats).
 - Conversation metrics in `stats` ([#28](https://github.com/neoromantic/telesec/issues/28)): share, turns, reply times (median and p90), waiting, message length, edits, hours and weekdays, activity, streaks, the longest silence, and a comparison with the previous period. JSON `schema_version` 2. The stats time zone now defaults to the Hermes time zone. [Conversation metrics](STATS.md#conversation-metrics).
 
+## Unreleased
+
+- History retention in Settings: **Forever · 1 year · 90 days · 30 days**, also `hermes telesec settings set retention`, replacing `TELESEC_HISTORY_RETENTION_DAYS`. Settings also shows the dossier and voice cleanup models, read-only. [Settings](../README.md#settings).
+
 ## Next
 
 - Voice notes in stats: history first needs a separate, metadata-only capture change (send time, side, and duration; no audio). Stats then add a voice row to the panel and the card. Until then, stats count text messages only.
