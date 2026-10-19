@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Consume all Business message, edit, and deletion updates after history capture and transcription routing so ordinary contact/owner text cannot start an agent turn. Set `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE=1` to allow unhandled updates through the ordinary Hermes auth/agent path. Bot DMs and the owner panel keep their existing routing.
 - Add the owner panel: Telegram's "Manage Bot" button in a Business chat opens the owner's private chat with the bot, which answers `/start bizChat<id>` with that chat's transcription mode as buttons (`both`, `own`, `peer`, `off`, reset). Only a verified Business owner gets it, nothing is visible to the contact, and changes are stored like the chat command's (`updated_via: chat`, readable by 0.9.0). In-chat `/transcribe` stays as the fallback.
 - Add a small section registry (`owner_panel.register_section`) so stats and dossiers can show per-chat views in the panel.
 

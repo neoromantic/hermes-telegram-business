@@ -67,6 +67,7 @@ def isolate_plugin_environment(monkeypatch: pytest.MonkeyPatch):
         "TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS",
         "TG_BUSINESS_AUDIO_FILE_MIN_WORDS",
         "HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH",
+        "HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE",
     ):
         monkeypatch.delenv(name, raising=False)
 

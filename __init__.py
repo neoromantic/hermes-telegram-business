@@ -430,17 +430,20 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
         except Exception as exc:  # noqa: BLE001 - capture failures must not break dispatch
             logger.warning("%s: business history observation failed: %s", _PLUGIN_NAME, exc, exc_info=True)
         message = update.effective_message
-        if not _is_business_voice_media(message):
-            return
-        if not _truthy_env(_ADAPTER_AUTH_BYPASS_ENV) and not adapter._is_user_authorized_from_message(message):
-            return
-        event = SimpleNamespace(
-            source=SimpleNamespace(platform=adapter.platform),
-            raw_message=message,
-            raw_update=update,
-        )
-        gateway = SimpleNamespace(adapters={adapter.platform: adapter})
-        if _on_pre_gateway_dispatch(event, gateway) is not None:
+        if _is_business_voice_media(message) and (
+            _truthy_env(_ADAPTER_AUTH_BYPASS_ENV) or adapter._is_user_authorized_from_message(message)
+        ):
+            event = SimpleNamespace(
+                source=SimpleNamespace(platform=adapter.platform),
+                raw_message=message,
+                raw_update=update,
+            )
+            gateway = SimpleNamespace(adapters={adapter.platform: adapter})
+            if _on_pre_gateway_dispatch(event, gateway) is not None:
+                raise ApplicationHandlerStop
+        if not _truthy_env("HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE"):
+            logger.info("%s: business update consumed update=%s chat=%s",
+                        _PLUGIN_NAME, update.update_id, update.effective_chat.id)
             raise ApplicationHandlerStop
 
     class BusinessHandler(BaseHandler):

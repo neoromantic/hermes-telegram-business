@@ -117,6 +117,7 @@ def make_text_update(
         date=datetime.now(UTC),
     )
     update.effective_message = update.edited_business_message if edited else update.business_message
+    update.effective_chat = update.effective_message.chat
     return update
 
 
@@ -763,7 +764,8 @@ async def test_bot_sent_non_status_transcribe_text_is_ordinary_outbound_history(
     bot = CommandBot(business_owner_id=OWNER)
     callback = registered_business_handler(plugin, command_adapter(bot))
 
-    await callback(make_text_update(text, sender_business_bot=555), SimpleNamespace(bot=bot))
+    with pytest.raises(ApplicationHandlerStop):
+        await callback(make_text_update(text, sender_business_bot=555), SimpleNamespace(bot=bot))
 
     records = test_history.load_records(plugin)
     assert [(record["direction"], record["text"]) for record in records] == [("outbound", text)]
@@ -782,7 +784,8 @@ async def test_forwarded_or_inline_bot_owner_command_is_ordinary_text(history_en
     setattr(update.business_message, origin, SimpleNamespace(type="user", id=3000))
 
     assert await _run_command(plugin, update, bot) is False
-    await callback(update, SimpleNamespace(bot=bot))
+    with pytest.raises(ApplicationHandlerStop):
+        await callback(update, SimpleNamespace(bot=bot))
 
     assert not modes_file(plugin).exists()
     assert bot.text_edit_calls == []
@@ -862,7 +865,8 @@ async def test_contact_command_reaches_history_as_inbound_text(history_enabled, 
     bot = CommandBot(business_owner_id=OWNER)
     callback = registered_business_handler(plugin, command_adapter(bot))
 
-    await callback(make_text_update("/transcribe off", from_user_id=PEER), SimpleNamespace(bot=bot))
+    with pytest.raises(ApplicationHandlerStop):
+        await callback(make_text_update("/transcribe off", from_user_id=PEER), SimpleNamespace(bot=bot))
 
     records = test_history.load_records(plugin)
     assert [(record["direction"], record["text"]) for record in records] == [("inbound", "/transcribe off")]
@@ -876,7 +880,8 @@ async def test_unverifiable_owner_command_is_ordinary_unknown_text(history_enabl
     bot.business_connection_error = RuntimeError("lookup down")
     callback = registered_business_handler(plugin, command_adapter(bot))
 
-    await callback(make_text_update("/transcribe off"), SimpleNamespace(bot=bot))
+    with pytest.raises(ApplicationHandlerStop):
+        await callback(make_text_update("/transcribe off"), SimpleNamespace(bot=bot))
 
     records = test_history.load_records(plugin)
     assert [(record["direction"], record["text"]) for record in records] == [("unknown", "/transcribe off")]
@@ -1021,7 +1026,8 @@ async def test_disabled_transcriber_leaves_owner_command_as_ordinary_history(his
     update = make_text_update("/transcribe off")
 
     assert await _run_command(plugin, update, bot) is False
-    await callback(update, SimpleNamespace(bot=bot))
+    with pytest.raises(ApplicationHandlerStop):
+        await callback(update, SimpleNamespace(bot=bot))
 
     assert not modes_file(plugin).exists()
     assert bot.text_edit_calls == []
@@ -1048,7 +1054,8 @@ async def test_owner_command_and_its_echo_never_reach_history(history_enabled, m
     assert test_history.load_records(plugin) == []
     assert not (plugin._history_support.history_root() / "contacts.json").exists()
 
-    await callback(make_text_update("Hello", message_id=78, update_id=3), context)
+    with pytest.raises(ApplicationHandlerStop):
+        await callback(make_text_update("Hello", message_id=78, update_id=3), context)
     records = test_history.load_records(plugin)
     assert [(record["direction"], record["text"]) for record in records] == [("outbound", "Hello")]
 

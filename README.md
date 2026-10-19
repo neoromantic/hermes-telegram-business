@@ -11,7 +11,7 @@ A Telegram Business integration for [Hermes Agent](https://github.com/NousResear
 
 ## Current module: voice transcription
 
-1. A native Telegram handler intercepts Business `voice`, `video_note`, `audio`, and conservatively identified audio `document` updates before ordinary media processing; generic documents and video pass through.
+1. A native Telegram handler intercepts Business `voice`, `video_note`, `audio`, and conservatively identified audio `document` updates before ordinary media processing; generic documents and video are consumed without transcription.
 2. Requires a real Telegram Business connection and preserves its `business_connection_id`.
 3. Returns `action: skip` so the ordinary auth/agent path does not process the media.
 4. Downloads the media transiently and delegates speech recognition to Hermes's configured `transcribe_audio` backend. Attached files must have safe byte/duration metadata, are locally duration-checked when needed, and pass a short mono/16 kHz speech-presence probe before full transcription.
@@ -47,7 +47,7 @@ Tap a mode to set it, or Reset to return to the default; the panel message updat
 
 To confirm you are the owner, the bot checks the Business connections it knows: ones Telegram reported connecting since the gateway started (kept in memory only), ones where you sent `/transcribe` once, ones it already looked up the owner for, and, with history on, the connections in the history catalog. While the gateway knows no Business connection at all, Manage Bot answers with a hint to send `/transcribe` in that chat once (or, with transcription disabled, to turn on history capture). Once it knows one, the owner of a connection it does not know yet must send `/transcribe` in that chat once, which records the connection's owner, before Manage Bot opens the panel; until then their `/start` is handled as an ordinary message. Mode buttons work for the chat right away, even after a restart and before the contact writes again; modes are stored per owner, so your change never touches another owner's chat with the same contact. With `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` set, the panel says so and shows no mode buttons. Other features add their own panel sections.
 
-Panel taps, `/transcribe` commands, and claimed voice updates stop update propagation before Hermes' group-99 dispatch counter, so after a quiet period the core "Telegram ingress is healthy but deaf" warning can report a stale gap. The gap resets on reconnect and needs no action.
+Panel taps and all Business message updates stop update propagation before Hermes' group-99 dispatch counter, so after a quiet period the core "Telegram ingress is healthy but deaf" warning can report a stale gap. The gap resets on reconnect and needs no action.
 
 The fallback is an in-chat command. As the connected Business account owner, send it in the chat itself:
 
@@ -143,7 +143,9 @@ Telegram Business voice/video notes can originate from users outside the ordinar
 HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH=1
 ```
 
-The plugin registers native Telegram handlers before the ordinary Hermes media handler. Only Business voice/video/audio candidates are claimed, including attachments rejected by the audio limits or speech probe. Unrelated messages continue through Hermes normally. The bypass above applies only to those Business media candidates; it does not authorize ordinary bot messages.
+The plugin registers native Telegram handlers in group `-100`, before ordinary Hermes handlers. After history capture and transcription routing, every `business_message`, `edited_business_message`, and `deleted_business_messages` update is consumed with `ApplicationHandlerStop`. Ordinary Business text from either the owner or a contact never becomes an agent turn, even with history or transcription disabled or after a history-write failure. Normal bot DMs, including the owner panel, keep their existing routing. The bypass above applies only to Business media transcription; it does not authorize ordinary bot messages.
+
+Owners who deliberately want unhandled Business updates to continue into Hermes can set `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE=1` in the active profile's `.env` and restart the gateway. The ordinary core auth/agent rules then apply; handled media and owner controls remain consumed.
 
 History has its own explicit enable switch and records eligible Business text updates independently of the ordinary DM allowlist. Telegram's selected Business-chat scope and the optional history filters determine what is captured.
 
@@ -189,6 +191,7 @@ All plugin variables are optional.
 
 | Variable | Default | Meaning |
 |---|---:|---|
+| `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` | false | Allow unhandled Business updates into the ordinary Hermes auth/agent path. By default all Business message updates are consumed after history capture and transcription routing. |
 | `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` | false | Disable voice/audio transcription. `/transcribe` is then ordinary text. |
 | `TG_BUSINESS_VOICE_TRANSCRIBER_SEND_ERRORS` | false | Reply with a short STT error notice. |
 | `TG_BUSINESS_VOICE_CLEANUP_DISABLE` | false | Skip LLM cleanup and post raw STT text. |
@@ -251,14 +254,15 @@ Source files:
 - `dossier_support.py`: the opt-in dossier worker, model calls, output validation, and dossier storage.
 - `dossier_cli.py`: the `dossier` CLI.
 
-Modules are a small ordered tuple. Each module has its own enable check, declares whether it may receive the host-owned LLM facade, and explicitly returns `handled` or `pass_through`. A pass-through result leaves the ordinary Hermes path untouched. A handled result returns `action: skip` immediately and schedules any slow work outside gateway dispatch:
+Modules are a small ordered tuple. Each module has its own enable check, declares whether it may receive the host-owned LLM facade, and explicitly returns `handled` or `pass_through`. A pass-through result tries the next module; the native handler consumes the remaining Business update unless agent routing is explicitly enabled. A handled result returns `action: skip` immediately and schedules any slow work outside gateway dispatch:
 
 ```text
 Telegram gateway event
   -> normalize Telegram Business identity and relationships
   -> enabled modules in order
-       -> pass_through: try next module / ordinary Hermes path
+       -> pass_through: try next module
        -> handled: duplicate guard + action: skip (no agent turn)
+  -> unhandled Business update: stop propagation unless agent routing is enabled
   -> asynchronous module work
   -> voice/video note: unchanged transient download -> full STT
   -> attached audio: metadata gate -> authoritative getFile-size gate -> transient download -> local ffprobe verification -> ffmpeg prefix probe
@@ -288,7 +292,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 
 ## Failure behavior
 
-- Non-Telegram, non-Business, generic-document, and video events pass through untouched.
+- Non-Telegram and non-Business events pass through untouched. Generic documents and video in Business chats are consumed without transcription unless agent routing is explicitly enabled.
 - Media skipped by a chat's [transcription mode](#per-chat-transcription-modes) is claimed before download and posts nothing. A modes file that was never readable, unknown direction under `own`/`peer`, or a failed owner lookup on a connection with no recorded owner transcribe as usual.
 - Disabled and pass-through modules do not consume the event's duplicate identity.
 - A module enable/route exception is logged and contained, and later modules still receive the event.

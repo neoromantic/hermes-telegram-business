@@ -541,7 +541,9 @@ async def test_real_history_catalog_names_the_chat_and_scopes_the_section(histor
         text="hello", business_id="business-456", chat_first_name=None, chat_last_name=None, chat_username="casey"
     )
     update.effective_message = update.business_message
-    await business(update, SimpleNamespace(bot=bot))
+    update.effective_chat = update.business_message.chat
+    with pytest.raises(ApplicationHandlerStop):
+        await business(update, SimpleNamespace(bot=bot))
     plugin._PANEL_SEEN_CHATS.clear()  # only the catalog ties the chat here
     assert [entry["business_connection_id"] for entry in plugin._panel_catalog()] == ["business-456"]
     seen = probe_section(plugin)
@@ -833,7 +835,8 @@ async def test_business_updates_tie_their_chat(plugin, modes):
     bot = PanelBot(business_owner_id=OWNER)
     business = ttm.registered_business_handler(plugin, ttm.command_adapter(bot))
 
-    await business(ttm.make_text_update("hello", from_user_id=PEER, chat_id=31337), SimpleNamespace(bot=bot))
+    with pytest.raises(ApplicationHandlerStop):
+        await business(ttm.make_text_update("hello", from_user_id=PEER, chat_id=31337), SimpleNamespace(bot=bot))
 
     assert (BCID, "31337") in plugin._PANEL_SEEN_CHATS
 

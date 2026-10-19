@@ -10,7 +10,20 @@ CI runs the suite on Python 3.11–3.14. Telegram, STT, and LLM network calls ar
 
 History checks must cover one-time opt-in, private-chat defaults, explicit scope overrides, create/edit/delete capture, correction classification, restart/retry behavior, partial final writes, contact renames and ambiguity, bounded date/text queries, retention, catalog rebuilds, and CLI failure exits.
 
-Native-handler checks must demonstrate that Business voice/audio is consumed before the ordinary media handler, unrelated messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
+Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
+
+## Production Business text investigation: 2026-10-19
+
+No recent Business-text agent turns were found on `baus`: a separate profile-local `telegram-business-dm-passive-guard` 0.2.0 was already protecting it. The plugin under test (`de52645`) alone passed ordinary Business text through; this was reproduced with real PTB updates before adding the default consume rule.
+
+Read-only checks of `hermes-gateway-baus.service`, its `gateway.log`, `state.db`, and `sessions/sessions.json` found:
+
+- The local guard was enabled and its disable flag was unset. Hermes core was `818c13be1dc4fd28987e1e881a9408224afd4535`.
+- Between October 16 and October 19 at 16:32:55 Europe/Berlin (UTC+02:00), the gateway logged 359 `pre_gateway_dispatch skip: reason=telegram_business_dm_passive_guard` events across 24 Business chats: 97, 129, 53, and 80 per day.
+- None of those chat IDs had Telegram user or assistant messages in the session database since October 16 UTC. Five retained session-index entries predated that window; none had an active turn. The recent Telegram turns belonged to other chats.
+- Core `gateway/run_inbound.py` returns immediately on that skip result, before authorization and agent dispatch. Thus the production protection came from the separate local guard, not this distributable plugin.
+
+No message text, contact names, or raw contact IDs are included here.
 
 ## Live gateway smoke: owner panel, 2026-10-19
 
