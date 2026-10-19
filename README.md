@@ -36,6 +36,8 @@ One chat: Manage Bot in that chat.
 [Keep dossiers] [• No dossiers]
 ```
 
+![Real Telegram screenshot of Settings in the owner's private chat with the bot: "Telesec settings · all chats" with the Transcribe / Don't transcribe, Save history / Don't save, and Keep dossiers / No dossiers rows, all three switched on.](docs/images/settings.png)
+
 Or from the terminal:
 
 ```bash
@@ -87,7 +89,7 @@ Transcription: off
 [⚙️ Settings] [Refresh]
 ```
 
-![Real Telegram screenshot of the owner panel in the owner's private chat with the bot: Transcription: off, with mode buttons, Reset to default, Stats, Dossier, and Refresh. The contact's name, username, and chat ID are blurred.](docs/images/owner-panel.png)
+![Real Telegram screenshot of the owner panel in the owner's private chat with the bot: Transcription: off, with mode buttons, Reset to default, the Save history / Don't save and Keep dossier / No dossier rows (both on), Stats, Dossier, ⚙️ Settings, and Refresh. The contact's name, username, and chat ID are blurred.](docs/images/owner-panel.png)
 
 Tap a mode to set it, or Reset to return to the default; the panel message updates in place. The history and dossier rows below it work the same way for this chat ([per-chat history and dossier](#per-chat-history-and-dossier)). The header always ends with `chat <id>`, so when you reply to a panel message to ask the agent about that chat, the reply names the chat. The panel speaks Russian when your Telegram app is set to Russian (`Панель владельца`, `Расшифровка: выкл`, mode buttons `все`, `мои`, `собеседника`, `выкл`) and English otherwise; modes are still stored as `both`, `own`, `peer`, and `off`. Only you see the panel: it lives in your private chat with the bot and the contact sees nothing. Only a verified owner gets the panel. Anyone else's `/start bizChat…` is treated as an ordinary message, and a panel button pressed by anyone else gets a short "Not allowed" alert.
 
@@ -205,7 +207,7 @@ hermes telesec dossier correct --contact @alice --fact f3 --text "Prefers calls 
 
 In Telegram, the panel's **Dossier** section shows the chat's dossier as a rich message in your app's language (Russian or English), with pin, unpin, remove, and refresh buttons; the persona is there too, and the on/off switch is in Settings. Sending exactly `/dossier` in a private Business chat, as the owner, deletes the command and posts that contact's dossier into the chat (Telegram allows this only if the contact wrote in the last 24 hours), without owner notes and without quotes or current text of deleted or edited messages (fact texts can still reflect such a message; see [docs/DOSSIERS.md](docs/DOSSIERS.md#dossier-in-a-chat)). Unlike the owner panel, `/dossier` is deliberately visible to the contact: its purpose is to show them their dossier. When there is nothing to post, the bot tells you why in your private chat with it instead.
 
-![Real Telegram screenshot of the Dossier overview in the owner panel: when the dossier was updated, coverage, model, fact counts, the Relationship and Shared facts sections, the mark legend, and Manage facts, Refresh, My persona, and Back buttons. The contact's username is blurred.](docs/images/dossier-panel.png)
+![Real Telegram screenshot of the Dossier overview in the owner panel: when the dossier was updated, coverage, model, fact counts, the collapsed Relationship and Shared facts sections, the mark legend, and Manage facts, Refresh, My persona, and Back buttons, with no on/off switch. The contact's username is blurred.](docs/images/dossier-panel.png)
 
 ![Real Telegram screenshot of a fact card in the owner panel: the fact's section and kind, revisions, and its source message with date, sender, and quote, with Pin, Remove, Facts, and Back buttons. The contact's username, the fact text, the message ID, and the quote are blurred.](docs/images/dossier-fact.png)
 
