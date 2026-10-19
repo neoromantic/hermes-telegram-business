@@ -307,7 +307,8 @@ async def test_any_business_message_in_the_chat_verifies_the_owner(plugin, modes
     assert await dispatch(plugin, start_update(), bot) is True
     assert bot.calls[-1]["text"] == plugin._owner_panel.UNKNOWN_CONNECTION
 
-    await business(ttm.make_text_update("hello", from_user_id=PEER), SimpleNamespace(bot=bot))
+    with pytest.raises(ApplicationHandlerStop):  # Business text is consumed, never an agent turn
+        await business(ttm.make_text_update("hello", from_user_id=PEER), SimpleNamespace(bot=bot))
     # The cached "unknown" does not outlive the new connection: the next tap opens the panel.
     assert await dispatch(plugin, start_update(), bot) is True
     assert bot.calls[-1]["text"].startswith("Owner panel: chat 991\n")
