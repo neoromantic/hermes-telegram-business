@@ -84,7 +84,7 @@ def test_migration_never_overwrites_conflicting_destinations(plugin, tmp_path, c
 
 
 def test_settings_form_and_environment_overrides(plugin, monkeypatch):
-    settings = {"cleanup_style": "enriched", "timezone": "Asia/Tbilisi", "agent_enable": True}
+    settings = {"cleanup_style": "enriched", "agent_enable": True}
     schema = yaml.safe_load((Path(__file__).parents[1] / "plugin.yaml").read_text())["config_schema"]
     assert set(schema) == set(settings)
     # Removed in 0.11.0 (dossier_enable) and after it (history_enable); each moves into its stored switch once.
@@ -96,9 +96,6 @@ def test_settings_form_and_environment_overrides(plugin, monkeypatch):
     assert plugin._dossier_support.load_config().enabled
     assert plugin._cleanup_style() == "enriched"
     assert plugin._truthy_env("TELESEC_AGENT_ENABLE", settings["agent_enable"])
-    from importlib import import_module
-    stats = import_module(f"{plugin.__name__}.correspondence_stats")
-    assert stats.resolve_timezone(None, {})[1] == "Asia/Tbilisi"
     for key in ("HISTORY_ENABLE", "DOSSIER_ENABLE", "AGENT_ENABLE"):
         monkeypatch.setenv(f"TELESEC_{key}", "0")
     monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "conservative")
@@ -106,7 +103,6 @@ def test_settings_form_and_environment_overrides(plugin, monkeypatch):
     assert plugin._dossier_support.load_config().enabled
     assert not plugin._truthy_env("TELESEC_AGENT_ENABLE", settings["agent_enable"])
     assert plugin._cleanup_style() == "conservative"
-    assert stats.resolve_timezone(None, {"TELESEC_TIMEZONE": "UTC"})[1] == "UTC"
     legacy["history_enable"] = False
     plugin.register(ctx)
     assert plugin._history_support.history_config_from_env().enabled  # moved once, never read again
@@ -120,6 +116,7 @@ def test_old_environment_and_cli_aliases_warn_and_new_environment_wins(plugin, m
         "TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE": "1",
         "TG_BUSINESS_AUDIO_FILE_MIN_WORDS": "5",
         "TELESEC_CLEANUP_STYLE": "conservative",
+        "HERMES_TELEGRAM_BUSINESS_TIMEZONE": "Europe/Moscow",
     })
     ctx = SimpleNamespace(llm=None, get_config={}.get, register_telegram_handler=Mock(), register_hook=Mock(),
                           register_cli_command=Mock(), register_skill=Mock())
@@ -132,6 +129,8 @@ def test_old_environment_and_cli_aliases_warn_and_new_environment_wins(plugin, m
     plugin.register(ctx)
     assert caplog.text.count("Deprecated Telesec environment aliases") == 1
     assert "HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE -> TELESEC_HISTORY_ENABLE" in caplog.text
+    # The time zone setting is gone, so its old name is not mapped or suggested.
+    assert "TELESEC_TIMEZONE" not in os.environ and "TIMEZONE" not in caplog.text
     commands = {call.kwargs["name"]: call.kwargs for call in ctx.register_cli_command.call_args_list}
     parser = argparse.ArgumentParser(prog="hermes telegram-business")
     commands["telegram-business"]["setup_fn"](parser)

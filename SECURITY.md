@@ -20,9 +20,9 @@ The maintainer replies as soon as possible, agrees on a fix and a disclosure dat
 
 In scope:
 
-- Telegram Business updates the plugin claims: voice messages, round video notes, attached audio, and the owner's `/dossier` command.
-- Owner checks: the owner panel behind Telegram's "Manage Bot" button (its dossier switch and persona only for an owner of every known Business connection), the owner's in-chat `/dossier` command, and the `hermes telesec` CLI.
-- Business-scoped delivery: transcript replies, caption edits, and the dossier posted by the owner's `/dossier` must stay on the same `business_connection_id` and chat. That post is the contact view only: no owner notes, no quotes or current text of deleted or edited messages (fact texts can still reflect such a message: deletions never trigger a rewrite, and pinned or corrected facts are never rewritten), never the persona. When `/dossier` posts nothing, the reason goes only to the owner's private chat with the bot.
+- Telegram Business updates the plugin claims: voice messages, round video notes, attached audio, and the owner's `/dossier` and `/stats` commands.
+- Owner checks: the owner panel behind Telegram's "Manage Bot" button (its dossier switch and persona only for an owner of every known Business connection), the owner's in-chat `/dossier` and `/stats` commands, and the `hermes telesec` CLI.
+- Business-scoped delivery: transcript replies, caption edits, the dossier posted by the owner's `/dossier`, and the stats card or notice from the owner's `/stats` (an edit of the command, or a new message when the edit fails, and the deletion of the command and notice) must stay on the same `business_connection_id` and chat. The dossier post is the contact view only: no owner notes, no quotes or current text of deleted or edited messages (fact texts can still reflect such a message: deletions never trigger a rewrite, and pinned or corrected facts are never rewritten), never the persona. When `/dossier` posts nothing, the reason goes only to the owner's private chat with the bot. The stats card has counts and times only: no message text, no deletions, edits, waiting, or p90.
 - Local data the plugin writes under `$HERMES_HOME/data/telesec/`: transcription modes, opt-in history, and opt-in dossiers.
 - Data the plugin sends to the configured STT backend and to the host model through `ctx.llm`.
 

@@ -8,8 +8,10 @@ import itertools
 import json
 import re
 import shlex
-from datetime import UTC, datetime, timedelta
+import sys
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -40,7 +42,8 @@ SKILL_DOC = ROOT / "skills" / "history" / "SKILL.md"
 _FENCED_BLOCK_RE = re.compile(r"^```(\w+)\n(.*?)\n```$", flags=re.MULTILINE | re.DOTALL)
 
 NOW = datetime(2026, 10, 19, 11, 32, tzinfo=UTC)
-TIMEZONE_ENV = "TELESEC_TIMEZONE"
+# Removed: Telesec has no time zone setting; stats use Hermes's time zone.
+OLD_TIMEZONE_ENV = "TELESEC_TIMEZONE"
 ALICE = {"id": 991, "type": "private", "username": "alice", "first_name": "Alice", "last_name": "Example"}
 BOB = {"id": 992, "type": "private", "username": "bob", "first_name": "Bob", "last_name": "Builder"}
 CAROL = {"id": 994, "type": "private", "first_name": "Carol"}
@@ -57,9 +60,39 @@ Alice Example (@alice) connection=business-123 chat=991
   latest 2026-10-17 21:04 received; last sent 2026-10-17 19:30
   last message: received 2026-10-17 21:04, no observed reply after it
   sessions 4 (gap 6h): started by contact 2, by owner 2; ended on received 2
+  share received 63%, sent 37%
+  turns 7 (received 4, sent 3); messages per turn received 1.3, sent 1.0
+  replies received 2: median 52m, p90 1h34m; sent 1: median 30m, p90 30m
+  text length median received 10, sent 10; edited 2 (received 0, sent 1, unknown direction 1)
+  peak Sat 12:00; hours 0..23: 1 0 0 0 0 0 0 0 0 0 0 2 3 0 0 0 0 0 0 1 0 1 0 1; weekdays Mon..Sun: 0 0 0 0 0 8 1
+  activity by day from 2026-10-01: 0 0 3 1 0 0 0 0 0 3 0 0 0 0 0 0 2 0
+  streak current 1d, longest 2d (2026-10-03..2026-10-04); longest silence 7d07h (2026-10-10 12:14..2026-10-17 19:30)
   deletions 4: unexplained 1 (received 1, sent 0), likely correction 1, likely duplicate 1, pending 1
   missing history: retained from 2026-10-03 (range is partial); 1 deletion of a message not in history; 1 message known only from an edit
   deletion details: hermes telesec history deletions --connection business-123 --chat 991 --status unexplained
+""".strip("\n")
+
+# The last 7 days run to now, so the report has a waiting line and, with history
+# retained from 2026-10-03, the previous 7 days to compare with.
+ALICE_WEEK_MOSCOW = """
+range 2026-10-12 14:32..now Europe/Moscow, by Telegram send time; text messages only
+Alice Example (@alice) connection=business-123 chat=991
+  messages 3: received 2, sent 1, unknown direction 0
+  active days 2 (received 2, sent 1)
+  latest 2026-10-19 00:00 received; last sent 2026-10-17 19:30
+  last message: received 2026-10-19 00:00, no observed reply after it
+  sessions 2 (gap 6h): started by contact 1, by owner 1; ended on received 2
+  share received 67%, sent 33%
+  turns 2 (received 1, sent 1); messages per turn received 2.0, sent 1.0
+  replies received 1: median 1h34m, p90 1h34m; sent 0
+  waiting received since 2026-10-17 21:04 (1d17h)
+  text length median received 10, sent 10; edited 0
+  peak Sat 00:00; hours 0..23: 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 1 0 0; weekdays Mon..Sun: 1 0 0 0 0 2 0
+  activity by day from 2026-10-12: 0 0 0 0 0 2 0 1
+  streak current 1d, longest 1d (2026-10-17..2026-10-17); longest silence 1d02h (2026-10-17 21:04..2026-10-19 00:00)
+  previous 2026-10-05 14:32..2026-10-12 14:31: messages 3 -> 3 (+0%); active days 1 -> 2; reply median received 10m -> 1h34m, sent -
+  deletions 1: pending 1
+  missing history: none (retained from 2026-10-03)
 """.strip("\n")
 
 OVERVIEW_MOSCOW = """
@@ -83,8 +116,20 @@ shown 1 of 4 contacts; not shown: 2 over --limit 1, 1 with no activity in range
 
 @pytest.fixture(autouse=True)
 def _fixed_clock(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv(TIMEZONE_ENV, raising=False)
+    # No Hermes time zone, even when the tests run inside a Hermes install.
+    monkeypatch.setitem(sys.modules, "hermes_time", None)
     monkeypatch.setattr(plugin._history_support, "_utcnow", lambda: NOW)
+
+
+def _hermes_tz(monkeypatch: pytest.MonkeyPatch, name: Any) -> None:
+    """Stub Hermes's ``hermes_time.get_timezone_name()``; an exception value is raised."""
+
+    def get_timezone_name():
+        if isinstance(name, Exception):
+            raise name
+        return name
+
+    monkeypatch.setitem(sys.modules, "hermes_time", SimpleNamespace(get_timezone_name=get_timezone_name))
 
 
 @pytest.fixture
@@ -230,7 +275,7 @@ def _entry(
 
 def _window(cs, *, since: str | None = None, until: str | None = None, tz: str | None = None, gap: str | None = None):
     args = argparse.Namespace(since=since, until=until, tz=tz, session_gap=gap)
-    return cs.build_window(args, now=NOW, environ={})
+    return cs.build_window(args, now=NOW)
 
 
 def _alice_records(plugin) -> list[dict[str, Any]]:
@@ -398,6 +443,16 @@ def test_worked_example_utc(plugin):
     expected[4] = "  latest 2026-10-18 21:00 received; last sent 2026-10-17 16:30"
     expected[5] = "  last message: received 2026-10-18 21:00, no observed reply after it"
     expected[6] = "  sessions 5 (gap 6h): started by contact 3, by owner 2; ended on received 3"
+    expected[7] = "  share received 67%, sent 33%"
+    expected[8] = "  turns 7 (received 4, sent 3); messages per turn received 1.5, sent 1.0"
+    expected[11] = (
+        "  peak Sat 09:00; hours 0..23: 0 0 0 0 0 0 0 0 2 3 0 0 0 0 0 0 1 0 1 0 1 2 0 0; weekdays Mon..Sun: 0 0 0 0 0 9 1"
+    )
+    expected[12] = "  activity by day from 2026-10-01: 0 0 4 0 0 0 0 0 0 3 0 0 0 0 0 0 2 1"
+    expected[13] = (
+        "  streak current 2d, longest 2d (2026-10-17..2026-10-18); "
+        "longest silence 7d07h (2026-10-10 09:14..2026-10-17 16:30)"
+    )
     assert exit_code == 0
     assert output.splitlines() == expected
 
@@ -407,7 +462,7 @@ def test_worked_example_json(plugin):
 
     document = _stats_json(plugin, "--contact", "@alice", *MOSCOW_RANGE)
 
-    assert document["schema_version"] == 1
+    assert document["schema_version"] == 2
     assert document["report"] == "correspondence_stats"
     assert document["mode"] == "contact"
     assert document["generated_at"] == "2026-10-19T14:32:00+03:00"
@@ -462,6 +517,45 @@ def test_worked_example_json(plugin):
         "deletions_of_messages_not_in_history": 1,
         "messages_known_only_from_edit": 1,
     }
+    # 5 of 8 known-side messages is 62.5%, rounded half up.
+    assert alice["share"] == {"received": 63, "sent": 37}
+    # Turns: 101 | 102 | 103 | (104 unknown) 105 | 106 109 | 110 | 111; 5 / 4 = 1.25 rounds to 1.3.
+    assert alice["turns"] == {
+        "total": 7,
+        "received": 4,
+        "sent": 3,
+        "messages_per_turn": {"received": 1.3, "sent": 1.0},
+    }
+    # 103 comes 11.5h after 102 (a new conversation) and 105 follows an unknown message,
+    # so the replies are 102 (30m), 106 (10m), and 111 (1h34m).
+    assert alice["replies"] == {
+        "received": {"count": 2, "median_seconds": 3120, "p90_seconds": 5640},
+        "sent": {"count": 1, "median_seconds": 1800, "p90_seconds": 1800},
+    }
+    assert alice["waiting"] is None  # --until is set
+    assert alice["text_length_median"] == {"received": 10, "sent": 10}
+    assert alice["edited"] == {"total": 2, "received": 0, "sent": 1}
+    assert alice["hours"] == [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1]
+    assert alice["weekdays"] == [0, 0, 0, 0, 0, 8, 1]
+    assert (alice["peak_hour"], alice["peak_weekday"]) == (12, 5)
+    assert alice["activity"] == {
+        "bucket": "day",
+        "start": "2026-10-01",
+        "counts": [0, 0, 3, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 2, 0],
+    }
+    assert alice["streaks"] == {
+        "current_days": 1,
+        "longest_days": 2,
+        "longest_start": "2026-10-03",
+        "longest_end": "2026-10-04",
+    }
+    assert alice["silence"] == {
+        "seconds": 7 * 86400 + 7 * 3600 + 15 * 60 + 30,
+        "from": "2026-10-10T12:14:30+03:00",
+        "to": "2026-10-17T19:30:00+03:00",
+    }
+    # Retained history starts 2026-10-03, after the previous 18 days would start.
+    assert alice["previous"] is None
 
 
 def test_overview_golden(plugin):
@@ -531,10 +625,11 @@ def test_docs_examples_match_output(plugin):
 
     assert checked == [
         (("--contact", "@alice", *MOSCOW_RANGE), "text"),
+        (("--contact", "@alice", "--since", "7d", "--tz", "Europe/Moscow"), "text"),
         (MOSCOW_RANGE, "text"),
         (("--contact", "@alice", *MOSCOW_RANGE, "--format", "json"), "json"),
     ]
-    assert [body for _, body in blocks[1:4:2]] == [ALICE_MOSCOW, OVERVIEW_MOSCOW]
+    assert [body for _, body in blocks[1:6:2]] == [ALICE_MOSCOW, ALICE_WEEK_MOSCOW, OVERVIEW_MOSCOW]
     assert "(docs/STATS.md)" in README_DOC.read_text(encoding="utf-8")
     assert "(STATS.md)" in HISTORY_DOC.read_text(encoding="utf-8")
 
@@ -549,7 +644,11 @@ def test_docs_cover_options_keys_and_commands(plugin):
             continue
         # Every real option has a row in the options table.
         assert f"\n| `--{dest.replace('_', '-')}` |" in stats_doc, dest
-    keys = _keys_everywhere(_stats_json(plugin, "--contact", "@alice")) | _keys_everywhere(_stats_json(plugin))
+    keys = (
+        _keys_everywhere(_stats_json(plugin, "--contact", "@alice"))
+        | _keys_everywhere(_stats_json(plugin, "--contact", "@alice", "--since", "7d"))
+        | _keys_everywhere(_stats_json(plugin))
+    )
     assert sorted(key for key in keys if f"`{key}`" not in stats_doc) == []
     commands = _documented_stats_commands(stats_doc) + _documented_stats_commands(
         README_DOC.read_text(encoding="utf-8")
@@ -578,6 +677,20 @@ def test_json_key_order(plugin):
         "sessions",
         "deletions",
         "missing_history",
+        "share",
+        "turns",
+        "replies",
+        "waiting",
+        "text_length_median",
+        "edited",
+        "hours",
+        "weekdays",
+        "peak_hour",
+        "peak_weekday",
+        "activity",
+        "streaks",
+        "silence",
+        "previous",
     ]
     nested = {
         "messages": ["total", "received", "sent", "unknown_direction"],
@@ -599,6 +712,18 @@ def test_json_key_order(plugin):
             "deletions_of_messages_not_in_history",
             "messages_known_only_from_edit",
         ],
+        "share": ["received", "sent"],
+        "turns": ["total", "received", "sent", "messages_per_turn"],
+        "replies": ["received", "sent"],
+        "text_length_median": ["received", "sent"],
+        "edited": ["total", "received", "sent"],
+        "activity": ["bucket", "start", "counts"],
+        "streaks": ["current_days", "longest_days", "longest_start", "longest_end"],
+        "silence": ["seconds", "from", "to"],
+    }
+    open_ended = {
+        "waiting": ["side", "since", "seconds"],
+        "previous": ["since", "until", "messages", "active_days", "replies"],
     }
     overview_keys = [
         "contacts_in_scope",
@@ -618,14 +743,33 @@ def test_json_key_order(plugin):
         for contact in document["contacts"]:
             assert list(contact) == contact_keys
             for key, expected in nested.items():
+                # Null only without the data: no window start, or fewer than two messages.
+                if contact[key] is None and key in {"activity", "silence"}:
+                    assert contact["messages"]["total"] < 2
+                    continue
                 assert list(contact[key]) == expected
             assert list(contact["deletions"]["unexplained"]) == ["total", "received", "sent", "unknown_direction"]
+            for side in ("received", "sent"):
+                assert list(contact["replies"][side]) == ["count", "median_seconds", "p90_seconds"]
+            assert list(contact["turns"]["messages_per_turn"]) == ["received", "sent"]
+            # Without --until or a covered previous period these are null.
+            assert contact["waiting"] is None and contact["previous"] is None
         if document["mode"] == "overview":
             assert list(document["overview"]) == overview_keys
             assert list(document["overview"]["not_shown_no_activity_missing_history"]) == [
                 "deletions_of_messages_not_in_history",
                 "messages_known_only_from_edit",
             ]
+
+    week = _stats_json(plugin, "--contact", "@alice", "--since", "7d")["contacts"][0]
+    for key, expected in open_ended.items():
+        assert list(week[key]) == expected
+    assert list(week["previous"]["messages"]) == ["total"]
+    assert list(week["previous"]["active_days"]) == ["total"]
+    assert {side: list(times) for side, times in week["previous"]["replies"].items()} == {
+        "received": ["median_seconds"],
+        "sent": ["median_seconds"],
+    }
 
 
 # --- Counting definitions --------------------------------------------------------
@@ -1405,7 +1549,7 @@ def test_tz_default_and_override(plugin, cs, monkeypatch: pytest.MonkeyPatch):
     assert exit_code == 0
     assert " UTC, by Telegram send time" in output.splitlines()[0]
 
-    monkeypatch.setenv(TIMEZONE_ENV, "Europe/Moscow")
+    _hermes_tz(monkeypatch, "Europe/Moscow")
     exit_code, output = _stats(plugin, "--contact", "@alice")
     assert exit_code == 0
     assert " Europe/Moscow, by Telegram send time" in output.splitlines()[0]
@@ -1416,7 +1560,7 @@ def test_tz_default_and_override(plugin, cs, monkeypatch: pytest.MonkeyPatch):
     assert exit_code == 0
     assert " Asia/Tokyo, by Telegram send time" in output.splitlines()[0]
 
-    monkeypatch.setenv(TIMEZONE_ENV, "  ")
+    _hermes_tz(monkeypatch, "  ")
     assert _stats_json(plugin, "--contact", "@alice")["range"]["timezone"] == "UTC"
 
     def _no_tz_database(name: str):
@@ -1428,7 +1572,7 @@ def test_tz_default_and_override(plugin, cs, monkeypatch: pytest.MonkeyPatch):
     assert " UTC, by Telegram send time" in output.splitlines()[0]
 
 
-def test_env_tz_applies_to_plain_and_naive_bounds(plugin, monkeypatch: pytest.MonkeyPatch):
+def test_hermes_tz_applies_to_plain_and_naive_bounds(plugin, monkeypatch: pytest.MonkeyPatch):
     _seed(
         plugin,
         # 2026-10-01 00:30 in Moscow, still 2026-09-30 in UTC.
@@ -1437,7 +1581,7 @@ def test_env_tz_applies_to_plain_and_naive_bounds(plugin, monkeypatch: pytest.Mo
         # 2026-10-18 in UTC, already 2026-10-19 01:00 in Moscow.
         _msg(plugin, 3, _utc(2026, 10, 18, 22, 0), "inbound"),
     )
-    monkeypatch.setenv(TIMEZONE_ENV, "Europe/Moscow")
+    _hermes_tz(monkeypatch, "Europe/Moscow")
     plain = ("--contact", "@alice", "--since", "2026-10-01", "--until", "2026-10-18")
 
     exit_code, output = _stats(plugin, *plain)
@@ -1452,7 +1596,7 @@ def test_env_tz_applies_to_plain_and_naive_bounds(plugin, monkeypatch: pytest.Mo
     assert document["range"]["timezone"] == "Europe/Moscow"
     assert document["contacts"][0]["latest"]["received_at"] == "2026-10-01T00:30:00+03:00"
 
-    # Naive timestamps are read in the env zone too.
+    # Naive timestamps are read in the Hermes zone too.
     naive = ("--contact", "@alice", "--since", "2026-10-01T00:00", "--until", "2026-10-18T23:59:59")
     exit_code, output = _stats(plugin, *naive)
     assert exit_code == 0
@@ -1464,7 +1608,7 @@ def test_env_tz_applies_to_plain_and_naive_bounds(plugin, monkeypatch: pytest.Mo
     assert document["range"]["until"] == "2026-10-18T23:59:59+03:00"
     assert document["contacts"][0]["latest"]["received_at"] == "2026-10-01T00:30:00+03:00"
 
-    # An explicit --tz overrides the env for the bounds, not only for the label.
+    # An explicit --tz overrides Hermes for the bounds, not only for the label.
     exit_code, output = _stats(plugin, *plain, "--tz", "UTC")
     assert exit_code == 0
     lines = output.splitlines()
@@ -1489,11 +1633,11 @@ def test_invalid_tz(plugin, monkeypatch: pytest.MonkeyPatch, value: str):
     assert exit_code == 1
     assert output == f"error: unknown timezone {value!r} in --tz; {hint}"
 
-    if value:
-        monkeypatch.setenv(TIMEZONE_ENV, value)
-        exit_code, output = _stats(plugin, "--contact", "@alice")
-        assert exit_code == 1
-        assert output == f"error: unknown timezone {value!r} in {TIMEZONE_ENV}; {hint}"
+    # The same value from Hermes is not an error: the report uses UTC.
+    _hermes_tz(monkeypatch, value)
+    exit_code, output = _stats(plugin, "--contact", "@alice")
+    assert exit_code == 0
+    assert " UTC, by Telegram send time" in output.splitlines()[0]
 
 
 def test_invalid_bounds_and_gaps(plugin):
@@ -1757,6 +1901,551 @@ def test_unknown_latest_line(plugin):
     )
 
 
+# --- Conversation metrics --------------------------------------------------------
+
+
+def _texted(record: dict[str, Any], text: str | None) -> dict[str, Any]:
+    if text is None:
+        record.pop("text", None)
+    else:
+        record["text"] = text
+    return record
+
+
+def test_reply_times_session_gap_and_unknown_breaks(plugin, cs):
+    start = _utc(2026, 10, 10, 9, 0)
+
+    def at(minutes: int) -> datetime:
+        return start + timedelta(minutes=minutes)
+
+    records = [
+        _msg(plugin, 1, at(0), "inbound"),
+        _msg(plugin, 2, at(5), "inbound"),  # the same turn
+        _msg(plugin, 3, at(15), "outbound"),  # owner reply: 10m after the turn's last message
+        _msg(plugin, 4, at(375), "inbound"),  # exactly the 6h gap: still a reply
+        _msg(plugin, 5, at(736), "outbound"),  # 6h01m later: a new conversation, not a reply
+        _msg(plugin, 6, at(800), "unknown"),
+        _msg(plugin, 7, at(801), "inbound"),  # right after an unknown message: not a reply
+        _msg(plugin, 8, at(802), "unknown"),
+        _msg(plugin, 9, at(803), "inbound"),  # the unknown message split the received run
+        _msg(plugin, 10, at(805), "outbound"),  # owner reply: 2m
+    ]
+
+    stats = cs.compute_stats(_entry(), records, _window(cs))
+
+    assert stats.turns == cs.Turns(received=4, sent=3, per_turn_received=1.3, per_turn_sent=1.0)
+    assert stats.turns.total == 7
+    assert stats.replies.received == cs.ReplyTimes(count=1, median_seconds=21600, p90_seconds=21600)
+    assert stats.replies.sent == cs.ReplyTimes(count=2, median_seconds=360, p90_seconds=600)
+    # A longer session gap turns the 6h01m gap into a reply.
+    longer = cs.compute_stats(_entry(), records, _window(cs, gap="1d"))
+    assert longer.replies.sent.count == 3
+    assert longer.replies.received.count == 1
+
+    _seed(plugin, *records)
+    exit_code, output = _stats(plugin, "--contact", "@alice")
+    assert exit_code == 0
+    lines = output.splitlines()
+    assert "  turns 7 (received 4, sent 3); messages per turn received 1.3, sent 1.0" in lines
+    assert "  replies received 1: median 6h00m, p90 6h00m; sent 2: median 6m, p90 10m" in lines
+    assert _contact_json(plugin, "--contact", "@alice")["replies"] == {
+        "received": {"count": 1, "median_seconds": 21600, "p90_seconds": 21600},
+        "sent": {"count": 2, "median_seconds": 360, "p90_seconds": 600},
+    }
+
+
+def test_reply_median_and_p90_nearest_rank(plugin, cs):
+    assert cs._reply_times([]) == cs.ReplyTimes(count=0, median_seconds=None, p90_seconds=None)
+    assert cs._reply_times([5.0]) == cs.ReplyTimes(count=1, median_seconds=5, p90_seconds=5)
+    # Unsorted input; nearest rank ceil(0.9 * 3) = 3.
+    assert cs._reply_times([10.0, 1.0, 7.0]) == cs.ReplyTimes(count=3, median_seconds=7, p90_seconds=10)
+    # Even counts take the mean of the middle pair, rounded half up; ceil(0.9 * 10) = 9.
+    assert cs._reply_times([float(n) for n in range(1, 11)]) == cs.ReplyTimes(10, 6, 9)
+    assert cs._reply_times([float(n) for n in range(1, 12)]) == cs.ReplyTimes(11, 6, 10)
+    assert cs._reply_times([float(n) for n in range(1, 21)]) == cs.ReplyTimes(20, 11, 18)
+    assert cs._reply_times([0.4, 0.6]) == cs.ReplyTimes(2, 1, 1)
+
+    # End to end: owner replies after 1..10 minutes give a 5m30s median and a 9m p90.
+    start = _utc(2026, 10, 10, 9, 0)
+    records = []
+    for n in range(1, 11):
+        base = start + timedelta(hours=n)
+        records += [
+            _msg(plugin, 2 * n, base, "inbound"),
+            _msg(plugin, 2 * n + 1, base + timedelta(minutes=n), "outbound"),
+        ]
+    sent = cs.compute_stats(_entry(), records, _window(cs)).replies.sent
+    assert sent == cs.ReplyTimes(count=10, median_seconds=330, p90_seconds=540)
+
+
+def test_share_rounds_half_up_and_needs_a_known_side(plugin, cs):
+    at = _utc(2026, 10, 10, 9, 0)
+    records = [_msg(plugin, 1, at, "inbound")]
+    records += [_msg(plugin, mid, at + timedelta(minutes=mid), "outbound") for mid in range(2, 9)]
+    records.append(_msg(plugin, 9, at + timedelta(minutes=9), "unknown"))
+
+    # 1 of 8 known-side messages is 12.5%; the unknown message is not part of the share.
+    assert cs.compute_stats(_entry(), records, _window(cs)).share == cs.Share(received=13, sent=87)
+
+    only_unknown = cs.compute_stats(_entry(), records[-1:], _window(cs))
+    assert only_unknown.share == cs.Share(received=None, sent=None)
+    assert only_unknown.turns == cs.Turns()
+    assert only_unknown.waiting is None
+    _seed(plugin, records[-1])
+    exit_code, output = _stats(plugin, "--contact", "@alice")
+    assert exit_code == 0
+    assert not any(line.startswith(("  share", "  turns", "  replies", "  waiting")) for line in output.splitlines())
+    contact = _contact_json(plugin, "--contact", "@alice")
+    assert contact["share"] == {"received": None, "sent": None}
+    assert contact["turns"]["messages_per_turn"] == {"received": None, "sent": None}
+
+
+def test_waiting_only_when_open_ended(plugin, cs):
+    records = [
+        _msg(plugin, 1, _utc(2026, 10, 18, 9, 0), "outbound"),
+        _msg(plugin, 2, _utc(2026, 10, 18, 10, 0), "inbound"),
+        _msg(plugin, 3, _utc(2026, 10, 18, 10, 5), "inbound"),
+        # An unknown-direction message after the last known turn does not end the wait.
+        _msg(plugin, 4, _utc(2026, 10, 18, 11, 0), "unknown"),
+    ]
+
+    waiting = cs.compute_stats(_entry(), records, _window(cs)).waiting
+    assert waiting == cs.Waiting(side="received", since=_utc(2026, 10, 18, 10, 0), seconds=25 * 3600 + 32 * 60)
+    assert cs.compute_stats(_entry(), records, _window(cs, since="2026-10-18")).waiting == waiting
+    # Any --until means the range does not run to now, even when it ends after the last message.
+    for until in ("2026-10-18", "2026-10-25", "0d"):
+        assert cs.compute_stats(_entry(), records, _window(cs, until=until)).waiting is None
+
+    owner_waits = [*records, _msg(plugin, 5, _utc(2026, 10, 18, 12, 0), "outbound")]
+    assert cs.compute_stats(_entry(), owner_waits, _window(cs)).waiting == cs.Waiting(
+        side="sent", since=_utc(2026, 10, 18, 12, 0), seconds=23 * 3600 + 32 * 60
+    )
+
+    _seed(plugin, *records)
+    exit_code, output = _stats(plugin, "--contact", "@alice")
+    assert exit_code == 0
+    assert "  waiting received since 2026-10-18 10:00 (1d01h)" in output.splitlines()
+    assert _contact_json(plugin, "--contact", "@alice")["waiting"] == {
+        "side": "received",
+        "since": "2026-10-18T10:00:00+00:00",
+        "seconds": 91920,
+    }
+    exit_code, output = _stats(plugin, "--contact", "@alice", "--until", "2026-10-19")
+    assert exit_code == 0
+    assert "waiting" not in output
+    assert _contact_json(plugin, "--contact", "@alice", "--until", "2026-10-19")["waiting"] is None
+
+
+def test_text_length_medians(plugin, cs):
+    at = _utc(2026, 10, 10, 9, 0)
+    minute = timedelta(minutes=1)
+    records = [
+        _texted(_msg(plugin, 1, at, "inbound"), "  qz  \n"),  # stripped: 2
+        _texted(_msg(plugin, 2, at + minute, "inbound"), "привет"),  # 6 code points
+        _texted(_msg(plugin, 3, at + 2 * minute, "inbound"), "\U0001f44d"),  # 1 code point
+        _texted(_msg(plugin, 4, at + 3 * minute, "inbound"), None),  # no text: not measured
+        _texted(_msg(plugin, 5, at + 4 * minute, "outbound"), "xy"),
+        # The latest text in file order wins: the edit makes it 5.
+        _texted(_msg(plugin, 5, at + 4 * minute, "outbound", edited=True, observed=at + 9 * minute), "xyzzy"),
+        _texted(_msg(plugin, 6, at + 5 * minute, "outbound"), "wvut"),
+        _texted(_msg(plugin, 7, at + 6 * minute, "unknown"), "SECRET-unknown side"),
+    ]
+
+    stats = cs.compute_stats(_entry(), records, _window(cs))
+
+    # Received [1, 2, 6] has median 2; sent [4, 5] has median 4.5, rounded half up.
+    assert stats.text_length == cs.TextLength(received=2, sent=5)
+    assert cs.compute_stats(_entry(), records[4:6], _window(cs)).text_length == cs.TextLength(received=None, sent=5)
+    _seed(plugin, *records)
+    exit_code, output = _stats(plugin, "--contact", "@alice")
+    assert exit_code == 0
+    assert "  text length median received 2, sent 5; edited 1 (received 0, sent 1)" in output.splitlines()
+    exit_code, raw = _stats(plugin, "--contact", "@alice", "--format", "json")
+    assert exit_code == 0
+    assert json.loads(raw)["contacts"][0]["text_length_median"] == {"received": 2, "sent": 5}
+    for text in ("qz", "xyzzy", "wvut", "SECRET", "привет", "\U0001f44d", "\\u043f", "\\ud83d"):
+        assert text not in output and text not in raw
+
+
+def test_edited_counts(plugin, cs):
+    at = _utc(2026, 10, 10, 9, 0)
+    later = at + timedelta(hours=1)
+    duplicate = _tomb(plugin, 6, later, "inbound", message_at=at + timedelta(minutes=6))
+    records = [
+        _msg(plugin, 1, at, "inbound"),
+        _msg(plugin, 1, at, "inbound", edited=True, observed=later),
+        _msg(plugin, 1, at, "inbound", edited=True, observed=later + timedelta(minutes=1)),
+        _msg(plugin, 2, at + timedelta(minutes=2), "outbound"),
+        _msg(plugin, 2, at + timedelta(minutes=2), "unknown", edited=True, observed=later),
+        _msg(plugin, 3, at + timedelta(minutes=3), "unknown"),
+        _msg(plugin, 3, at + timedelta(minutes=3), "unknown", edited=True, observed=later),
+        _msg(plugin, 4, at + timedelta(minutes=4), "inbound"),  # never edited
+        # Known only from an edit, so not counted at all.
+        _msg(plugin, 5, at - timedelta(days=30), "inbound", edited=True, observed=later),
+        # Replaced by another message, so not counted either.
+        _msg(plugin, 6, at + timedelta(minutes=6), "inbound"),
+        _msg(plugin, 6, at + timedelta(minutes=6), "inbound", edited=True, observed=later),
+        duplicate,
+        _cls(plugin, duplicate, "likely_duplicate", later, "normalized_exact_duplicate"),
+        # Edited, but sent before the range below.
+        _msg(plugin, 7, at - timedelta(days=2), "outbound"),
+        _msg(plugin, 7, at - timedelta(days=2), "outbound", edited=True, observed=later),
+    ]
+
+    stats = cs.compute_stats(_entry(), records, _window(cs, since="2026-10-09"))
+
+    assert stats.edited == cs.SideCounts(received=1, sent=1, unknown=1)
+    assert stats.edited.total == 3
+    assert cs.compute_stats(_entry(), records, _window(cs)).edited.sent == 2
+    _seed(plugin, *records)
+    exit_code, output = _stats(plugin, "--contact", "@alice", "--since", "2026-10-09")
+    assert exit_code == 0
+    assert any(line.endswith("; edited 3 (received 1, sent 1, unknown direction 1)") for line in output.splitlines()), (
+        output
+    )
+    assert _contact_json(plugin, "--contact", "@alice", "--since", "2026-10-09")["edited"] == {
+        "total": 3,
+        "received": 1,
+        "sent": 1,
+    }
+
+
+def test_hours_and_weekdays_follow_tz_and_dst(plugin, cs):
+    try:
+        ZoneInfo("Europe/Berlin")
+    except ZoneInfoNotFoundError:
+        pytest.skip("tz database unavailable")
+    records = [
+        # Berlin leaves summer time on Sunday 2026-10-25: 02:30 happens twice.
+        _msg(plugin, 1, _utc(2026, 10, 25, 0, 30), "inbound"),  # 02:30 CEST
+        _msg(plugin, 2, _utc(2026, 10, 25, 1, 30), "outbound"),  # 02:30 CET
+        _msg(plugin, 3, _utc(2026, 10, 25, 22, 30), "unknown"),  # 23:30, unknown direction counts too
+        _msg(plugin, 4, _utc(2026, 10, 25, 23, 30), "inbound"),  # 00:30 on Monday in Berlin
+    ]
+
+    berlin = cs.compute_stats(_entry(), records, _window(cs, until="2026-10-31", tz="Europe/Berlin"))
+    utc = cs.compute_stats(_entry(), records, _window(cs, until="2026-10-31"))
+
+    assert berlin.hours == tuple(2 if hour == 2 else 1 if hour in (0, 23) else 0 for hour in range(24))
+    assert berlin.weekdays == (1, 0, 0, 0, 0, 0, 3)
+    assert (berlin.peak_hour, berlin.peak_weekday) == (2, 6)
+    assert utc.hours == tuple(1 if hour in (0, 1, 22, 23) else 0 for hour in range(24))
+    assert utc.weekdays == (0, 0, 0, 0, 0, 0, 4)
+    # Ties go to the earliest hour.
+    assert (utc.peak_hour, utc.peak_weekday) == (0, 6)
+    empty = cs.compute_stats(_entry(), [], _window(cs))
+    assert empty.hours == (0,) * 24 and empty.weekdays == (0,) * 7
+    assert (empty.peak_hour, empty.peak_weekday) == (None, None)
+
+    _seed(plugin, *records)
+    exit_code, output = _stats(plugin, "--contact", "@alice", "--until", "2026-10-31", "--tz", "Europe/Berlin")
+    assert exit_code == 0
+    hours = " ".join(str(count) for count in berlin.hours)
+    assert f"  peak Sun 02:00; hours 0..23: {hours}; weekdays Mon..Sun: 1 0 0 0 0 0 3" in output.splitlines()
+    contact = _contact_json(plugin, "--contact", "@alice", "--until", "2026-10-31", "--tz", "Europe/Berlin")
+    assert contact["hours"] == list(berlin.hours)
+    assert (contact["weekdays"], contact["peak_hour"], contact["peak_weekday"]) == ([1, 0, 0, 0, 0, 0, 3], 2, 6)
+    assert (
+        _contact_json(plugin, "--contact", "@alice", "--since", "2026-11-01", "--until", "2026-11-02")["peak_hour"]
+        is None
+    )
+
+
+def test_streaks_and_current_streak_alive_yesterday(plugin, cs):
+    days = (1, 2, 3, 7, 8, 9, 17, 18)  # two 3-day runs (the earlier wins the tie), then 17..18
+    records = [_msg(plugin, day, _utc(2026, 10, day, 12, 0), "inbound") for day in days]
+
+    def streaks(**window: str):
+        return cs.compute_stats(_entry(), records, _window(cs, **window)).streaks
+
+    # Today (2026-10-19) has no message yet, so the run that ended yesterday is still alive.
+    assert streaks() == cs.Streaks(
+        current_days=2, longest_days=3, longest_start=date(2026, 10, 1), longest_end=date(2026, 10, 3)
+    )
+    # The last day of the range decides: on 2026-10-17 only that day counts, 10-18 is after the range.
+    assert streaks(until="2026-10-17").current_days == 1
+    assert streaks(until="2026-10-10").current_days == 3  # alive: the run ended the day before
+    assert streaks(until="2026-10-11").current_days == 0
+    assert streaks(since="2026-10-08").longest_start == date(2026, 10, 8)
+    assert cs.compute_stats(_entry(), [], _window(cs)).streaks == cs.Streaks()
+    # Moscow is ahead: 2026-10-18 22:30 UTC is already today there.
+    late = [*records, _msg(plugin, 99, _utc(2026, 10, 18, 22, 30), "inbound")]
+    moscow = cs.compute_stats(_entry(), late, _window(cs, tz="Europe/Moscow")).streaks
+    assert (moscow.current_days, moscow.longest_days) == (3, 3)
+
+    _seed(plugin, *records)
+    exit_code, output = _stats(plugin, "--contact", "@alice")
+    assert exit_code == 0
+    assert any(
+        line.startswith("  streak current 2d, longest 3d (2026-10-01..2026-10-03); ") for line in output.splitlines()
+    )
+    assert _contact_json(plugin, "--contact", "@alice")["streaks"] == {
+        "current_days": 2,
+        "longest_days": 3,
+        "longest_start": "2026-10-01",
+        "longest_end": "2026-10-03",
+    }
+
+
+def test_longest_silence(plugin, cs):
+    start = _utc(2026, 10, 10, 9, 0)
+    records = [
+        _msg(plugin, 1, start, "inbound"),
+        _msg(plugin, 2, start + timedelta(hours=3), "unknown"),
+        _msg(plugin, 3, start + timedelta(hours=6), "outbound"),  # a second 3h gap: the first one wins
+        _msg(plugin, 4, start + timedelta(hours=7), "inbound"),
+    ]
+
+    silence = cs.compute_stats(_entry(), records, _window(cs)).silence
+
+    assert silence == cs.Silence(seconds=3 * 3600, start=start, end=start + timedelta(hours=3))
+    longer = [*records, _msg(plugin, 5, start + timedelta(days=4, hours=9), "outbound")]
+    assert cs.compute_stats(_entry(), longer, _window(cs)).silence == cs.Silence(
+        seconds=(4 * 24 + 2) * 3600, start=start + timedelta(hours=7), end=start + timedelta(days=4, hours=9)
+    )
+    assert cs.compute_stats(_entry(), records[:1], _window(cs)).silence is None
+    assert cs.compute_stats(_entry(), [], _window(cs)).silence is None
+
+    _seed(plugin, *longer)
+    exit_code, output = _stats(plugin, "--contact", "@alice", "--tz", "Europe/Moscow")
+    assert exit_code == 0
+    assert any(
+        line.endswith("; longest silence 4d02h (2026-10-10 19:00..2026-10-14 21:00)") for line in output.splitlines()
+    ), output
+    assert _contact_json(plugin, "--contact", "@alice", "--tz", "Europe/Moscow")["silence"] == {
+        "seconds": 352800,
+        "from": "2026-10-10T19:00:00+03:00",
+        "to": "2026-10-14T21:00:00+03:00",
+    }
+
+
+@pytest.mark.parametrize(
+    ("since", "until", "bucket", "start", "counts"),
+    [
+        ("2026-10-01", "2026-10-31", "day", "2026-10-01", [0, 0, 1, *([0] * 14), 2, *([0] * 13)]),
+        # 32 days: Monday weeks from the week of Thursday 2026-10-01.
+        ("2026-10-01", "2026-11-01", "week", "2026-09-28", [1, 0, 2, 0, 0]),
+        ("2026-01-01", "2026-10-18", "month", "2026-01-01", [0, 0, 0, 0, 0, 0, 0, 0, 0, 3]),
+        ("2020-01-01", "2026-10-18", "quarter", "2020-01-01", [*([0] * 27), 3]),
+        ("2010-01-01", "2026-10-18", "year", "2010-01-01", [*([0] * 16), 3]),
+        # Without --since the series starts at the first counted message and runs to now.
+        (None, None, "day", "2026-10-03", [1, *([0] * 14), 2, 0]),
+    ],
+)
+def test_activity_buckets(plugin, cs, since, until, bucket, start, counts):
+    records = [
+        _msg(plugin, 1, _utc(2026, 10, 3, 12, 0), "inbound"),
+        _msg(plugin, 2, _utc(2026, 10, 18, 9, 0), "outbound"),
+        _msg(plugin, 3, _utc(2026, 10, 18, 9, 5), "unknown"),
+    ]
+
+    activity = cs.compute_stats(_entry(), records, _window(cs, since=since, until=until)).activity
+
+    assert (activity.bucket, activity.start.isoformat(), list(activity.counts)) == (bucket, start, counts)
+    assert len(activity.counts) <= cs.MAX_ACTIVITY_BUCKETS
+    assert sum(activity.counts) == 3
+    _seed(plugin, *records)
+    argv = ["--contact", "@alice", *(["--since", since] if since else []), *(["--until", until] if until else [])]
+    assert _contact_json(plugin, *argv)["activity"] == {"bucket": bucket, "start": start, "counts": counts}
+    exit_code, output = _stats(plugin, *argv)
+    assert exit_code == 0
+    assert f"  activity by {bucket} from {start}: {' '.join(map(str, counts))}" in output.splitlines()
+
+
+def test_activity_without_start_or_messages(plugin, cs):
+    assert cs.compute_stats(_entry(), [], _window(cs)).activity is None
+    # A range with a start still has a (zero) series, so a chart can show the empty period.
+    empty = cs.compute_stats(_entry(), [], _window(cs, since="2026-10-17"))
+    assert (empty.activity.bucket, empty.activity.counts) == ("day", (0, 0, 0))
+    assert (empty.activity.first_day, empty.activity.last_day) == (date(2026, 10, 17), date(2026, 10, 19))
+
+
+def _previous_records(plugin) -> list[dict[str, Any]]:
+    return [
+        _msg(plugin, 1, _utc(2026, 9, 1, 9, 0), "inbound"),  # long before both periods
+        # The previous period: 2026-10-05..2026-10-09.
+        _msg(plugin, 2, _utc(2026, 10, 6, 9, 0), "inbound"),
+        _msg(plugin, 3, _utc(2026, 10, 6, 9, 20), "outbound"),
+        _msg(plugin, 4, _utc(2026, 10, 7, 9, 0), "inbound"),  # a day later: not a reply
+        _msg(plugin, 5, _utc(2026, 10, 9, 23, 59, 59), "inbound"),
+        # The range: 2026-10-10..2026-10-14.
+        _msg(plugin, 6, _utc(2026, 10, 10, 0, 0), "outbound"),
+        _msg(plugin, 7, _utc(2026, 10, 11, 9, 0), "inbound"),
+        _msg(plugin, 8, _utc(2026, 10, 11, 9, 5), "outbound"),
+        _msg(plugin, 9, _utc(2026, 10, 11, 9, 35), "inbound"),
+    ]
+
+
+def test_previous_period_present(plugin, cs):
+    records = _previous_records(plugin)
+    window = _window(cs, since="2026-10-10", until="2026-10-14")
+
+    stats = cs.compute_stats(_entry(first_seen_at="2026-09-01T09:00:01Z"), records, window)
+
+    previous = stats.previous
+    assert (previous.since, previous.until) == (_utc(2026, 10, 5), datetime(2026, 10, 9, 23, 59, 59, 999999, UTC))
+    assert previous.messages == cs.SideCounts(received=3, sent=1, unknown=0)
+    assert previous.active_days.total == 3
+    assert previous.replies.sent.median_seconds == 1200
+    assert previous.replies.received.count == 0  # 4 comes a day after 3
+    assert stats.messages.total == 4
+    # 6 comes 1s after 5, but 5 is in the previous period, so 6 is not a reply.
+    assert stats.replies.sent == cs.ReplyTimes(count=1, median_seconds=300, p90_seconds=300)
+    assert stats.replies.received.median_seconds == 1800
+    assert cs.change_percent(4, 4) == 0 and cs.change_percent(6, 4) == 50 and cs.change_percent(1, 3) == -67
+    assert cs.change_percent(5, 0) is None
+    # Covered exactly from its first instant is enough.
+    assert cs.compute_stats(_entry(first_seen_at="2026-10-05T00:00:00Z"), records, window).previous is not None
+    # A relative range runs to now, so the previous period is as long and ends at --since.
+    week = cs.compute_stats(_entry(first_seen_at="2026-09-01T00:00:00Z"), records, _window(cs, since="7d")).previous
+    assert (week.since, week.until) == (NOW - timedelta(days=14), NOW - timedelta(days=7, microseconds=1))
+
+    _seed(plugin, *records)
+    argv = ("--contact", "@alice", "--since", "2026-10-10", "--until", "2026-10-14")
+    exit_code, output = _stats(plugin, *argv)
+    assert exit_code == 0
+    assert (
+        "  previous 2026-10-05..2026-10-09: messages 4 -> 4 (+0%); active days 3 -> 2; "
+        "reply median received - -> 30m, sent 20m -> 5m"
+    ) in output.splitlines()
+    assert _contact_json(plugin, *argv)["previous"] == {
+        "since": "2026-10-05T00:00:00+00:00",
+        "until": "2026-10-09T23:59:59.999999+00:00",
+        "messages": {"total": 4},
+        "active_days": {"total": 3},
+        "replies": {"received": {"median_seconds": None}, "sent": {"median_seconds": 1200}},
+    }
+
+
+def test_previous_period_of_whole_days(cs):
+    # Clocks go back in Berlin on 2026-10-25, so these ranges are not a whole number of 24 hours.
+    berlin = ZoneInfo("Europe/Berlin")
+    now = _utc(2026, 10, 28, 12, 0)
+    retained = _utc(2026, 1, 1)
+
+    def previous(since: str, until: str | None = None):
+        args = argparse.Namespace(since=since, until=until, tz="Europe/Berlin", session_gap=None)
+        window = cs.build_window(args, now=now)
+        found = cs.previous_window(window, retained)
+        assert found.until == window.since - timedelta(microseconds=1)
+        return found.since
+
+    # A date range that runs to now (7 dates, today partial) compares with the 7 whole days before it.
+    assert previous("2026-10-22") == datetime(2026, 10, 15, tzinfo=berlin)
+    assert previous("2026-10-22", "2026-10-28") == datetime(2026, 10, 15, tzinfo=berlin)
+    assert previous("2026-10-28") == datetime(2026, 10, 27, tzinfo=berlin)
+    # Other ranges keep their exact length: 6d2h back from 10:00 UTC, and 6d13h (and 1us) back from 22:00 UTC.
+    assert previous("2026-10-22T12:00") == _utc(2026, 10, 16, 8, 0)
+    assert previous("2026-10-22", "2026-10-28T12:00") == _utc(2026, 10, 15, 9, 0) - timedelta(microseconds=1)
+
+
+def test_previous_period_partial_or_absent(plugin, cs):
+    records = _previous_records(plugin)
+    window = _window(cs, since="2026-10-10", until="2026-10-14")
+
+    # Retained history starts inside the previous period, so the comparison would be wrong.
+    assert cs.compute_stats(_entry(first_seen_at="2026-10-05T00:00:01Z"), records, window).previous is None
+    assert cs.compute_stats(_entry(first_seen_at=None), records, window).previous is None
+    # Without --since there is no period to compare with.
+    assert cs.compute_stats(_entry(first_seen_at="2026-09-01T00:00:00Z"), records, _window(cs)).previous is None
+    # A start after now has no length.
+    future = _window(cs, since="2026-10-25")
+    assert cs.compute_stats(_entry(first_seen_at="2026-09-01T00:00:00Z"), records, future).previous is None
+    assert cs.previous_window(future, _utc(2026, 9, 1)) is None
+
+    # Only the previous line shows when the range itself has no messages.
+    _seed(plugin, *records)
+    exit_code, output = _stats(plugin, "--contact", "@alice", "--since", "2026-10-15", "--until", "2026-10-16")
+    assert exit_code == 0
+    lines = output.splitlines()
+    assert "  messages 0: received 0, sent 0, unknown direction 0" in lines
+    assert (
+        "  previous 2026-10-13..2026-10-14: messages 0 -> 0; active days 0 -> 0; reply median received -, sent -"
+        in lines
+    )
+    assert not any(line.startswith(("  share", "  turns", "  peak", "  streak", "  activity")) for line in lines)
+
+
+def test_text_metric_formats(cs):
+    spans = {0: "0s", 40: "40s", 60: "1m", 720: "12m", 3600: "1h00m", 6000: "1h40m", 11100: "3h05m"}
+    spans |= {86399: "23h59m", 86400: "1d00h", 352800: "4d02h", 30 * 86400 + 3600: "30d01h", None: "-"}
+    for seconds, text in spans.items():
+        assert cs._format_span(seconds) == text
+
+
+def test_tz_falls_back_to_hermes(plugin, cs, monkeypatch: pytest.MonkeyPatch):
+    _hermes_tz(monkeypatch, "Asia/Tokyo")
+    assert cs.resolve_timezone() == cs.resolve_timezone(None) == (ZoneInfo("Asia/Tokyo"), "Asia/Tokyo")
+    # --tz wins over Hermes.
+    assert cs.resolve_timezone("UTC") == (UTC, "UTC")
+    assert cs.resolve_timezone(" Europe/Moscow ")[1] == "Europe/Moscow"
+    # The removed TELESEC_TIMEZONE and plugin ``timezone`` setting are ignored.
+    monkeypatch.setenv(OLD_TIMEZONE_ENV, "Europe/Moscow")
+    monkeypatch.setattr(plugin._history_support, "get_config", {"timezone": "Europe/Berlin"}.get)
+    assert cs.resolve_timezone()[1] == "Asia/Tokyo"
+    assert not hasattr(cs, "TIMEZONE_ENV")
+
+    _seed(plugin, _msg(plugin, 1, _utc(2026, 10, 18, 9, 0), "inbound"))
+    exit_code, output = _stats(plugin, "--contact", "@alice")
+    assert exit_code == 0
+    assert output.splitlines()[0] == "range start of history..now Asia/Tokyo, by Telegram send time; text messages only"
+    assert "  latest 2026-10-18 18:00 received; no sent message" in output.splitlines()
+    monkeypatch.setenv(OLD_TIMEZONE_ENV, "Mars/Base")  # not read, so not an error either
+    assert _stats(plugin, "--contact", "@alice")[0] == 0
+
+    # A bad Hermes value falls back to UTC quietly; a bad --tz is still an error.
+    for broken in ("Mars/Base", "../etc", "", "  ", None, 7, RuntimeError("config.yaml is broken")):
+        _hermes_tz(monkeypatch, broken)
+        assert cs.resolve_timezone() == (UTC, "UTC"), broken
+    _hermes_tz(monkeypatch, "Asia/Tokyo")
+    with pytest.raises(ValueError, match="in --tz"):
+        cs.resolve_timezone("Mars/Base")
+    # Not running inside Hermes at all.
+    monkeypatch.setitem(sys.modules, "hermes_time", None)
+    assert cs.resolve_timezone() == (UTC, "UTC")
+
+
+def test_docs_name_no_telesec_time_zone_setting():
+    for doc in (STATS_DOC, HISTORY_DOC, README_DOC, SKILL_DOC, ROOT / "plugin.yaml"):
+        assert OLD_TIMEZONE_ENV not in doc.read_text(encoding="utf-8"), doc
+    assert "HERMES_TIMEZONE" in STATS_DOC.read_text(encoding="utf-8")
+    assert "timezone" not in (ROOT / "plugin.yaml").read_text(encoding="utf-8")
+
+
+def test_disclosures_cover_the_stats_command_and_the_removed_time_zone_setting():
+    readme = README_DOC.read_text(encoding="utf-8")
+    [network] = [line for line in readme.splitlines() if line.startswith("- **Network.**")]
+    assert "`/stats`" in network and "editMessageText" in network and "deleteBusinessMessages" in network
+    # The catalog notes describe the 0.10.1 submission, whose form still had `timezone`:
+    # the list for the next SHA bump records what changed since.
+    _, _, next_bump = (ROOT / "docs" / "CATALOG_SUBMISSION.md").read_text(encoding="utf-8").partition(
+        "## For the next SHA bump"
+    )
+    assert "`/stats`" in next_bump and "editMessageText" in next_bump and "deleteBusinessMessages" in next_bump
+    assert "`timezone`" in next_bump and OLD_TIMEZONE_ENV in next_bump
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    assert "`/dossier` and `/stats` commands" in security
+
+
+def test_docs_stats_screenshots_exist():
+    # Synthetic screenshots from scripts/render-stats-screenshots.py, with their HTML sources.
+    images = ROOT / "docs" / "images"
+    for doc in (README_DOC, STATS_DOC):
+        # The catalog renders README.md without raw HTML, so it uses a Markdown image.
+        referenced = re.findall(
+            r'(?:src="|\]\()([^")]*stats-(?:panel|card)-(?:en|ru)(?:@2x)?\.png)[")]', doc.read_text(encoding="utf-8")
+        )
+        assert referenced, doc
+        for image in referenced:
+            assert (doc.parent / image).is_file(), image
+    assert (ROOT / "scripts" / "render-stats-screenshots.py").is_file()
+    for view in ("panel-en", "card-en", "panel-ru", "card-ru"):
+        # The page embeds the view's Telegram HTML, which starts with the bold 📊 title.
+        assert '<template id="message"><b>📊 ' in (images / "src" / f"stats-{view}.html").read_text(encoding="utf-8")
+        for suffix in ("", "@2x"):
+            assert (images / f"stats-{view}{suffix}.png").is_file(), view
+
+
 # --- Overview --------------------------------------------------------------------
 
 
@@ -1871,8 +2560,7 @@ def test_same_chat_two_connections(plugin):
     assert lines[2].endswith("Alice Example (@alice2)")
     assert lines[3] == "shown 1 of 1 contacts"
     assert (
-        lines[4]
-        == "deletion details: hermes telesec history deletions --connection business-456 --status unexplained"
+        lines[4] == "deletion details: hermes telesec history deletions --connection business-456 --status unexplained"
     )
 
 
@@ -2191,14 +2879,24 @@ def test_partition_selection_slack(plugin, cs, monkeypatch: pytest.MonkeyPatch):
     _contact_json(plugin, "--contact", "@alice", "--since", "2026-10-01", "--tz", "Europe/Moscow")
     assert calls[-1] == (_utc(2026, 9, 1), None, ["2026-09", "2026-10"])
 
+    # One read also covers the previous period (from 2026-09-18), so there is no second pass.
+    calls.clear()
     _contact_json(plugin, "--contact", "@alice", "--since", "2026-10-04", "--tz", "Europe/Moscow")
-    assert calls[-1] == (_utc(2026, 10, 1), None, ["2026-10"])
+    assert calls == [(_utc(2026, 9, 1), None, ["2026-09", "2026-10"])]
 
     skewed = _contact_json(plugin, "--contact", "@alice", "--since", "2026-10-01", "--tz", "UTC")
     assert skewed["messages"]["total"] == 2
 
     _contact_json(plugin, "--contact", "@alice")
     assert calls[-1] == (None, None, ["2026-07", "2026-08", "2026-09", "2026-10"])
+
+    # When retained history does not cover the previous period, only the range is read.
+    calls.clear()
+    stats = cs.collect_contact_stats(
+        _entry(first_seen_at="2026-10-01T00:00:00Z"), _window(cs, since="2026-10-04", tz="Europe/Moscow")
+    )
+    assert stats.previous is None
+    assert calls == [(_utc(2026, 10, 1), None, ["2026-10"])]
 
     # The floor is the UTC month start even when a caller passes a non-UTC bound.
     window = cs.StatsWindow(
@@ -2313,8 +3011,7 @@ async def test_capture_end_to_end(enabled_history):
     assert "  messages 3: received 1, sent 1, unknown direction 1" in lines
     assert "  deletions 1: unexplained 1 (received 1, sent 0)" in lines
     assert (
-        "  deletion details: hermes telesec history deletions --connection business-123 --chat 991 "
-        "--status unexplained"
+        "  deletion details: hermes telesec history deletions --connection business-123 --chat 991 --status unexplained"
     ) in lines
     for text in ("hello there", "owner reply", "no owner lookup"):
         assert text not in output
@@ -2326,7 +3023,7 @@ def test_skill_has_stats_recipe(plugin):
     section = _doc_section(skill, "Stats Recipes")
 
     assert "hermes telesec stats --contact" in section
-    assert "TELESEC_TIMEZONE" in skill
+    assert "HERMES_TIMEZONE" in skill
     assert "history stats   # storage stats" in skill
     assert "Do not over-interpret" in section and "no observed reply after it" in section
 

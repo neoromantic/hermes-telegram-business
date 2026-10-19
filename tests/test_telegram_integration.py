@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -295,6 +296,81 @@ async def test_real_ptb_transcribe_text_is_ordinary_business_text(plugin, telegr
     core.assert_not_awaited()
     assert [method for method, _params in request.calls] == ["getMe"]
     assert not plugin._transcription_modes.modes_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_real_ptb_owner_stats_edits_the_command_into_an_html_card(plugin, telegram_app, monkeypatch):
+    app, request = telegram_app
+    test_history.set_switch(plugin, "history", True)
+    monkeypatch.setitem(sys.modules, "hermes_time", None)
+    request.responses["editMessageText"] = (200, {"ok": True, "result": {
+        "message_id": 78, "date": 1, "chat": {"id": 991, "type": "private"}, "text": "card",
+    }})
+    core = _register_native(plugin, app)
+    command = _business_update(app, sender_id=1000, update_id=43, text="/stats 30d").to_dict()["business_message"]
+    command["message_id"] = 78
+    try:
+        await app.process_update(_business_update(app, sender_id=2000, text="Hello"))
+        await app.process_update(Update.de_json({"update_id": 43, "business_message": command}, app.bot))
+
+        method, params = request.calls[-1]
+        assert method == "editMessageText"
+        assert (params["chat_id"], params["message_id"]) == ("991", "78")
+        assert params["business_connection_id"] == "business-123"
+        assert params["parse_mode"] == "HTML"
+        assert json.loads(params["link_preview_options"]) == {"is_disabled": True}
+        assert params["text"].startswith("<b>📊 Speaker × Casey · 30 d</b>\n")
+        assert "<b>💬 1</b>" in params["text"]
+        core.assert_not_awaited()
+        records = [json.loads(line)
+                   for path in plugin._history_support.history_root().rglob("*.jsonl")
+                   for line in path.read_text().splitlines()]
+        assert [record["message_id"] for record in records] == [77]
+    finally:
+        plugin._history_support.reset_in_memory_caches()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("history", [True, False])
+async def test_real_ptb_stats_fallbacks_send_and_delete(plugin, telegram_app, monkeypatch, history):
+    app, request = telegram_app
+    if history:
+        test_history.set_switch(plugin, "history", True)
+    monkeypatch.setitem(sys.modules, "hermes_time", None)
+    monkeypatch.setattr(plugin, "_STATS_NOTICE_TTL_SECONDS", 0)
+    request.responses["editMessageText"] = (400, {
+        "ok": False, "error_code": 400, "description": "Bad Request: message can't be edited",
+    })
+    request.responses["deleteBusinessMessages"] = (200, {"ok": True, "result": True})
+    core = _register_native(plugin, app)
+    command = _business_update(app, sender_id=1000, update_id=43, text="/stats").to_dict()["business_message"]
+    command["message_id"] = 78
+    try:
+        await app.process_update(_business_update(app, sender_id=2000, text="Hello"))
+        await app.process_update(Update.de_json({"update_id": 43, "business_message": command}, app.bot))
+        if plugin._pending_tasks:
+            await asyncio.gather(*plugin._pending_tasks)
+
+        endpoints = [method for method, _params in request.calls]
+        assert endpoints[-3:] == ["editMessageText", "sendMessage", "deleteBusinessMessages"]
+        _method, sent = request.calls[-2]
+        _method, deleted = request.calls[-1]
+        assert sent["business_connection_id"] == "business-123"
+        if history:
+            # The card itself, as a new message; the command goes right away.
+            assert sent["parse_mode"] == "HTML" and sent["text"].startswith("<b>📊 Speaker × Casey · all time</b>")
+            assert json.loads(sent["link_preview_options"]) == {"is_disabled": True}
+            assert json.loads(deleted["message_ids"]) == [78]
+        else:
+            # A notice replies to the command, and both go after the short delay.
+            assert sent["text"] == "📊 Stats are unavailable: history is off."
+            assert "parse_mode" not in sent
+            assert json.loads(sent["reply_parameters"])["message_id"] == 78
+            assert json.loads(deleted["message_ids"]) == [78, 700]
+        assert deleted["business_connection_id"] == "business-123"
+        core.assert_not_awaited()
+    finally:
+        plugin._history_support.reset_in_memory_caches()
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from . import history_support as _history
@@ -298,6 +298,12 @@ class PanelView:
     text: str
     # Rows of (label, callback data); build the data with callback_data/section_callback.
     buttons: list[list[tuple[str, str]]] = field(default_factory=list)
+    # Telegram parse mode for ``text``, such as "HTML"; None sends plain text. A view
+    # with a parse mode escapes every untrusted value itself and must fit 4096 UTF-16
+    # units on its own: clipping could cut a tag, and a rejected edit shows
+    # "Section unavailable" instead.
+    parse_mode: str | None = None
+    disable_link_preview: bool = False
     # Optional Bot API rich message HTML (sendRichMessage); the router sends it when set, ``text`` is the fallback.
     html: str | None = None
 
@@ -323,7 +329,7 @@ def register_section(key: str, label: str, render: SectionRender, order: int = 1
     return an awaitable. It gets the chat's ``PanelContext`` (``arg`` is the
     sub-argument from ``section_callback``) and returns a ``PanelView``; the
     router appends the Back button. Use ``tr(key, ctx.language_code)`` for text. Keep text free of anything the owner did
-    not ask to see, and never log it.
+    not ask to see, and never log it. Set ``PanelView.parse_mode`` for formatted text.
 
     ``label`` is the section's button text and its tap toast, at most 64
     characters. Limits the router enforces: text must be non-empty (an empty view shows
@@ -463,7 +469,7 @@ def render_main(
 def with_back(view: PanelView, chat_id: Any, language_code: str | None = None) -> PanelView:
     """A section view plus the Back row the router always adds."""
     back = [(tr("back", language_code), callback_data("b", chat_id))]
-    return PanelView(text=view.text, buttons=[*view.buttons, back], html=view.html)
+    return replace(view, buttons=[*view.buttons, back])
 
 
 def clip_text(text: str) -> str:

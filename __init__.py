@@ -10,6 +10,8 @@ every outbound action.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import html
 import inspect
 import json
 import logging
@@ -83,6 +85,7 @@ from . import history_support as _history_support
 from . import owner_panel as _owner_panel
 from . import settings_panel as _settings_panel
 from . import stats_panel as _stats_panel
+from . import stats_render as _stats_render
 from . import transcription_modes as _transcription_modes
 from .migration import migrate
 
@@ -91,6 +94,8 @@ logger = logging.getLogger(__name__)
 # Keep aligned with the manifest and the migration target.
 _PLUGIN_NAME = "telesec"
 _deprecated_env_warned = False
+# Removed settings: an old alias of one maps to nothing (stats use the Hermes time zone).
+_REMOVED_ENV = frozenset({"TELESEC_TIMEZONE"})
 _SEND_ERRORS_ENV = "TELESEC_SEND_ERRORS"
 _TELESEC_COMMAND_RE = re.compile(r"/telesec(?:@\w+)?(?:\s|\Z)", re.IGNORECASE)
 _SETTINGS_COMMAND_FALLBACK = (
@@ -430,6 +435,8 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
             _note_business_update_chat(update)
         except Exception as exc:  # noqa: BLE001 - bookkeeping must not break dispatch
             logger.debug("%s: business chat note failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        # The owner's `/dossier` and `/stats` are claimed before history capture, the
+        # media filter, and the DM allowlist: Business ownership is the auth.
         try:
             if await _dossier_panel.handle_dossier_command_update(
                 update, bot=context.bot, adapter=adapter, mark_seen=_mark_identity_seen
@@ -440,7 +447,19 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
         except Exception as exc:  # noqa: BLE001 - command failures must not break dispatch
             logger.warning("%s: dossier command handling failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         try:
-            await _history_support.observe_ptb_update(update, bot=context.bot)
+            if await _handle_stats_command_update(update, bot=context.bot, adapter=adapter):
+                raise ApplicationHandlerStop
+        except ApplicationHandlerStop:
+            raise
+        except Exception as exc:  # noqa: BLE001 - command failures must not break dispatch
+            logger.warning("%s: stats command handling failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        history_update = _strip_stats_control(update, bot=context.bot)
+        if history_update is None:
+            # Only the command's own messages (its card or notice, their echoes and
+            # deletion): never history, transcription, or core.
+            raise ApplicationHandlerStop
+        try:
+            await _history_support.observe_ptb_update(history_update, bot=context.bot)
         except Exception as exc:
             logger.warning("%s: business history observation failed: %s", _PLUGIN_NAME, exc, exc_info=True)
         message = update.effective_message
@@ -678,6 +697,13 @@ def _mark_identity_seen(key: tuple[str, ...]) -> bool:
 def _forget_identity(key: tuple[str, ...]) -> None:
     with _seen_lock:
         _seen_messages.pop(key, None)
+
+
+def _identity_seen(key: tuple[str, ...], *, within: float = _SEEN_TTL_SECONDS) -> bool:
+    """True while ``_mark_identity_seen`` holds ``key`` (marked at most ``within`` seconds ago), without marking it."""
+    with _seen_lock:
+        marked = _seen_messages.get(key)
+    return marked is not None and marked >= time.time() - min(within, _SEEN_TTL_SECONDS)
 
 
 def _is_telegram_event(event: Any) -> bool:
@@ -2283,6 +2309,24 @@ def _panel_markup(view: _owner_panel.PanelView) -> Any:
     )
 
 
+def _no_link_preview_kwargs() -> dict[str, Any]:
+    try:
+        from telegram import LinkPreviewOptions
+    except ImportError:  # python-telegram-bot before 20.8
+        return {"disable_web_page_preview": True}
+    return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+
+
+def _panel_message_kwargs(view: _owner_panel.PanelView) -> dict[str, Any]:
+    """Text, buttons, and only the formatting options the view sets, so plain views send as before."""
+    kwargs: dict[str, Any] = {"text": _owner_panel.clip_text(view.text), "reply_markup": _panel_markup(view)}
+    if view.parse_mode:
+        kwargs["parse_mode"] = view.parse_mode
+    if view.disable_link_preview:
+        kwargs.update(_no_link_preview_kwargs())
+    return kwargs
+
+
 def _log_panel(action: str, chat_id: Any, mode: str | None = None) -> None:
     logger.info(
         "%s: owner panel action=%s chat=%s mode=%s", _PLUGIN_NAME, action, _safe_part(chat_id), mode or "-"
@@ -2341,9 +2385,7 @@ async def _handle_owner_panel_update(update: Any, *, bot: Any) -> bool:
         view = _owner_panel.render_main(
             state.ctx, state.entry, _owner_panel.sections(), _voice_module_enabled(), features=state.features
         )
-        await bot.send_message(
-            chat_id=private_chat_id, text=_owner_panel.clip_text(view.text), reply_markup=_panel_markup(view)
-        )
+        await bot.send_message(chat_id=private_chat_id, **_panel_message_kwargs(view))
         _log_panel("open", chat_id, state.entry.mode if state.entry is not None else None)
     except Exception as exc:  # noqa: BLE001 - a verified owner's `/start bizChat` never reaches core
         logger.warning("%s: owner panel open failed (%s)", _PLUGIN_NAME, type(exc).__name__)
@@ -2476,7 +2518,10 @@ async def _apply_panel_flag(action: _owner_panel.PanelCallback, state: _PanelSta
 
 
 async def _edit_panel_message(bot: Any, query: Any, view: _owner_panel.PanelView, fallback: Any = None) -> None:
-    """Edit the panel in place; a failed section view falls back to ``fallback`` once."""
+    """Edit the panel in place; a failed section view falls back to ``fallback`` once.
+
+    The fallback is a plain-text view, so an HTML view Telegram rejects still leaves a readable panel.
+    """
     message = _get(query, "message")
     message_chat_id = _get(_get(message, "chat"), "id")
     message_id = _get(message, "message_id")
@@ -2502,12 +2547,7 @@ async def _edit_panel_message(bot: Any, query: Any, view: _owner_panel.PanelView
             logger.warning("%s: owner panel rich edit failed (%s)", _PLUGIN_NAME, type(exc).__name__)
     try:
         await _maybe_await(
-            bot.edit_message_text(
-                chat_id=message_chat_id,
-                message_id=message_id,
-                text=_owner_panel.clip_text(view.text),
-                reply_markup=_panel_markup(view),
-            )
+            bot.edit_message_text(chat_id=message_chat_id, message_id=message_id, **_panel_message_kwargs(view))
         )
     except Exception as exc:  # noqa: BLE001 - e.g. "message is not modified" on Refresh
         if "not modified" in str(exc).casefold():
@@ -2604,6 +2644,313 @@ async def _handle_settings_home_callback(
                                        back=False)
     _log_panel(f"s:{parsed.arg}", parsed.chat_id)
     await _edit_panel_message(bot, query, view)
+
+
+# --- In-chat `/stats` --------------------------------------------------------------------------
+
+# One of the owner's two in-chat commands, with `/dossier`. Unknown arguments make it ordinary text.
+_STATS_COMMAND_RE = re.compile(r"^/stats(?:@\w+)?(?:\s+(7d|30d|90d|all))?\s*$", re.IGNORECASE)
+# How long a `/stats` notice stays before the bot deletes it and the command.
+_STATS_NOTICE_TTL_SECONDS = 5.0
+# Same bound as a panel section: both read the same history.
+_STATS_COMMAND_TIMEOUT = _PANEL_SECTION_TIMEOUT
+# How long the echo of a fallback card or notice is expected when its send returned no id.
+_STATS_ECHO_TTL_SECONDS = 10 * 60
+# The edit error when the owner deleted the command first: there is nothing to replace, so nothing is posted.
+_STATS_COMMAND_GONE_MARKER = "message to edit not found"
+
+
+def _stats_command_period(message: Any) -> str | None:
+    """The period of a `/stats` text ("all" without one); None for anything else.
+
+    A forwarded or inline-bot message is someone else's text, so it is ordinary text too.
+    """
+    text = _get(message, "text")
+    match = _STATS_COMMAND_RE.match(text) if isinstance(text, str) else None
+    if match is None or _get(message, "forward_origin") is not None or _get(message, "via_bot") is not None:
+        return None
+    return (match.group(1) or _stats_panel.CARD_DEFAULT_PERIOD).casefold()
+
+
+def _stats_control_key(message: Any, message_id: Any) -> tuple[str, ...]:
+    """The in-memory identity of a message that belongs to a `/stats` command, for the seen-TTL."""
+    chat_id = _get(_get(message, "chat"), "id")
+    return (
+        "stats-control",
+        str(_business_connection_id(message) or ""),
+        "" if chat_id is None else str(chat_id),
+        "" if message_id is None else f"message:{message_id}",
+    )
+
+
+def _stats_echo_key(message: Any, kind: str, visible_text: Any) -> tuple[str, ...]:
+    """The identity of a fallback card or notice by its chat and visible text, for an echo whose id is unknown."""
+    _, connection, chat_id, _ = _stats_control_key(message, None)
+    text = visible_text.strip() if isinstance(visible_text, str) else ""
+    digest = f"{kind}:{hashlib.sha256(text.encode('utf-8')).hexdigest()}" if text else ""
+    return ("stats-echo", connection, chat_id, digest)
+
+
+def _stats_visible_text(text: str) -> str:
+    """A card's text as Telegram echoes it: the renderer's tags dropped and its entities decoded."""
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
+def _expected_stats_echo(message: Any) -> str | None:
+    """"card" or "notice" when ``message`` is the bot's echo of a fallback whose send returned no id."""
+    if _get(message, "sender_business_bot") is None:
+        return None
+    text = _get(message, "text")
+    for kind in ("card", "notice"):
+        if _identity_seen(_stats_echo_key(message, kind, text), within=_STATS_ECHO_TTL_SECONDS):
+            return kind
+    return None
+
+
+def _strip_stats_control(update: Any, *, bot: Any = None) -> Any | None:
+    """``update`` without the `/stats` command's own messages; None when nothing else is left.
+
+    The command, its edit into the card or a notice, a fallback card or notice,
+    and their deletion are control traffic: never history, so never counted.
+    """
+    try:
+        payload = getattr(update, "business_message", None)
+        if payload is not None:
+            key = _stats_control_key(payload, _get(payload, "message_id"))
+            if _identity_seen(key):
+                return None
+            kind = _expected_stats_echo(payload)
+            if kind is None:
+                return update
+            # A fallback Telegram delivered although its send failed: its id is known only now,
+            # so its edits and deletion are dropped from here on, and a notice still goes.
+            _mark_identity_seen(key)
+            if kind == "notice":
+                _schedule_stats_deletion(bot, payload, [_get(payload, "message_id")])
+            return None
+        payload = getattr(update, "edited_business_message", None)
+        if payload is not None:
+            return None if _identity_seen(_stats_control_key(payload, _get(payload, "message_id"))) else update
+        deleted = getattr(update, "deleted_business_messages", None)
+        if deleted is None:
+            return update
+        message_ids = tuple(_get(deleted, "message_ids") or ())
+        kept = tuple(mid for mid in message_ids if not _identity_seen(_stats_control_key(deleted, mid)))
+    except Exception:  # noqa: BLE001 - an unreadable update is handled as an ordinary Business update
+        return update
+    if len(kept) == len(message_ids):
+        return update
+    if not kept:
+        return None
+    # Some deleted messages are the command's: history sees only the others.
+    return SimpleNamespace(
+        update_id=getattr(update, "update_id", None),
+        business_message=None,
+        edited_business_message=None,
+        deleted_business_messages=SimpleNamespace(
+            business_connection_id=_business_connection_id(deleted),
+            chat=_get(deleted, "chat"),
+            message_ids=kept,
+        ),
+    )
+
+
+def _first_name(source: Any) -> str | None:
+    return _history_support._clean_optional_text(_get(source, "first_name"))
+
+
+async def _handle_stats_command_update(update: Any, *, bot: Any, adapter: Any) -> bool:
+    """Run an owner `/stats` in a Business chat; True means the update is claimed.
+
+    The command is edited into the public card, so the contact sees it too.
+    """
+    payload = getattr(update, "business_message", None)
+    if payload is None:
+        # Edits and deletions are never commands; the command's own are dropped by _strip_stats_control.
+        return False
+    period = _stats_command_period(payload)
+    if period is None:
+        return False
+    business_connection_id = _business_connection_id(payload)
+    chat = _get(payload, "chat")
+    chat_id = _get(chat, "id")
+    message_id = _get(payload, "message_id")
+    if not business_connection_id or chat_id is None or message_id is None:
+        return False
+    store = _transcription_modes.default_store()
+    # A failed live lookup falls back to the owner persisted for this connection.
+    resolved = await _history_support.resolve_business_direction(
+        payload, bot=bot, stored_owner=store.connection_owner
+    )
+    if resolved.direction != "own" or resolved.reason == "sender_business_bot" or resolved.owner_user_id is None:
+        # A contact's `/stats`, bot-sent text, or an owner who cannot be verified: ordinary text.
+        logger.debug("%s: stats command not from owner reason=%s", _PLUGIN_NAME, resolved.reason)
+        return False
+    # Marked before any Telegram call, so the edit's echo and the later deletion
+    # never reach history; a retried delivery finds it marked and is only claimed.
+    if not _mark_identity_seen(_stats_control_key(payload, message_id)):
+        return True
+    from_user = _get(payload, "from_user")
+    language_code = _get(from_user, "language_code")
+    try:
+        card = await asyncio.wait_for(
+            asyncio.to_thread(
+                _stats_panel.build_stats_card,
+                chat_id=chat_id,
+                business_connection_id=str(business_connection_id),
+                period=period,
+                owner_name=_first_name(from_user),
+                contact_name=_first_name(chat),
+                language_code=language_code,
+            ),
+            timeout=_STATS_COMMAND_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001 - a slow or broken read becomes the short read-error notice
+        logger.warning("%s: stats command could not build the card (%s)", _PLUGIN_NAME, type(exc).__name__)
+        card = _stats_panel.StatsCard(_owner_panel.tr("stats.card.read_error", language_code), ok=False)
+    try:
+        if card.ok:
+            outcome = await _post_stats_card(bot=bot, adapter=adapter, message=payload, text=card.text)
+        else:
+            outcome = await _post_stats_notice(bot=bot, adapter=adapter, message=payload, text=card.text)
+    except Exception as exc:  # noqa: BLE001 - the owner's command must never reach history or core
+        logger.warning("%s: stats command failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        outcome = "failed"
+    logger.info(
+        "%s: stats command chat=%s message=%s period=%s outcome=%s",
+        _PLUGIN_NAME,
+        _safe_part(chat_id),
+        _safe_part(message_id),
+        period,
+        outcome,
+    )
+    return True
+
+
+async def _edit_stats_command(bot: Any, message: Any, **kwargs: Any) -> str:
+    """Edit the owner's `/stats` message in place: "applied", "gone" (the owner deleted it), or "failed"."""
+    edit_text = getattr(bot, "edit_message_text", None)
+    if not callable(edit_text):
+        return "failed"
+    try:
+        outcome = _classify_caption_edit_result(
+            await _maybe_await(
+                edit_text(
+                    chat_id=_get(_get(message, "chat"), "id"),
+                    message_id=_get(message, "message_id"),
+                    business_connection_id=_business_connection_id(message),
+                    **kwargs,
+                )
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - every other failed edit falls back to a new message
+        logger.info("%s: stats command edit failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        if _STATS_COMMAND_GONE_MARKER in _caption_edit_error_detail(exc):
+            return "gone"
+        outcome = _classify_caption_edit_exception(exc)
+    return "applied" if outcome is CaptionEditAttemptOutcome.APPLIED else "failed"
+
+
+async def _send_stats_message(*, bot: Any, adapter: Any, message: Any, kind: str, visible_text: str,
+                              **kwargs: Any) -> Any:
+    """Send a fallback card or notice into the Business chat and mark it as the command's own.
+
+    A send can fail after Telegram delivered the message, so its echo is first
+    expected by its visible text (``kind`` is "card" or "notice").
+    """
+    expected = _stats_echo_key(message, kind, visible_text)
+    _forget_identity(expected)  # a fresh expectation, for the short echo TTL
+    _mark_identity_seen(expected)
+    sent = await bot.send_message(
+        chat_id=_get(_get(message, "chat"), "id"),
+        business_connection_id=_business_connection_id(message),
+        **kwargs,
+        **_notification_kwargs(adapter),
+    )
+    sent_id = _get(sent, "message_id")
+    if isinstance(sent_id, int):
+        # Its echo and its deletion are the command's too.
+        _mark_identity_seen(_stats_control_key(message, sent_id))
+    return sent_id
+
+
+async def _post_stats_card(*, bot: Any, adapter: Any, message: Any, text: str) -> str:
+    """Edit the command into the card, else send the card and delete the command; returns the log outcome."""
+    kwargs = {"text": text, "parse_mode": _stats_render.PARSE_MODE, **_no_link_preview_kwargs()}
+    edit = await _edit_stats_command(bot, message, **kwargs)
+    if edit == "applied":
+        return "edited"
+    if edit == "gone":
+        # The owner withdrew the command before the card was ready: post nothing.
+        return "gone"
+    # An uncertain edit may still have landed: a new card plus deleting the
+    # command leaves exactly one card either way.
+    try:
+        await _send_stats_message(
+            bot=bot, adapter=adapter, message=message, kind="card", visible_text=_stats_visible_text(text), **kwargs
+        )
+    except Exception as exc:  # noqa: BLE001 - leave the command visible rather than lose it silently
+        logger.warning("%s: stats card could not be sent (%s)", _PLUGIN_NAME, type(exc).__name__)
+        return "failed"
+    await _delete_stats_messages(bot, str(_business_connection_id(message)), [_get(message, "message_id")])
+    return "sent"
+
+
+async def _post_stats_notice(*, bot: Any, adapter: Any, message: Any, text: str) -> str:
+    """Edit the command into a short notice (or reply with it), then delete both after a short delay."""
+    message_id = _get(message, "message_id")
+    to_delete = [message_id]
+    edit = await _edit_stats_command(bot, message, text=text)
+    if edit == "gone":
+        return "gone"
+    if edit != "applied":
+        # A duplicate short notice is harmless, so any unapplied or uncertain edit gets a reply.
+        try:
+            reply_id = await _send_stats_message(
+                bot=bot,
+                adapter=adapter,
+                message=message,
+                kind="notice",
+                visible_text=text,
+                text=text,
+                reply_to_message_id=message_id,
+            )
+            if isinstance(reply_id, int):
+                to_delete.append(reply_id)
+        except Exception as exc:  # noqa: BLE001 - the notice is best effort
+            logger.warning("%s: stats notice could not be sent (%s)", _PLUGIN_NAME, type(exc).__name__)
+    _schedule_stats_deletion(bot, message, to_delete)
+    return "notice"
+
+
+def _schedule_stats_deletion(bot: Any, message: Any, message_ids: list[Any]) -> None:
+    """Delete a notice (and the command) from the chat after the notice delay."""
+    if bot is None:
+        return
+    connection = str(_business_connection_id(message))
+    _schedule_module_work(
+        lambda: _delete_stats_messages(bot, connection, message_ids, delay=_STATS_NOTICE_TTL_SECONDS)
+    )
+
+
+async def _delete_stats_messages(
+    bot: Any, business_connection_id: str, message_ids: list[Any], *, delay: float = 0.0
+) -> None:
+    """Remove the command (and its notice) so the contact does not keep seeing them."""
+    if delay:
+        await asyncio.sleep(delay)
+    delete = getattr(bot, "delete_business_messages", None)
+    if not callable(delete):
+        return
+    try:
+        await _maybe_await(delete(business_connection_id=business_connection_id, message_ids=message_ids))
+    except Exception as exc:  # noqa: BLE001 - cleanup is best effort
+        logger.warning(
+            "%s: could not delete the /stats command (%s); allow the bot to delete messages "
+            "in Telegram Business > Chatbots",
+            _PLUGIN_NAME,
+            type(exc).__name__,
+        )
 
 
 def _setup_cli(subparser: Any) -> None:
@@ -2823,8 +3170,9 @@ def register(ctx: Any) -> None:
         ):
             if name.startswith(prefix):
                 target = replacement + name.removeprefix(prefix)
-                os.environ.setdefault(target, value)
-                deprecated.append(f"{name} -> {target}")
+                if target not in _REMOVED_ENV:
+                    os.environ.setdefault(target, value)
+                    deprecated.append(f"{name} -> {target}")
                 break
     if deprecated and not _deprecated_env_warned:
         logger.warning("Deprecated Telesec environment aliases (removed next release): %s", ", ".join(deprecated))

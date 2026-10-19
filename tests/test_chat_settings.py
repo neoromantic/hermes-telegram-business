@@ -611,11 +611,13 @@ async def test_stats_section_says_history_is_paused(cs, history_enabled):
     plugin = history_enabled
     await capture(plugin, text_update(77))
     ctx = plugin._owner_panel.PanelContext(str(OWNER), str(CHAT), None, BCID)
-    assert plugin._stats_panel.HISTORY_PAUSED not in plugin._stats_panel.render_section(ctx).text
+    assert "History is paused" not in plugin._stats_panel.render_section(ctx).text
 
     cs.default_store().set_flag(OWNER, CHAT, "history", False, via="cli")
 
     assert plugin._stats_panel.render_section(ctx).text.endswith("\nHistory is paused for this chat.")
+    ctx_ru = plugin._owner_panel.PanelContext(str(OWNER), str(CHAT), None, BCID, language_code="ru")
+    assert plugin._stats_panel.render_section(ctx_ru).text.endswith("\nИстория этого чата сейчас не сохраняется.")
 
 
 # --- CLI -------------------------------------------------------------------------------------------

@@ -95,7 +95,7 @@ To confirm you are the owner, the bot asks Telegram who owns the Business connec
 
 Panel taps and all Business message updates stop update propagation before Hermes' group-99 dispatch counter, so after a quiet period the core "Telegram ingress is healthy but deaf" warning can report a stale gap. The gap resets on reconnect and needs no action.
 
-The only in-chat command is the owner's [`/dossier`](#contact-dossiers-opt-in), which deliberately posts the contact's dossier where the contact sees it. Any other text you type in a Business chat, including `/transcribe`, is ordinary text that the contact sees.
+There are two in-chat commands, both only for you, and the contact sees what each one posts: [`/dossier`](#contact-dossiers-opt-in) posts the contact's dossier, and `/stats` turns into a stats card ([details](docs/STATS.md#in-a-business-chat-stats)). `/stats` is a chat command because its point is to share the numbers with the contact. Everything only for you, including the full stats, stays in the owner panel. Any other text you type in a Business chat, including `/transcribe`, is ordinary text that the contact sees.
 
 The same modes are available from the CLI:
 
@@ -179,7 +179,7 @@ Canonical storage is profile-local JSONL with a rebuildable contact catalog. Cap
 
 ## Correspondence stats
 
-`stats` counts, per contact, text messages received and sent, active days, conversation sessions, latest activity, and deletions over retained history:
+`stats` counts, per contact, text messages received and sent, active days, conversation sessions, latest activity, and deletions over retained history. It also measures the conversation: each side's share, turns, reply times (median and p90), who is waiting for a reply, message length, edits, busy hours and weekdays, activity over time, streaks, the longest silence, and a comparison with the previous period:
 
 ```bash
 hermes telesec stats --since 30d
@@ -187,11 +187,15 @@ hermes telesec stats --contact @alice --since 2026-10-01 --tz Europe/Moscow
 hermes telesec stats --contact @alice --format json
 ```
 
-Messages are placed by Telegram send time. Only text messages are counted. The report needs no LLM, stores nothing new, and never prints message text. [Counting rules, options, and a synthetic example](docs/STATS.md).
+Messages are placed by Telegram send time, in the Hermes time zone or UTC. Only text messages are counted. The report needs no LLM, stores nothing new, and never prints message text; it reads text only to count its characters. [Counting rules, options, and a synthetic example](docs/STATS.md).
 
-The same report for one chat is in Telegram: tap **Manage Bot** in a Business chat, then **📊 Stats** in your private chat with the bot. It is never posted into the Business chat. [Owner panel stats](docs/STATS.md#in-telegram-owner-panel).
+A compact view of the same stats for one chat is in Telegram, in Russian or English: tap **Manage Bot** in a Business chat, then **📊 Stats** in your private chat with the bot. It is never posted into the Business chat. [Owner panel stats](docs/STATS.md#in-telegram-owner-panel).
 
-![Real Telegram screenshot of the Stats view in the owner panel: one chat's message counts, active days, sessions, and deletions for the last 30 days, with 7d, 30d, 90d, All, and Back buttons. The contact's name is blurred.](docs/images/stats-panel.png)
+![Synthetic screenshot of the 📊 Stats view in the owner panel for a fictional contact, Alex Rivera, over 30 days: 252 messages, share bars, a table of messages, reply times, messages per turn, length, and edits for each side, who is waiting for a reply, the peak hour, sparklines for hours, weekdays, and days, the streak, the longest pause, sessions, deletions, and the change against the previous 30 days, with 7d, 30d, 90d, All, and Back buttons.](docs/images/stats-panel-en.png)
+
+The screenshot uses fictional history run through the real view ([in Russian](docs/images/stats-panel-ru@2x.png)).
+
+To share stats with the contact, type `/stats` (all history) or `/stats 7d`, `30d`, or `90d` in the Business chat. Only the owner can. The bot edits the command into a short card for both of you: messages, each side's share, reply times, message length, rhythm, the longest streak, and sessions. The contact sees the card. It never shows deletions, edits, who is waiting, p90, missing history, or message text, and the command and card are never kept in history or counted. [In-chat `/stats`](docs/STATS.md#in-a-business-chat-stats).
 
 ## Contact dossiers (opt-in)
 
@@ -209,7 +213,7 @@ In Telegram, the panel's **Dossier** section shows the chat's dossier as a rich 
 
 ![Real Telegram screenshot of a fact card in the owner panel: the fact's section and kind, revisions, and its source message with date, sender, and quote, with Pin, Remove, Facts, and Back buttons. The contact's username, the fact text, the message ID, and the quote are blurred.](docs/images/dossier-fact.png)
 
-Enabling dossiers sends private chat text to the configured model provider; history capture alone never does. Nothing reaches a contact unless you send `/dossier`. [Dossiers, Telegram views, privacy, and a synthetic example](docs/DOSSIERS.md).
+Enabling dossiers sends private chat text to the configured model provider; history capture alone never does. No dossier reaches a contact unless you send `/dossier`; the `/stats` card the contact also sees has counts and times only, never dossier facts. [Dossiers, Telegram views, privacy, and a synthetic example](docs/DOSSIERS.md).
 
 ## Planned assistant
 
@@ -285,7 +289,7 @@ Removing the plugin leaves its data under `$HERMES_HOME/data/telesec/`: history,
 
 ## Configuration
 
-All plugin variables are optional. Hermes Desktop's plugin settings form exposes `cleanup_style`, `timezone`, and `agent_enable`. They are read through `ctx.get_config` under `plugins.entries.telesec.settings`; environment variables override the form. Settings are re-read when used. Restart the gateway after changing environment variables or these settings. Transcription, history, and dossiers have no variable or Desktop setting: they are switched in [Settings](#settings) (`/telesec` or `hermes telesec settings set`), with no restart. On upgrade, an old `TELESEC_DISABLE`, `TELESEC_HISTORY_ENABLE`, Desktop `history_enable`, `TELESEC_DOSSIER_ENABLE`, or Desktop `dossier_enable` value is moved into its switch once and then ignored.
+All plugin variables are optional. Hermes Desktop's plugin settings form exposes `cleanup_style` and `agent_enable`. They are read through `ctx.get_config` under `plugins.entries.telesec.settings`; environment variables override the form. Settings are re-read when used. Restart the gateway after changing environment variables or these settings. Transcription, history, and dossiers have no variable or Desktop setting: they are switched in [Settings](#settings) (`/telesec` or `hermes telesec settings set`), with no restart. On upgrade, an old `TELESEC_DISABLE`, `TELESEC_HISTORY_ENABLE`, Desktop `history_enable`, `TELESEC_DOSSIER_ENABLE`, or Desktop `dossier_enable` value is moved into its switch once and then ignored.
 
 ```yaml
 plugins:
@@ -293,7 +297,6 @@ plugins:
     telesec:
       settings:
         cleanup_style: conservative
-        timezone: UTC
         agent_enable: false
 ```
 
@@ -323,7 +326,6 @@ See the [Hermes plugin settings API](https://hermes-agent.nousresearch.com/docs/
 | `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | History: pre-delete replacement window, in seconds. |
 | `TELESEC_HISTORY_RETENTION_DAYS` | `0` | History: closed-partition retention target; `0` disables age pruning. |
 | `TELESEC_HISTORY_MAX_BYTES` | `1073741824` | History: total storage target before old closed partitions are pruned. |
-| `TELESEC_TIMEZONE` | `UTC` | Default `--tz` for [correspondence stats](docs/STATS.md); also the Desktop `timezone` setting. |
 | `TELESEC_DOSSIER_INTERVAL_MINUTES` | `30` | Pause between dossier cycles; bounded to 5–1440. |
 | `TELESEC_DOSSIER_QUIET_MINUTES` | `10` | Minutes a chat must be quiet before a dossier refresh; bounded to 0–1440. |
 | `TELESEC_DOSSIER_BACKFILL_DAYS` | `90` | First-pass and tracking window for dossiers, in days; bounded to 1–3650. |
@@ -367,7 +369,7 @@ All three native PTB handlers use group `-100`, before Hermes's ordinary Telegra
 
 | Handler | Scope and propagation |
 |---|---|
-| `BusinessHandler` | Business messages, edits, and deletions. Captures history and routes transcription, then raises `ApplicationHandlerStop` unless unhandled agent routing is explicitly enabled. Owner commands and handled media always stop. |
+| `BusinessHandler` | Business messages, edits, and deletions. Captures history and routes transcription, then raises `ApplicationHandlerStop` unless unhandled agent routing is explicitly enabled. The owner's `/stats` and `/dossier` commands, the `/stats` card, and handled media always stop. |
 | `OwnerPanelHandler` | Manage Bot `/start bizChat…`, an exact `/telesec` in a private chat, and callback data starting with `tb:` only. Claimed panel actions raise `ApplicationHandlerStop`. |
 | `BusinessConnectionHandler` | Business connection updates only; records in-memory connection knowledge and lets core continue. |
 
@@ -413,7 +415,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 ## Privacy and data
 
 - **No telemetry.** No analytics, usage reporting, tracking endpoint, or self-updater is included.
-- **Network.** The gateway's Telegram Bot API client downloads media, looks up Business owners, edits captions, sends transcripts/status messages, and handles owner-panel buttons. For the owner's `/dossier` it deletes that command and posts the contact's dossier into the same Business chat; when it posts nothing, the reason goes only to the owner's private chat with the bot. STT goes to the backend configured in Hermes, which may be local or external. Optional cleanup sends transcripts through `ctx.llm`; opt-in dossiers send retained private-chat text through the same host facade. Provider retention and costs follow your selected backend. The plugin has no separate credential store and does not read credential files.
+- **Network.** The gateway's Telegram Bot API client downloads media, looks up Business owners, edits captions, sends transcripts/status messages, and handles owner-panel buttons. For the owner's `/dossier` it deletes that command and posts the contact's dossier into the same Business chat; when it posts nothing, the reason goes only to the owner's private chat with the bot. For the owner's `/stats` it edits that command into a stats card (`editMessageText`), sends the card or a short notice into the same Business chat when the edit fails, and deletes the command and notice (`deleteBusinessMessages`). STT goes to the backend configured in Hermes, which may be local or external. Optional cleanup sends transcripts through `ctx.llm`; opt-in dossiers send retained private-chat text through the same host facade. Provider retention and costs follow your selected backend. The plugin has no separate credential store and does not read credential files.
 - **Local processes.** Attached-audio checks run `ffprobe` for duration and `ffmpeg` for prefix extraction and normalization, using argument lists without a shell. They operate on transient media in the active profile's cache.
 - **Background work.** Claimed transcription runs asynchronously. Opt-in history schedules deletion classification and maintenance; dossiers use a gateway background thread that starts on adapter connect even while they are off and then only checks the stored switch every minute. Once they are on, cycles start at least 3 minutes after connection and normally 30 minutes apart, and send eligible private-chat text to the configured LLM without another prompt; disable dossiers to stop new cycles.
 - **The owner's chat with the bot.** Telegram delivers your own chat with the bot (the owner panel and your agent chat) as Business updates too. The plugin ignores those copies: they are not captured, transcribed, counted, or used for dossiers, and the ordinary update for the same message still reaches Hermes.
