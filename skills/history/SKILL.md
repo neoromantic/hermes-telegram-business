@@ -1,13 +1,13 @@
 ---
 name: history
-description: Inspect and maintain the opt-in Telegram Business text history bundled with telegram-business-voice-transcriber.
+description: Inspect, count, and maintain the opt-in Telegram Business text history bundled with telegram-business-voice-transcriber.
 metadata:
-  short-description: Telegram Business history inspection and maintenance
+  short-description: Telegram Business history inspection, stats, and maintenance
 ---
 
 # Telegram Business History
 
-Use this plugin skill when you need to inspect or maintain the opt-in Telegram Business text history bundled with `telegram-business-voice-transcriber`.
+Use this plugin skill when you need to inspect or maintain the opt-in Telegram Business text history bundled with `telegram-business-voice-transcriber`, or to answer questions such as "how much did I talk with Alice this month" from it.
 
 ## Rules
 
@@ -44,6 +44,7 @@ Use this plugin skill when you need to inspect or maintain the opt-in Telegram B
   - `HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS` seconds, default `15`
   - `HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS`, default `0`; `0` disables retention pruning
   - `HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES`, default `1073741824`
+- `HERMES_TELEGRAM_BUSINESS_TIMEZONE` is an optional IANA time zone, such as `Europe/Moscow`, used as the default `--tz` for `stats`. Unset means UTC.
 
 ## Read Recipes
 
@@ -54,7 +55,7 @@ hermes telegram-business history chats --limit 50
 hermes telegram-business history contacts --search alice --limit 20
 hermes telegram-business history catalog
 hermes telegram-business history catalog --rebuild
-hermes telegram-business history stats
+hermes telegram-business history stats   # storage stats: records, bytes, settings
 hermes telegram-business history show --contact @alice --since 7d --limit 200
 hermes telegram-business history search --contact @alice --text refund --since 2026-07-16T00:00:00Z --until 2026-07-23T23:59:59Z --limit 100
 hermes telegram-business history search --text refund --since 30d --limit 100
@@ -64,6 +65,30 @@ hermes telegram-business history verify
 ```
 
 `show`, `search`, and `export` accept either numeric `--chat` or human-readable `--contact`. Duplicate contact names require disambiguation instead of guessing. Global `search` without `--chat` or `--contact` is still bounded.
+
+## Stats Recipes
+
+Use `stats` for counting questions: how much, how often, who wrote last, who wrote most. It is deterministic, read-only, and never prints message text. Full rules: `docs/STATS.md` in this plugin.
+
+```bash
+hermes telegram-business stats --since 7d --limit 20
+hermes telegram-business stats --since 7d --limit 20 --format json
+hermes telegram-business stats --contact @alice --since 2026-10-01 --tz Europe/Moscow
+hermes telegram-business stats --contact @alice --since 2026-10-01 --tz Europe/Moscow --format json
+hermes telegram-business stats --chat 991 --connection business-123 --since 2026-10-01 --until 2026-10-18 --format json
+```
+
+- Prefer `--format json` when you compute or compare. Keys are stable (`schema_version` 1).
+- "This month" means `--since YYYY-MM-01` for the current month. Plain dates are whole days in `--tz`, and both bounds are inclusive. Pass `--tz` when the owner's time zone is known and `HERMES_TELEGRAM_BUSINESS_TIMEZONE` is not set.
+- Counts cover text messages only. Say so in the answer: voice notes, media, and captions are not counted.
+- `sent` is the owner side and `received` is the contact side. Report `unknown_direction` separately; never add it to either side.
+- For "who did I talk with most", run the overview with `--format json` and sort `contacts` by `messages.total`. If `overview.not_shown_over_limit` is above 0, raise `--limit`.
+- `missing_history.range_partial: true` means history starts at `missing_history.retained_from`. Earlier activity is unknown, not zero.
+- The overview leaves out contacts with no activity in the range, but still counts their gaps. If `overview.not_shown_no_activity_partial` is above 0, that many hidden contacts have history only from after `--since`: say their activity in the range is unknown, never that they had none. `overview.not_shown_no_activity_missing_history` sums their other missing history.
+- Do not over-interpret "no observed reply after it" (`latest.observed_reply: "none"`). It only means history has no sent text message after the latest received one. Never turn it into "you ignored them", "they are waiting", or any claim about intent: the owner may have answered by voice, by phone, or outside Telegram. `"after_range"` means a reply was recorded after `--until`.
+- Deletions are counts split by the side of the deleted message. Telegram does not say who deleted a message, so never say "Alice deleted it". For details, run `deletions.details_command`.
+- If the contact is ambiguous, ask the owner which one, or pass `--chat` with `--connection`.
+- `history stats` is a different command: storage stats (records, bytes, settings), not correspondence counts.
 
 ## Deletion Semantics
 

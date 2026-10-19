@@ -83,6 +83,18 @@ History captures new text messages, edits, and deletions as Telegram delivers th
 
 Canonical storage is profile-local JSONL with a rebuildable contact catalog. Capture and search require no LLM. Media and captions are excluded from history in this version. [History configuration, retention, and CLI](docs/HISTORY.md).
 
+## Correspondence stats
+
+`stats` counts, per contact, text messages received and sent, active days, conversation sessions, latest activity, and deletions over retained history:
+
+```bash
+hermes telegram-business stats --since 30d
+hermes telegram-business stats --contact @alice --since 2026-10-01 --tz Europe/Moscow
+hermes telegram-business stats --contact @alice --format json
+```
+
+Messages are placed by Telegram send time. Only text messages are counted. The report needs no LLM, stores nothing new, and never prints message text. [Counting rules, options, and a synthetic example](docs/STATS.md).
+
 ## Planned assistant
 
 The next layer uses opted-in history to build an editable, evidence-backed owner persona and per-contact context. It will support contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover. These features are requirements, not runtime capabilities in 0.9.0.

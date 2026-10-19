@@ -3458,8 +3458,11 @@ def add_history_parser(subs: Any) -> None:
     catalog.add_argument("--rebuild", action="store_true")
     catalog.set_defaults(_history_action="catalog")
 
-    stats = history_subs.add_parser("stats", help="Show aggregate history stats")
+    stats = history_subs.add_parser("stats", help="Show storage stats: records, bytes, and settings")
     stats.set_defaults(_history_action="stats")
+    from . import correspondence_stats  # lazy: keeps imports acyclic
+
+    correspondence_stats.add_cli_parser(subs)
 
     show = history_subs.add_parser("show", help="Show a bounded history timeline")
     show.add_argument("--connection")
@@ -3557,6 +3560,11 @@ def handle_cli(args: argparse.Namespace) -> int:
         if action == "catalog":
             print(_catalog_status_line(rebuild=bool(getattr(args, "rebuild", False))))
             return 0
+
+        if action == "correspondence_stats":
+            from . import correspondence_stats
+
+            return correspondence_stats.handle_cli(args)
 
         if action == "stats":
             config = history_config_from_env()
