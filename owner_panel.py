@@ -12,12 +12,16 @@ plugin's ``__init__``. Other features add a section with ``register_section``;
 the router renders it in the owner's private chat, adds a Back button, and
 passes a ``PanelContext`` whose ``business_connection_id`` is always one the
 owner was verified for, so a section must scope its reads to it.
+
+The panel speaks English, or Russian to a Telegram client set to Russian. Its
+strings live in one catalog; sections add their own with ``register_strings``
+and read them with ``tr(key, ctx.language_code)``.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,21 +35,6 @@ MAX_CALLBACK_BYTES = 64  # Telegram's callback_data limit.
 ACTIONS = frozenset({"m", "r", "s", "b", "p"})
 NO_ARG_ACTIONS = frozenset({"r", "b", "p"})
 
-NOT_ALLOWED = "Not allowed"
-UNKNOWN_CONNECTION = (
-    "I can't confirm you own this Business connection yet. "
-    "Send any message in that chat, then tap Manage Bot again."
-)
-UNKNOWN_CONNECTION_MODES_UNREADABLE = (
-    f"{_history.TRANSCRIBE_SAVE_ERROR}\n"
-    "The transcription modes file is unreadable, so I can't confirm you own this Business connection. "
-    "Send any message in that chat, then tap Manage Bot again."
-)
-TRANSCRIPTION_DISABLED = "Transcription is disabled on this gateway."
-SECTION_UNAVAILABLE = "Section unavailable"
-BACK_LABEL = "« Back"
-REFRESH_LABEL = "Refresh"
-RESET_LABEL = "Reset to default"
 MAX_TEXT_UNITS = 4096  # Telegram's message text limit, counted in UTF-16 code units.
 MAX_TOAST_CHARS = 200  # Telegram's answerCallbackQuery text limit.
 MAX_SECTION_LABEL_CHARS = 64  # The label is also the section's button text.
@@ -63,6 +52,110 @@ _SUB_ARG_RE = rf"[A-Za-z0-9_.-]{{1,{SUB_ARG_MAX}}}"
 # (MODES, _SECTION_ARG_RE) set the real limits, so the patterns cannot drift apart.
 _CALLBACK_RE = re.compile(rf"^tb:([a-z]):({_CHAT_ID_RE})(?::([A-Za-z0-9_./-]+))?\Z")
 _SECTION_ARG_RE = re.compile(rf"^({_SECTION_KEY_RE})(?:/({_SUB_ARG_RE}))?\Z")
+
+
+# --- Strings -------------------------------------------------------------------------------------
+
+LANGUAGES = ("en", "ru")
+# English defines every key; another language falls back to English key by key.
+# A section's button label is its "section.<key>" string when there is one.
+_STRINGS: dict[str, dict[str, str]] = {
+    "en": {
+        "title": "Owner panel",
+        "transcription": "Transcription: {mode}",
+        "transcription_default": "Transcription: {mode} (default)",
+        "transcription_disabled": "Transcription is disabled on this gateway.",
+        "mode.both": "both",
+        "mode.own": "own",
+        "mode.peer": "peer",
+        "mode.off": "off",
+        "reset": "Reset to default",
+        "refresh": "Refresh",
+        "refreshed": "Refreshed",
+        "back": "« Back",
+        "section_unavailable": "Section unavailable",
+        "not_allowed": "Not allowed",
+        "unknown_action": "Unknown action",
+        "save_error": _history.TRANSCRIBE_SAVE_ERROR,
+        "unknown_connection": (
+            "I can't confirm you own this Business connection yet. "
+            "Send any message in that chat, then tap Manage Bot again."
+        ),
+        "unknown_connection_modes_unreadable": (
+            f"{_history.TRANSCRIBE_SAVE_ERROR}\n"
+            "The transcription modes file is unreadable, so I can't confirm you own this Business connection. "
+            "Send any message in that chat, then tap Manage Bot again."
+        ),
+    },
+    "ru": {
+        "title": "Панель владельца",
+        "transcription": "Расшифровка: {mode}",
+        "transcription_default": "Расшифровка: {mode} (по умолчанию)",
+        "transcription_disabled": "Расшифровка выключена на этом шлюзе.",
+        "mode.both": "все",
+        "mode.own": "мои",
+        "mode.peer": "собеседника",
+        "mode.off": "выкл",
+        "reset": "Сбросить",
+        "refresh": "Обновить",
+        "refreshed": "Обновлено",
+        "back": "« Назад",
+        "section_unavailable": "Раздел недоступен",
+        "not_allowed": "Нет доступа",
+        "unknown_action": "Неизвестное действие",
+        "save_error": "Ошибка: не удалось сохранить режим расшифровки",
+        "unknown_connection": (
+            "Пока не могу подтвердить, что это ваше Business-подключение. "
+            "Отправьте любое сообщение в том чате и снова нажмите кнопку управления ботом."
+        ),
+        "unknown_connection_modes_unreadable": (
+            "Ошибка: не удалось сохранить режим расшифровки\n"
+            "Файл режимов расшифровки не читается, поэтому я не могу подтвердить, что это ваше "
+            "Business-подключение. Отправьте любое сообщение в том чате и снова нажмите кнопку управления ботом."
+        ),
+    },
+}
+
+
+def language(language_code: Any) -> str:
+    """"ru" for any Russian Telegram client language ("ru", "ru-RU", ...), else "en"."""
+    return "ru" if isinstance(language_code, str) and language_code.strip().casefold().startswith("ru") else "en"
+
+
+def tr(key: str, language_code: str | None = None, **values: Any) -> str:
+    """The catalog string for ``key`` in the client's language, formatted with ``values``.
+
+    An unknown key is a KeyError: every key has an English string.
+    """
+    template = _STRINGS[language(language_code)].get(key)
+    if template is None:
+        template = _STRINGS["en"][key]
+    return template.format(**values) if values else template
+
+
+def register_strings(strings: Mapping[str, Mapping[str, str]]) -> None:
+    """Add or replace catalog strings, e.g. ``{"en": {"stats.title": "Stats"}, "ru": {...}}``.
+
+    Every key needs an English string, in this call or an earlier one. Prefix
+    keys with the section key so sections never collide.
+    """
+    for lang, values in strings.items():
+        if lang not in LANGUAGES:
+            raise ValueError(f"language must be one of {', '.join(LANGUAGES)}")
+        if not all(isinstance(key, str) and isinstance(value, str) for key, value in values.items()):
+            raise TypeError("catalog keys and strings must be str")
+    english = {**_STRINGS["en"], **strings.get("en", {})}
+    missing = sorted({key for values in strings.values() for key in values if key not in english})
+    if missing:
+        raise ValueError(f"no English string for {', '.join(missing)}")
+    for lang, values in strings.items():
+        _STRINGS[lang].update(values)
+
+
+def mode_status(mode: str, *, default: bool, language_code: str | None = None) -> str:
+    """ "Transcription: off", or "Transcription: both (default)" for a chat without a stored mode."""
+    key = "transcription_default" if default else "transcription"
+    return tr(key, language_code, mode=tr(f"mode.{mode}", language_code))
 
 
 def parse_start_payload(text: Any) -> int | None:
@@ -143,6 +236,7 @@ class PanelContext:
     chat_label: str | None
     business_connection_id: str | None
     arg: str | None = None
+    language_code: str | None = None  # the tapping owner's Telegram client language; see ``tr``
 
 
 @dataclass
@@ -172,7 +266,7 @@ def register_section(key: str, label: str, render: SectionRender, order: int = 1
     ``render`` runs in a worker thread, so blocking reads are fine; it may also
     return an awaitable. It gets the chat's ``PanelContext`` (``arg`` is the
     sub-argument from ``section_callback``) and returns a ``PanelView``; the
-    router appends the Back button. Keep text free of anything the owner did
+    router appends the Back button. Use ``tr(key, ctx.language_code)`` for text. Keep text free of anything the owner did
     not ask to see, and never log it.
 
     ``label`` is the section's button text and its tap toast, at most 64
@@ -207,11 +301,18 @@ def get_section(key: str | None) -> Section | None:
     return _SECTIONS.get(key) if key is not None else None
 
 
+def section_label(section: Section, language_code: str | None = None) -> str:
+    """The section's "section.<key>" catalog string, else its registered label."""
+    key = f"section.{section.key}"
+    return tr(key, language_code) if key in _STRINGS["en"] else section.label
+
+
 # --- Rendering -----------------------------------------------------------------------------------
 
 
 def chat_label_text(chat_id: Any, label: str | None) -> str:
-    return label if label else f"chat {chat_id}"
+    """The chat's name plus ``chat <id>``, untranslated, so a reply to the panel names the chat."""
+    return f"{label} · chat {chat_id}" if label else f"chat {chat_id}"
 
 
 def render_main(
@@ -228,27 +329,34 @@ def render_main(
     is a one-line status such as a save error, shown under the header.
     """
     chat = ctx.chat_id
-    lines = [f"Owner panel: {chat_label_text(chat, ctx.chat_label)}"]
+    lang = ctx.language_code
+    lines = [f"{tr('title', lang)}: {chat_label_text(chat, ctx.chat_label)}"]
     if notice:
         lines.append(notice)
     buttons: list[list[tuple[str, str]]] = []
     if transcription_enabled:
         current = entry.mode if entry is not None else DEFAULT_MODE
-        lines.append(f"Transcription: {current}" if entry is not None else f"Transcription: {DEFAULT_MODE} (default)")
-        buttons.append([(f"• {mode}" if mode == current else mode, callback_data("m", chat, mode)) for mode in MODES])
+        lines.append(mode_status(current, default=entry is None, language_code=lang))
+        buttons.append(
+            [
+                (("• " if mode == current else "") + tr(f"mode.{mode}", lang), callback_data("m", chat, mode))
+                for mode in MODES
+            ]
+        )
         if entry is not None:
-            buttons.append([(RESET_LABEL, callback_data("r", chat))])
+            buttons.append([(tr("reset", lang), callback_data("r", chat))])
     else:
-        lines.append(TRANSCRIPTION_DISABLED)
+        lines.append(tr("transcription_disabled", lang))
     for section in section_list:
-        buttons.append([(section.label, section_callback(chat, section.key))])
-    buttons.append([(REFRESH_LABEL, callback_data("p", chat))])
+        buttons.append([(section_label(section, lang), section_callback(chat, section.key))])
+    buttons.append([(tr("refresh", lang), callback_data("p", chat))])
     return PanelView(text="\n".join(lines), buttons=buttons)
 
 
-def with_back(view: PanelView, chat_id: Any) -> PanelView:
+def with_back(view: PanelView, chat_id: Any, language_code: str | None = None) -> PanelView:
     """A section view plus the Back row the router always adds."""
-    return PanelView(text=view.text, buttons=[*view.buttons, [(BACK_LABEL, callback_data("b", chat_id))]])
+    back = [(tr("back", language_code), callback_data("b", chat_id))]
+    return PanelView(text=view.text, buttons=[*view.buttons, back])
 
 
 def clip_text(text: str) -> str:
@@ -266,5 +374,6 @@ def clip_text(text: str) -> str:
     return "".join(kept) + ELLIPSIS
 
 
-def unavailable_view(chat_id: Any, label: str | None) -> PanelView:
-    return with_back(PanelView(text=f"{chat_label_text(chat_id, label)}\n{SECTION_UNAVAILABLE}."), chat_id)
+def unavailable_view(chat_id: Any, label: str | None, language_code: str | None = None) -> PanelView:
+    text = f"{chat_label_text(chat_id, label)}\n{tr('section_unavailable', language_code)}."
+    return with_back(PanelView(text=text), chat_id, language_code)

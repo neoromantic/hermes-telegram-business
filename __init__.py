@@ -2317,7 +2317,14 @@ async def _verify_panel_owner(
     return _remember_negative(sender_id, _PanelOwner("not_owner"), known_key)
 
 
-def _panel_state(owner: _PanelOwner, owner_id: str, chat_id: str, catalog: list[dict[str, Any]], arg: str | None):
+def _panel_state(
+    owner: _PanelOwner,
+    owner_id: str,
+    chat_id: str,
+    catalog: list[dict[str, Any]],
+    arg: str | None,
+    language_code: str | None = None,
+):
     """Context for one chat: the owner's connection that history lists for it, else one it was seen on, else None.
 
     Blocking (store read).
@@ -2351,6 +2358,7 @@ def _panel_state(owner: _PanelOwner, owner_id: str, chat_id: str, catalog: list[
         chat_label=label,
         business_connection_id=connection,
         arg=arg,
+        language_code=language_code,
     )
     return _PanelState(ctx=ctx, entry=entry, store_label=store_label)
 
@@ -2371,11 +2379,11 @@ def _log_panel(action: str, chat_id: Any, mode: str | None = None) -> None:
     )
 
 
-def _unknown_connection_text() -> str:
+def _unknown_connection_text(language_code: str | None = None) -> str:
     """The hint for an unverifiable `/start`; blocking (reads the modes file state)."""
     if _transcription_modes.default_store().file_degraded():
-        return _owner_panel.UNKNOWN_CONNECTION_MODES_UNREADABLE
-    return _owner_panel.UNKNOWN_CONNECTION
+        return _owner_panel.tr("unknown_connection_modes_unreadable", language_code)
+    return _owner_panel.tr("unknown_connection", language_code)
 
 
 async def _handle_owner_panel_update(update: Any, *, bot: Any) -> bool:
@@ -2394,6 +2402,7 @@ async def _handle_owner_panel_update(update: Any, *, bot: Any) -> bool:
         return False
     chat_id = _owner_panel.parse_start_payload(_get(message, "text"))
     sender_id = _get(_get(message, "from_user"), "id")
+    language_code = _get(_get(message, "from_user"), "language_code")
     private_chat_id = _get(_get(message, "chat"), "id")
     if chat_id is None or sender_id is None or private_chat_id is None:
         return False
@@ -2407,11 +2416,13 @@ async def _handle_owner_panel_update(update: Any, *, bot: Any) -> bool:
         if owner.status == "unknown":
             # No Business connection known yet: hint once per sender per TTL, always claim.
             if not owner.cached:
-                text = await asyncio.to_thread(_unknown_connection_text)
+                text = await asyncio.to_thread(_unknown_connection_text, language_code)
                 await bot.send_message(chat_id=private_chat_id, text=text)
             _log_panel("start_unknown_connection", chat_id)
             return True
-        state = await asyncio.to_thread(_panel_state, owner, str(sender_id), str(chat_id), catalog, None)
+        state = await asyncio.to_thread(
+            _panel_state, owner, str(sender_id), str(chat_id), catalog, None, language_code
+        )
         view = _owner_panel.render_main(state.ctx, state.entry, _owner_panel.sections(), _voice_module_enabled())
         await bot.send_message(
             chat_id=private_chat_id, text=_owner_panel.clip_text(view.text), reply_markup=_panel_markup(view)
@@ -2452,12 +2463,12 @@ async def _render_panel_section(section: _owner_panel.Section, state: _PanelStat
             raise TypeError("section render did not return a PanelView")
         if not isinstance(view.text, str) or not view.text.strip():
             raise ValueError("section render returned empty text")
-        return _owner_panel.with_back(view, state.ctx.chat_id)
+        return _owner_panel.with_back(view, state.ctx.chat_id, state.ctx.language_code)
     except Exception as exc:  # noqa: BLE001 - one broken or slow section must not break the panel
         logger.warning(
             "%s: owner panel section %s failed (%s)", _PLUGIN_NAME, section.key, type(exc).__name__
         )
-        return _owner_panel.unavailable_view(state.ctx.chat_id, state.ctx.chat_label)
+        return _owner_panel.unavailable_view(state.ctx.chat_id, state.ctx.chat_label, state.ctx.language_code)
 
 
 async def _apply_panel_mode(action: _owner_panel.PanelCallback, state: _PanelState) -> tuple[Any, str]:
@@ -2476,9 +2487,11 @@ async def _apply_panel_mode(action: _owner_panel.PanelCallback, state: _PanelSta
             label=state.store_label,
             connection=connection,
         )
-        return result.entry, f"Transcription: {action.arg}"
+        return result.entry, _owner_panel.mode_status(action.arg, default=False, language_code=ctx.language_code)
     await asyncio.to_thread(store.reset, ctx.owner_user_id, ctx.chat_id, connection=connection)
-    return None, f"Transcription: {_transcription_modes.DEFAULT_MODE} (default)"
+    return None, _owner_panel.mode_status(
+        _transcription_modes.DEFAULT_MODE, default=True, language_code=ctx.language_code
+    )
 
 
 async def _edit_panel_message(bot: Any, query: Any, view: _owner_panel.PanelView, fallback: Any = None) -> None:
@@ -2507,6 +2520,7 @@ async def _edit_panel_message(bot: Any, query: Any, view: _owner_panel.PanelView
 
 async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
     sender_id = _get(_get(query, "from_user"), "id")
+    language_code = _get(_get(query, "from_user"), "language_code")
     parsed = _owner_panel.parse_callback(_get(query, "data"))
     catalog = await asyncio.to_thread(_panel_catalog)
     owner = (
@@ -2515,15 +2529,15 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
         else _PanelOwner("unknown")
     )
     if owner.status != "owner":
-        await _answer_panel_callback(bot, query, _owner_panel.NOT_ALLOWED, alert=True)
+        await _answer_panel_callback(bot, query, _owner_panel.tr("not_allowed", language_code), alert=True)
         logger.info("%s: owner panel action=denied", _PLUGIN_NAME)
         return
     if parsed is None:
-        await _answer_panel_callback(bot, query, "Unknown action")
+        await _answer_panel_callback(bot, query, _owner_panel.tr("unknown_action", language_code))
         logger.info("%s: owner panel action=malformed", _PLUGIN_NAME)
         return
     chat_id = str(parsed.chat_id)
-    state = await asyncio.to_thread(_panel_state, owner, str(sender_id), chat_id, catalog, parsed.sub)
+    state = await asyncio.to_thread(_panel_state, owner, str(sender_id), chat_id, catalog, parsed.sub, language_code)
     entry = state.entry
     enabled = _voice_module_enabled()
     notice: str | None = None
@@ -2532,25 +2546,31 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
     if parsed.action in ("m", "r"):
         # The toast depends on the (fast, local) store write, so answer after it.
         if not enabled:
-            toast = _owner_panel.TRANSCRIPTION_DISABLED
+            toast = _owner_panel.tr("transcription_disabled", language_code)
         else:
             try:
                 entry, toast = await _apply_panel_mode(parsed, state)
             except (_transcription_modes.ModeStoreError, _transcription_modes.ModesFileCorrupt, OSError) as exc:
                 # Like the chat command: a corrupt modes file is never overwritten from Telegram.
                 logger.warning("%s: could not save transcription mode (%s)", _PLUGIN_NAME, type(exc).__name__)
-                toast = notice = _history_support.TRANSCRIBE_SAVE_ERROR
+                toast = notice = _owner_panel.tr("save_error", language_code)
         await _answer_panel_callback(bot, query, toast)
     else:
         # Answer before rendering, so a slow section never outlives the callback's answer window.
         section = _owner_panel.get_section(parsed.section) if parsed.action == "s" else None
         if parsed.action == "s":
-            await _answer_panel_callback(bot, query, section.label if section else _owner_panel.SECTION_UNAVAILABLE)
+            toast = (
+                _owner_panel.section_label(section, language_code)
+                if section
+                else _owner_panel.tr("section_unavailable", language_code)
+            )
+            await _answer_panel_callback(bot, query, toast)
         else:
-            await _answer_panel_callback(bot, query, "Refreshed" if parsed.action == "p" else None)
+            refreshed = _owner_panel.tr("refreshed", language_code) if parsed.action == "p" else None
+            await _answer_panel_callback(bot, query, refreshed)
         if section is not None:
             view = await _render_panel_section(section, state)
-            fallback = _owner_panel.unavailable_view(chat_id, state.ctx.chat_label)
+            fallback = _owner_panel.unavailable_view(chat_id, state.ctx.chat_label, language_code)
     if view is None:
         view = _owner_panel.render_main(state.ctx, entry, _owner_panel.sections(), enabled, notice=notice)
     action_name = f"s:{parsed.section}" if parsed.action == "s" else parsed.action
