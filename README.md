@@ -127,7 +127,7 @@ Enabling dossiers sends private chat text to the configured model provider; hist
 
 The first layer is implemented: opt-in [contact dossiers and an owner persona](docs/DOSSIERS.md) build editable, evidence-backed context from history. Contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover, are planned. Drafts and automatic replies are requirements, not runtime capabilities yet.
 
-See the [roadmap](docs/ROADMAP.md) and [assistant design](docs/ASSISTANT.md). This project complements Nous Research's [official reply-drafting plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/telegram-business); it is a separate community integration.
+See the [roadmap](docs/ROADMAP.md) and [assistant design](docs/ASSISTANT.md).
 
 ## Requirements
 
