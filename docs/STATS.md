@@ -25,7 +25,23 @@ Without `--contact` or `--chat`, the command prints a table of contacts with act
 | `--tz` | IANA time zone for dates, day boundaries, and active days. Default: `HERMES_TELEGRAM_BUSINESS_TIMEZONE`, otherwise `UTC`. |
 | `--session-gap` | Silence that starts a new session. A whole number with `s`, `m`, `h`, `d`, or `w`, such as `90m` or `1d`. Default: `6h`. |
 | `--limit` | Contacts shown in the table, from 1 to 5000. Default: 20. Ignored for one contact. |
+| `--overdue-after` | Optional explicit overdue threshold for the latest retained incoming turn, such as `24h`. Without it no overdue judgment is made. |
 | `--format` | `text` or `json`. Default: `text`. |
+
+## Owner private bot DM
+
+Start the bot, open its private DM, and send:
+
+```text
+/business_stats --connection business-123 --contact @alice --since 30d
+/business_stats --connection business-123 --overdue-after 24h
+```
+
+Every request requires the exact `--connection` (available from the local CLI overview). This avoids guessing which Business account owns a contact. The namespaced command avoids Hermes's global `/stats`. The same parser, contact resolver, and report serve CLI and DM; the DM caps the overview at 50 contacts and output at eight chunks of 3500 ASCII characters. Larger reports ask you to narrow the query or use the CLI. JSON remains available with `--format json`.
+
+Before any contact lookup, error details, or overview, the bot makes a fresh Bot API `getBusinessConnection` request for exactly that connection. It requires an enabled connection, the API's non-bot owner matching the DM sender, and `user_chat_id` matching that owner's private DM. History's owner cache, mode-store owner maps, and CLI `--owner` never grant access. An API failure or missing identity fails closed. The CLI remains an independent local read with no API calls.
+
+The native PTB handler consumes reserved commands before history and Hermes core, including rejected peer, group, Business-chat, bot, forwarded, inline-bot, and edited attempts. It never posts stats as a Business reply. Invalid syntax or unverified requests are silently consumed; use the explicit syntax above and check gateway logs for owner-verification failures. A verified owner's history errors are returned only to that DM. A delivery permission failure logs that the owner must start/unblock the bot and retry; ambiguous sends are not retried automatically. Duplicate command deliveries are suppressed in memory for 24 hours. This native handler is the wired runtime path; the synchronous gateway hook does not independently serve stats. Dict fixtures exercise the same boundary, rather than implying another gateway route.
 
 ## Example (synthetic)
 
@@ -45,6 +61,9 @@ Alice Example (@alice) connection=business-123 chat=991
   latest 2026-10-17 21:04 received; last sent 2026-10-17 19:30
   last message: received 2026-10-17 21:04, no observed reply after it
   sessions 4 (gap 6h): started by contact 2, by owner 2; ended on received 2
+  turns: received 4, sent 3; unanswered incoming 3 by session [0, 1, 1, 1]
+  response time (last preceding to first responding message): owner median 1800s (1 sample), contact median 3120s (2 samples)
+  incoming: session-ended 2, unknown-interrupted 1, range-ended 0, answered after range 0; latest pending false
   deletions 4: unexplained 1 (received 1, sent 0), likely correction 1, likely duplicate 1, pending 1
   missing history: retained from 2026-10-03 (range is partial); 1 deletion of a message not in history; 1 message known only from an edit
   deletion details: hermes telegram-business history deletions --connection business-123 --chat 991 --status unexplained
@@ -58,12 +77,13 @@ hermes telegram-business stats --since 2026-10-01 --until 2026-10-18 --tz Europe
 
 ```text
 range 2026-10-01..2026-10-18 Europe/Moscow, by Telegram send time; text messages only
-latest            last      msgs  recv  sent  unk  days  sess  del  unexpl  partial  connection    chat  contact
-2026-10-18 09:15  sent         2     1     1    0     1     1    0       0  yes      business-123  992   Bob Builder (@bob)
-2026-10-17 21:04  received     9     5     3    1     4     4    4       1  yes      business-123  991   Alice Example (@alice)
--                 -            0     0     0    0     0     0    1       0  no       business-456  994   Carol
+latest            last      msgs  recv  sent  unk  days  sess  rturn  sturn  owner_s  owner_n  contact_s  contact_n  unans  ended  pending  overdue  del  unexpl  partial  connection    chat  contact
+2026-10-18 09:15  sent         2     1     1    0     1     1      1      1      900        1          -          0      0      0       no        -    0       0  yes      business-123  992   Bob Builder (@bob)
+2026-10-17 21:04  received     9     5     3    1     4     4      4      3     1800        1       3120          2      3      2       no        -    4       1  yes      business-123  991   Alice Example (@alice)
+-                 -            0     0     0    0     0     0      0      0        -        0          -          0      0      0       no        -    1       0  no       business-456  994   Carol
 shown 3 of 4 contacts; not shown: 1 with no activity in range
 missing history in shown contacts: 1 deletion of a message not in history; 1 message known only from an edit; use --contact for details
+response time: median seconds, last preceding to first responding message in same session; owner_n/contact_n are sample counts; overdue threshold not set; observed text only
 deletion details: hermes telegram-business history deletions --status unexplained
 ```
 
@@ -88,7 +108,8 @@ hermes telegram-business stats --contact @alice --since 2026-10-01 --until 2026-
     "time_basis": "telegram_send_time",
     "deletion_time_basis": "deletion_observed_time",
     "content": "text_messages_only",
-    "session_gap_seconds": 21600
+    "session_gap_seconds": 21600,
+    "overdue_after_seconds": null
   },
   "contacts": [
     {
@@ -107,6 +128,34 @@ hermes telegram-business stats --contact @alice --since 2026-10-01 --until 2026-
         "received_at": "2026-10-17T21:04:00+03:00",
         "sent_at": "2026-10-17T19:30:00+03:00",
         "observed_reply": "none"
+      },
+      "turns": {
+        "received": 4,
+        "sent": 3,
+        "unanswered_incoming": 3,
+        "unanswered_incoming_by_session": [
+          0,
+          1,
+          1,
+          1
+        ],
+        "session_ended_incoming": 2,
+        "unknown_interrupted_incoming": 1,
+        "range_ended_incoming": 0,
+        "answered_after_range": 0,
+        "pending_latest_incoming": false,
+        "overdue_latest_incoming": null
+      },
+      "response_time": {
+        "basis": "last_preceding_to_first_responding_message",
+        "owner": {
+          "median_elapsed_seconds": 1800.0,
+          "samples": 1
+        },
+        "contact": {
+          "median_elapsed_seconds": 3120.0,
+          "samples": 2
+        }
       },
       "deletions": {
         "total": 4,
@@ -146,6 +195,10 @@ hermes telegram-business stats --contact @alice --since 2026-10-01 --until 2026-
 - **Active days.** The number of distinct calendar dates in `--tz` with at least one counted message. Also shown for received and for sent. Unknown-direction messages count in the total only.
 - **Latest activity.** The latest counted message and its side, plus the latest received and the latest sent message.
 - **Last message.** When the latest counted message is received, a `last message:` line follows. "no observed reply after it" means history has no sent message after it. "reply observed after the range" means a sent message came after it, but after `--until`. This is an observation, not a guess about intent: a reply by voice, by phone, or outside Telegram is not in history.
+- **Turns.** Consecutive counted messages of the same known side inside one session form a turn. Unknown-direction messages break adjacency and form no turn. A gap longer than the session threshold also breaks adjacency. Equal timestamps use numeric message IDs as the tie-breaker. Range boundaries cut turns, like sessions.
+- **Response time.** Only adjacent opposite-side turns inside the range and the same session produce a sample. Elapsed seconds run from the **last message of the preceding turn to the first message of the responding turn**. The median and sample count are reported separately for owner and contact; JSON uses `null` when there are no samples. Zero-second tied samples are valid. No response is inferred across unknown direction, a session gap, or a range boundary. Overview `owner_s` / `contact_s` contain median seconds and `owner_n` / `contact_n` contain sample counts; `rturn` / `sturn` count contact / owner turns.
+- **Unanswered incoming turns.** These are incoming turns with no adjacent observed owner turn in their session. `unanswered_incoming_by_session` lists counts in chronological session order, including zeros. `session_ended_incoming` has a later retained message beyond the session gap; `unknown_interrupted_incoming` meets an unknown-direction barrier. `range_ended_incoming` meets a later same-side retained message outside the range. `answered_after_range` has an adjacent retained owner response outside the range, within the gap; it is excluded from unanswered counts and response-time samples. `pending_latest_incoming` identifies the final retained incoming turn when its final message is also in range; it stays pending observationally regardless of its age, separately from older session endings. These categories concern retained text, not intent. The overview shows `unans`, `ended`, and `pending`.
+- **Explicit overdue threshold.** Only `--overdue-after` enables `overdue_latest_incoming`; otherwise its JSON value is `null` and the overview prints `-`. With a threshold it is true only for the latest retained pending incoming turn whose last-message age is at least that threshold. Historical range endings and any later retained message prevent a pending/overdue classification, including a later outbound reply after a session gap. Quiet periods alone never assign intent. Phone, voice/media, and unretained/outside-range exchanges can change the real situation.
 - **Sessions.** Counted messages in the range are sorted by send time, then by message ID. A new session starts when the gap since the previous message is longer than `--session-gap` (default 6 hours). A gap exactly equal to it stays in the same session. Unknown-direction messages take part in session boundaries. The report gives the number of sessions, who started them (contact, owner, and unknown when above 0), and how many ended on a received message. Only messages inside the range are used, so a session that crosses a range boundary is cut at that boundary.
 
 ## Missing history
@@ -238,6 +291,14 @@ Each contact object has:
 
 Timestamps are ISO 8601 in `--tz`, with the offset. The output is ASCII; other characters are escaped. Errors are a plain `error: ...` line with exit code 1, also with `--format json`.
 
+The schema remains version 1 with additive `turns`, `response_time`, and range `overdue_after_seconds` fields; existing fields keep their meanings. Consumers must allow additional keys. `overdue_after_seconds` is `null` when omitted. All reports contain these keys:
+
+| Block | Added keys |
+|---|---|
+| `turns` | `received`, `sent`, `unanswered_incoming`, `unanswered_incoming_by_session`, `session_ended_incoming`, `unknown_interrupted_incoming`, `range_ended_incoming`, `answered_after_range`, `pending_latest_incoming`, `overdue_latest_incoming` |
+| `response_time` | `basis` = last preceding to first responding message; `owner` and `contact` each contain `median_elapsed_seconds`, `samples` |
+| `range` | `overdue_after_seconds` |
+
 ## Storage stats
 
 `hermes telegram-business history stats` is a different command and is unchanged. It shows storage stats: records, bytes, and settings. `hermes telegram-business stats` shows correspondence stats per contact.
@@ -246,13 +307,16 @@ Timestamps are ISO 8601 in `--tz`, with the offset. The output is ASCII; other c
 
 - The report never prints message text, in text or JSON.
 - Contact names are untrusted. Text output escapes control characters and bidirectional marks in them.
-- No LLM and no network calls. The report is computed live, and nothing new is stored.
+- No LLM. The local CLI report makes no network calls and stores nothing new; the owner DM makes the explicit live ownership lookup and private Bot API sends described above.
 - The command is read-only. It does not rebuild the contact catalog, repair files, or classify pending deletions. A pending deletion stays pending until the gateway or `history maintain` classifies it.
 - Like the other history read commands, it fails closed. A stale or damaged catalog, a torn final line, or a missing lock is an error: the command prints `error: ...`, exits 1, and prints no partial report. Catalog and tail errors name the command that fixes them.
 
-## Not in this version
+## Notification slice not implemented
 
-- Response-time and turn metrics.
-- Opt-in owner notifications for unexplained deletions and overdue incoming turns.
+Opt-in owner notifications for unexplained deletions and overdue incoming turns remain unfinished. They are OFF because there is no notification policy store, CLI configuration, evaluator, scheduler, or delivery path. A stats `--overdue-after` report never enables alerts. There is no executable owner digest example because no digest implementation is delivered.
+
+The verified native-handler and unload lifecycle interfaces are available. The remaining blocker is bounded implementation and safety verification, not an absent Hermes API. Completing this separate slice requires explicit per-owner/connection/chat policies (types, overdue delay, timezone/quiet hours, immediate/digest), a canonical-source baseline that prevents enable-time floods, atomic private policy and durable delivery claims across workers/restarts, revalidation of pruning/classification/replies and fresh owner destination before sends, bounded body-free digests/source refs, uncertain-send status without automatic retry, periodic gateway evaluation without JobQueue, clean unload, DST/quiet-hour and permission/error-isolation integration tests. None of those guarantees is approximated by a placeholder here. No notifications or notification configuration should be advertised until that complete slice is reviewed.
+
+## Not in this version
 - Counting voice notes, video notes, and media. This needs a metadata-only capture change in history.
-- An in-chat `/stats` command.
+- A global `/stats` alias; use `/business_stats --connection ...` in the owner DM.

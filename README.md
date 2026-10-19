@@ -85,13 +85,15 @@ Canonical storage is profile-local JSONL with a rebuildable contact catalog. Cap
 
 ## Correspondence stats
 
-`stats` counts, per contact, text messages received and sent, active days, conversation sessions, latest activity, and deletions over retained history:
+`stats` counts, per contact, text messages, sessions and turns, median owner/contact response times with sample counts, latest activity, and deletions over retained history:
 
 ```bash
 hermes telegram-business stats --since 30d
 hermes telegram-business stats --contact @alice --since 2026-10-01 --tz Europe/Moscow
 hermes telegram-business stats --contact @alice --format json
 ```
+
+Owners can also start the bot and send `/business_stats --connection business-123 --contact @alice` in their private bot DM. Every request freshly verifies the exact enabled Business connection through the Bot API before resolving contacts; stats are never posted to the monitored Business chat. `--overdue-after 24h` explicitly classifies the latest retained pending incoming turn in reports and does not enable notifications. Opt-in owner notifications remain unimplemented; the [remaining safety work](docs/STATS.md#notification-slice-not-implemented) is documented.
 
 Messages are placed by Telegram send time. Only text messages are counted. The report needs no LLM, stores nothing new, and never prints message text. [Counting rules, options, and a synthetic example](docs/STATS.md).
 
@@ -127,7 +129,7 @@ Telegram Business voice/video notes can originate from users outside the ordinar
 HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH=1
 ```
 
-The plugin registers native Telegram handlers before the ordinary Hermes media handler. Only Business voice/video/audio candidates are claimed, including attachments rejected by the audio limits or speech probe. Unrelated messages continue through Hermes normally. The bypass above applies only to those Business media candidates; it does not authorize ordinary bot messages.
+The plugin registers native Telegram handlers before the ordinary Hermes media handler. Business voice/video/audio candidates are claimed, including attachments rejected by the audio limits or speech probe; reserved `/business_stats` commands are consumed by the owner-DM control boundary. Unrelated messages continue through Hermes normally. The bypass above applies only to those Business media candidates; it does not authorize ordinary bot messages.
 
 History has its own explicit enable switch and records eligible Business text updates independently of the ordinary DM allowlist. Telegram's selected Business-chat scope and the optional history filters determine what is captured.
 

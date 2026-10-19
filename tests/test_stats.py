@@ -57,6 +57,9 @@ Alice Example (@alice) connection=business-123 chat=991
   latest 2026-10-17 21:04 received; last sent 2026-10-17 19:30
   last message: received 2026-10-17 21:04, no observed reply after it
   sessions 4 (gap 6h): started by contact 2, by owner 2; ended on received 2
+  turns: received 4, sent 3; unanswered incoming 3 by session [0, 1, 1, 1]
+  response time (last preceding to first responding message): owner median 1800s (1 sample), contact median 3120s (2 samples)
+  incoming: session-ended 2, unknown-interrupted 1, range-ended 0, answered after range 0; latest pending false
   deletions 4: unexplained 1 (received 1, sent 0), likely correction 1, likely duplicate 1, pending 1
   missing history: retained from 2026-10-03 (range is partial); 1 deletion of a message not in history; 1 message known only from an edit
   deletion details: hermes telegram-business history deletions --connection business-123 --chat 991 --status unexplained
@@ -64,20 +67,22 @@ Alice Example (@alice) connection=business-123 chat=991
 
 OVERVIEW_MOSCOW = """
 range 2026-10-01..2026-10-18 Europe/Moscow, by Telegram send time; text messages only
-latest            last      msgs  recv  sent  unk  days  sess  del  unexpl  partial  connection    chat  contact
-2026-10-18 09:15  sent         2     1     1    0     1     1    0       0  yes      business-123  992   Bob Builder (@bob)
-2026-10-17 21:04  received     9     5     3    1     4     4    4       1  yes      business-123  991   Alice Example (@alice)
--                 -            0     0     0    0     0     0    1       0  no       business-456  994   Carol
+latest            last      msgs  recv  sent  unk  days  sess  rturn  sturn  owner_s  owner_n  contact_s  contact_n  unans  ended  pending  overdue  del  unexpl  partial  connection    chat  contact
+2026-10-18 09:15  sent         2     1     1    0     1     1      1      1      900        1          -          0      0      0       no        -    0       0  yes      business-123  992   Bob Builder (@bob)
+2026-10-17 21:04  received     9     5     3    1     4     4      4      3     1800        1       3120          2      3      2       no        -    4       1  yes      business-123  991   Alice Example (@alice)
+-                 -            0     0     0    0     0     0      0      0        -        0          -          0      0      0       no        -    1       0  no       business-456  994   Carol
 shown 3 of 4 contacts; not shown: 1 with no activity in range
 missing history in shown contacts: 1 deletion of a message not in history; 1 message known only from an edit; use --contact for details
+response time: median seconds, last preceding to first responding message in same session; owner_n/contact_n are sample counts; overdue threshold not set; observed text only
 deletion details: hermes telegram-business history deletions --status unexplained
 """.strip("\n")
 
 OVERVIEW_MOSCOW_LIMIT_1 = """
 range 2026-10-01..2026-10-18 Europe/Moscow, by Telegram send time; text messages only
-latest            last  msgs  recv  sent  unk  days  sess  del  unexpl  partial  connection    chat  contact
-2026-10-18 09:15  sent     2     1     1    0     1     1    0       0  yes      business-123  992   Bob Builder (@bob)
+latest            last  msgs  recv  sent  unk  days  sess  rturn  sturn  owner_s  owner_n  contact_s  contact_n  unans  ended  pending  overdue  del  unexpl  partial  connection    chat  contact
+2026-10-18 09:15  sent     2     1     1    0     1     1      1      1      900        1          -          0      0      0       no        -    0       0  yes      business-123  992   Bob Builder (@bob)
 shown 1 of 4 contacts; not shown: 2 over --limit 1, 1 with no activity in range
+response time: median seconds, last preceding to first responding message in same session; owner_n/contact_n are sample counts; overdue threshold not set; observed text only
 """.strip("\n")
 
 
@@ -398,6 +403,12 @@ def test_worked_example_utc(plugin):
     expected[4] = "  latest 2026-10-18 21:00 received; last sent 2026-10-17 16:30"
     expected[5] = "  last message: received 2026-10-18 21:00, no observed reply after it"
     expected[6] = "  sessions 5 (gap 6h): started by contact 3, by owner 2; ended on received 3"
+    expected[7:10] = [
+        "  turns: received 5, sent 3; unanswered incoming 4 by session [0, 1, 1, 1, 1]",
+        "  response time (last preceding to first responding message): owner median 1800s (1 sample), "
+        "contact median 3120s (2 samples)",
+        "  incoming: session-ended 2, unknown-interrupted 1, range-ended 0, answered after range 0; latest pending true",
+    ]
     assert exit_code == 0
     assert output.splitlines() == expected
 
@@ -419,6 +430,7 @@ def test_worked_example_json(plugin):
         "deletion_time_basis": "deletion_observed_time",
         "content": "text_messages_only",
         "session_gap_seconds": 21600,
+        "overdue_after_seconds": None,
     }
     assert document["overview"] is None
     [alice] = document["contacts"]
@@ -564,7 +576,7 @@ def test_docs_cover_options_keys_and_commands(plugin):
 def test_json_key_order(plugin):
     _overview_fixture(plugin)
     top = ["schema_version", "report", "mode", "generated_at", "range", "contacts", "overview"]
-    range_keys = ["since", "until", "timezone", "time_basis", "deletion_time_basis", "content", "session_gap_seconds"]
+    range_keys = ["since", "until", "timezone", "time_basis", "deletion_time_basis", "content", "session_gap_seconds", "overdue_after_seconds"]
     contact_keys = [
         "business_connection_id",
         "chat_id",
@@ -576,6 +588,8 @@ def test_json_key_order(plugin):
         "active_days",
         "latest",
         "sessions",
+        "turns",
+        "response_time",
         "deletions",
         "missing_history",
     ]
@@ -1197,7 +1211,7 @@ def test_overview_range_before_retained_history(plugin):
     assert exit_code == 0
     lines = output.splitlines()
     assert lines[2].split()[-6:] == ["yes", "business-123", "991", "Alice", "Example", "(@alice)"]
-    assert lines[3:] == [
+    assert lines[3:-1] == [
         "shown 1 of 3 contacts; not shown: 2 with no activity in range "
         + "(range is partial for 1: retained history starts after --since)",
     ]
@@ -1207,7 +1221,7 @@ def test_overview_range_before_retained_history(plugin):
     # Without --since the range covers all retained history, so nothing is partial.
     exit_code, output = _stats(plugin, "--until", "2026-08-31")
     assert exit_code == 0
-    assert output.splitlines()[-1] == "shown 1 of 3 contacts; not shown: 2 with no activity in range"
+    assert output.splitlines()[-2] == "shown 1 of 3 contacts; not shown: 2 with no activity in range"
     assert _stats_json(plugin, "--until", "2026-08-31")["overview"]["not_shown_no_activity_partial"] == 0
     assert "SECRET-" not in output
 
@@ -1748,13 +1762,13 @@ def test_unknown_latest_line(plugin):
     exit_code, output = _stats(plugin)
     assert exit_code == 0
     header, row = output.splitlines()[1:3]
-    assert header == (
-        "latest            last     msgs  recv  sent  unk  days  sess  del  unexpl  partial  connection    chat  contact"
-    )
-    assert row == (
-        "2026-10-18 09:00  unknown     1     0     0    1     1     1    0       0  no       business-123  991   "
-        "Alice Example (@alice)"
-    )
+    assert header.split() == [
+        "latest", "last", "msgs", "recv", "sent", "unk", "days", "sess", "rturn", "sturn",
+        "owner_s", "owner_n", "contact_s", "contact_n", "unans", "ended", "pending", "overdue",
+        "del", "unexpl", "partial", "connection", "chat", "contact",
+    ]
+    assert row.split()[:8] == ["2026-10-18", "09:00", "unknown", "1", "0", "0", "1", "1"]
+    assert row.endswith("business-123  991   Alice Example (@alice)")
 
 
 # --- Overview --------------------------------------------------------------------
@@ -1803,10 +1817,10 @@ def test_overview_sort_and_activity(plugin):
     exit_code, output = _stats(plugin, "--since", "2026-10-05")
     assert exit_code == 0
     lines = output.splitlines()
-    assert len(lines) == 1 + 1 + 7 + 2
+    assert len(lines) == 1 + 1 + 7 + 3
     assert [line.rsplit("  ", 1)[-1] for line in lines[2:9]] == [name for _, _, name in expected]
     assert "ddd" not in output
-    assert lines[-2:] == [
+    assert lines[-3:-1] == [
         "shown 7 of 8 contacts; not shown: 1 with no activity in range",
         # ddd's only deletion is of a message not in history: not a row, but still reported.
         "missing history in contacts with no activity in range: 1 deletion of a message not in history; "
@@ -1832,8 +1846,8 @@ def test_overview_default_limit_20(plugin):
 
     assert exit_code == 0
     lines = output.splitlines()
-    assert len(lines) == 1 + 1 + 20 + 1
-    assert lines[-1] == "shown 20 of 21 contacts; not shown: 1 over --limit 20"
+    assert len(lines) == 1 + 1 + 20 + 2
+    assert lines[-2] == "shown 20 of 21 contacts; not shown: 1 over --limit 20"
     assert "user2001" not in output
     assert "user2021" in lines[2]
 
@@ -1867,11 +1881,11 @@ def test_same_chat_two_connections(plugin):
     exit_code, output = _stats(plugin, "--connection", "business-456")
     assert exit_code == 0
     lines = output.splitlines()
-    assert len(lines) == 5
+    assert len(lines) == 6
     assert lines[2].endswith("Alice Example (@alice2)")
     assert lines[3] == "shown 1 of 1 contacts"
     assert (
-        lines[4]
+        lines[5]
         == "deletion details: hermes telegram-business history deletions --connection business-456 --status unexplained"
     )
 

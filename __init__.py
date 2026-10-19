@@ -28,6 +28,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Iterable, Optional, cast
 
+from . import dossier_support as _dossier_support
+from . import history_support as _history_support
+from . import transcription_modes as _transcription_modes
+from . import owner_stats as _owner_stats
+
 try:
     from hermes_constants import get_hermes_home
 except ModuleNotFoundError as exc:
@@ -72,11 +77,6 @@ else:
         )
         if exc_type is not None
     )
-
-
-from . import dossier_support as _dossier_support
-from . import history_support as _history_support
-from . import transcription_modes as _transcription_modes
 
 
 logger = logging.getLogger(__name__)
@@ -411,6 +411,12 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
     from telegram.ext import ApplicationHandlerStop, BaseHandler
 
     async def on_business_update(update: Any, context: Any) -> None:
+        if _owner_stats.command_message(update) is not None:
+            try:
+                await _owner_stats.handle_update(update, bot=context.bot, mark_seen=_mark_identity_seen)
+            except Exception as exc:  # noqa: BLE001 - reserved commands never reach core
+                logger.warning("%s: owner stats failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+            raise ApplicationHandlerStop
         # Owner `/transcribe` commands are claimed before history capture, the
         # media filter, and the DM allowlist: Business ownership is the auth.
         try:
@@ -440,7 +446,7 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
 
     class BusinessHandler(BaseHandler):
         def check_update(self, update: Any) -> bool:
-            return any(
+            return _owner_stats.command_message(update) is not None or any(
                 getattr(update, attribute, None) is not None
                 for attribute in ("business_message", "edited_business_message", "deleted_business_messages")
             )

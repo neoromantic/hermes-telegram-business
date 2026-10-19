@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+from statistics import median
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
@@ -47,6 +48,16 @@ _OVERVIEW_COLUMNS = (
     "unk",
     "days",
     "sess",
+    "rturn",
+    "sturn",
+    "owner_s",
+    "owner_n",
+    "contact_s",
+    "contact_n",
+    "unans",
+    "ended",
+    "pending",
+    "overdue",
     "del",
     "unexpl",
     "partial",
@@ -65,6 +76,7 @@ class StatsWindow:
     tz_label: str
     session_gap: timedelta
     now: datetime
+    overdue_after: timedelta | None = None
 
     def contains(self, at: datetime) -> bool:
         return (self.since is None or at >= self.since) and (self.until is None or at <= self.until)
@@ -202,6 +214,21 @@ class Sessions:
 
 
 @dataclass(frozen=True, slots=True)
+class TurnMetrics:
+    received: int = 0
+    sent: int = 0
+    owner_seconds: tuple[float, ...] = ()
+    contact_seconds: tuple[float, ...] = ()
+    unanswered_by_session: tuple[int, ...] = ()
+    session_ended_incoming: int = 0
+    unknown_interrupted_incoming: int = 0
+    range_ended_incoming: int = 0
+    answered_after_range: int = 0
+    pending_latest_incoming: bool = False
+    overdue_latest_incoming: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Deletions:
     total: int = 0
     unexplained: SideCounts = field(default_factory=SideCounts)
@@ -232,6 +259,7 @@ class ContactStats:
     active_days: ActiveDays
     latest: Latest
     sessions: Sessions
+    turns: TurnMetrics
     deletions: Deletions
     missing: MissingHistory
 
@@ -371,7 +399,12 @@ def build_window(args: argparse.Namespace, *, now: datetime, environ: Mapping[st
         raise ValueError("--until must be greater than or equal to --since")
     raw_gap = getattr(args, "session_gap", None)
     session_gap = parse_duration(DEFAULT_SESSION_GAP if raw_gap is None else raw_gap, option_name="--session-gap")
-    return StatsWindow(since=since, until=until, tz=tz, tz_label=tz_label, session_gap=session_gap, now=now)
+    overdue_raw = getattr(args, "overdue_after", None)
+    overdue_after = None if overdue_raw is None else parse_duration(overdue_raw, option_name="--overdue-after")
+    return StatsWindow(
+        since=since, until=until, tz=tz, tz_label=tz_label, session_gap=session_gap, now=now,
+        overdue_after=overdue_after,
+    )
 
 
 def _scan(entry: dict[str, Any], records: Iterable[dict[str, Any]]) -> ChatScan:
@@ -442,6 +475,87 @@ def _sessions(counted: list[_Message], gap: timedelta) -> Sessions:
         started_by_unknown=unknown,
         ended_on_received=ended,
     )
+
+
+def _turn_metrics(counted: list[_Message], timeline: list[_Message], window: StatsWindow) -> TurnMetrics:
+    # Build runs only inside the requested range. Unknown messages are barriers,
+    # not a third participant. The existing session definition remains unchanged.
+    runs: list[list[_Message]] = []
+    sessions: list[int] = []
+    session = -1
+    previous: _Message | None = None
+    adjacency = False
+    for message in counted:
+        if previous is None or message.at - previous.at > window.session_gap:
+            session += 1
+            adjacency = False
+        if message.side == "unknown":
+            adjacency = False
+        elif adjacency and runs[-1][-1].side == message.side:
+            runs[-1].append(message)
+        else:
+            runs.append([message])
+            sessions.append(session)
+            adjacency = True
+        previous = message
+    owner: list[float] = []
+    contact: list[float] = []
+    unanswered = [0] * (session + 1)
+    ended = interrupted = range_ended = after_range = 0
+    pending = False
+    positions = {id(message): index for index, message in enumerate(counted)}
+    retained_positions = {id(message): index for index, message in enumerate(timeline)}
+    for index, run in enumerate(runs):
+        last = run[-1]
+        position = positions[id(last)]
+        following = counted[position + 1] if position + 1 < len(counted) else None
+        paired = (
+            following is not None and following.side != "unknown" and following.side != last.side
+            and following.at - last.at <= window.session_gap
+        )
+        if paired:
+            elapsed = (following.at - last.at).total_seconds()
+            (owner if following.side == "sent" else contact).append(elapsed)
+        elif last.side == "received":
+            retained_index = retained_positions[id(last)]
+            later = timeline[retained_index + 1] if retained_index + 1 < len(timeline) else None
+            # Outside-range messages never become response-time samples. Only
+            # an adjacent owner turn inside this session is an observed answer.
+            if (following is None and later is not None and later.side == "sent"
+                    and later.at - last.at <= window.session_gap):
+                after_range += 1
+            else:
+                unanswered[sessions[index]] += 1
+                next_message = following or later
+                if next_message is not None and next_message.at - last.at > window.session_gap:
+                    ended += 1
+                elif next_message is not None and next_message.side == "unknown":
+                    interrupted += 1
+                elif next_message is None:
+                    pending = True
+                else:
+                    range_ended += 1
+    overdue = None
+    if window.overdue_after is not None:
+        overdue = bool(pending and counted and window.now - counted[-1].at >= window.overdue_after)
+    return TurnMetrics(
+        received=sum(run[0].side == "received" for run in runs),
+        sent=sum(run[0].side == "sent" for run in runs),
+        owner_seconds=tuple(owner), contact_seconds=tuple(contact),
+        unanswered_by_session=tuple(unanswered), session_ended_incoming=ended,
+        unknown_interrupted_incoming=interrupted, range_ended_incoming=range_ended,
+        answered_after_range=after_range, pending_latest_incoming=pending,
+        overdue_latest_incoming=overdue,
+    )
+
+
+def _median(values: tuple[float, ...]) -> float | None:
+    return None if not values else median(values)
+
+
+def _response_text(values: tuple[float, ...]) -> str:
+    value = _median(values)
+    return f"{value:g}s ({_plural(len(values), 'sample', 'samples')})" if value is not None else "no samples"
 
 
 def _deleted_side(message: _Message | None, tombstones: list[_Tombstone]) -> str:
@@ -560,6 +674,7 @@ def _summarize(entry: dict[str, Any], scan: ChatScan, window: StatsWindow) -> Co
         ),
         latest=latest,
         sessions=_sessions(counted, window.session_gap),
+        turns=_turn_metrics(counted, timeline, window),
         deletions=Deletions(
             total=sum(status_counts.values()),
             unexplained=SideCounts(**unexplained_sides),
@@ -735,6 +850,19 @@ def render_contact_text(stats: ContactStats, window: StatsWindow) -> list[str]:
         )
         lines.append(f"  last message: received {_local_text(stats.latest.at, tz)}, {reply}")
     lines.append(f"  {_sessions_text(stats.sessions, window.session_gap)}")
+    turns = stats.turns
+    lines.append(f"  turns: received {turns.received}, sent {turns.sent}; unanswered incoming "
+                 f"{sum(turns.unanswered_by_session)} by session {list(turns.unanswered_by_session)}")
+    lines.append(f"  response time (last preceding to first responding message): "
+                 f"owner median {_response_text(turns.owner_seconds)}, "
+                 f"contact median {_response_text(turns.contact_seconds)}")
+    lines.append(f"  incoming: session-ended {turns.session_ended_incoming}, "
+                 f"unknown-interrupted {turns.unknown_interrupted_incoming}, "
+                 f"range-ended {turns.range_ended_incoming}, answered after range {turns.answered_after_range}; "
+                 f"latest pending {str(turns.pending_latest_incoming).lower()}")
+    if window.overdue_after is not None:
+        lines.append(f"  latest overdue (threshold {_format_duration(window.overdue_after)}): "
+                     f"{str(turns.overdue_latest_incoming).lower()} (observed text only)")
     lines.append(f"  {_deletions_text(stats.deletions)}")
     lines.append(f"  {_missing_text(stats.missing, tz)}")
     if stats.deletions.unexplained.total:
@@ -752,6 +880,16 @@ def _overview_cells(stats: ContactStats, tz: tzinfo) -> tuple[str, ...]:
         str(stats.messages.unknown),
         str(stats.active_days.total),
         str(stats.sessions.total),
+        str(stats.turns.received),
+        str(stats.turns.sent),
+        "-" if not stats.turns.owner_seconds else f"{_median(stats.turns.owner_seconds):g}",
+        str(len(stats.turns.owner_seconds)),
+        "-" if not stats.turns.contact_seconds else f"{_median(stats.turns.contact_seconds):g}",
+        str(len(stats.turns.contact_seconds)),
+        str(sum(stats.turns.unanswered_by_session)),
+        str(stats.turns.session_ended_incoming),
+        "yes" if stats.turns.pending_latest_incoming else "no",
+        "-" if stats.turns.overdue_latest_incoming is None else str(stats.turns.overdue_latest_incoming).lower(),
         str(stats.deletions.total),
         str(stats.deletions.unexplained.total),
         "yes" if stats.missing.range_partial else "no",
@@ -814,6 +952,10 @@ def render_overview_text(overview: Overview, window: StatsWindow, *, connection:
     ):
         if phrases:
             lines.append(f"missing history in {label}: {'; '.join(phrases)}; use --contact for details")
+    if shown:
+        threshold = "not set" if window.overdue_after is None else _format_duration(window.overdue_after)
+        lines.append("response time: median seconds, last preceding to first responding message in same session; "
+                     f"owner_n/contact_n are sample counts; overdue threshold {threshold}; observed text only")
     if any(stats.deletions.unexplained.total for stats in shown):
         lines.append(f"deletion details: {_safe(_details_command(connection))}")
     return lines
@@ -852,6 +994,25 @@ def _contact_document(stats: ContactStats, tz: tzinfo) -> dict[str, Any]:
             "started_by_owner": stats.sessions.started_by_owner,
             "started_by_unknown": stats.sessions.started_by_unknown,
             "ended_on_received": stats.sessions.ended_on_received,
+        },
+        "turns": {
+            "received": stats.turns.received,
+            "sent": stats.turns.sent,
+            "unanswered_incoming": sum(stats.turns.unanswered_by_session),
+            "unanswered_incoming_by_session": list(stats.turns.unanswered_by_session),
+            "session_ended_incoming": stats.turns.session_ended_incoming,
+            "unknown_interrupted_incoming": stats.turns.unknown_interrupted_incoming,
+            "range_ended_incoming": stats.turns.range_ended_incoming,
+            "answered_after_range": stats.turns.answered_after_range,
+            "pending_latest_incoming": stats.turns.pending_latest_incoming,
+            "overdue_latest_incoming": stats.turns.overdue_latest_incoming,
+        },
+        "response_time": {
+            "basis": "last_preceding_to_first_responding_message",
+            "owner": {"median_elapsed_seconds": _median(stats.turns.owner_seconds),
+                      "samples": len(stats.turns.owner_seconds)},
+            "contact": {"median_elapsed_seconds": _median(stats.turns.contact_seconds),
+                        "samples": len(stats.turns.contact_seconds)},
         },
         "deletions": {
             "total": stats.deletions.total,
@@ -899,6 +1060,7 @@ def report_document(
             "deletion_time_basis": "deletion_observed_time",
             "content": "text_messages_only",
             "session_gap_seconds": window.session_gap // timedelta(seconds=1),
+            "overdue_after_seconds": None if window.overdue_after is None else window.overdue_after.total_seconds(),
         },
         "contacts": [_contact_document(stats, tz) for stats in contacts],
         "overview": None
@@ -971,6 +1133,7 @@ def add_cli_parser(subs: Any) -> None:
         default=DEFAULT_OVERVIEW_LIMIT,
         help="Contacts shown in the overview (default: 20)",
     )
+    parser.add_argument("--overdue-after", help="Explicit threshold for the latest pending incoming turn, e.g. 24h")
     parser.add_argument("--format", choices=["text", "json"], default="text")
     parser.set_defaults(_history_action=CLI_ACTION)
 

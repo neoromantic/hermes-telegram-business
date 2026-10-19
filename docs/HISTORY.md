@@ -49,7 +49,7 @@ Edits append the full updated text. Deletions append a tombstone while preservin
 | `unexplained` | No strong replacement evidence. |
 | `unclassifiable` | Original text or sender evidence was unavailable. |
 
-These are observable text-similarity categories, not judgments about a person's intent. Delayed classification runs in the gateway and recovers overdue work at startup. Notifications about deletions are planned separately.
+These are observable text-similarity categories, not judgments about a person's intent. Delayed classification runs in the gateway and recovers overdue work at startup. Notifications about deletions remain OFF and unimplemented; see the [precise remaining slice](STATS.md#notification-slice-not-implemented). Read-only [stats](STATS.md) now include turns and response times, and verified owners can request them with `/business_stats --connection ID` in their private bot DM.
 
 ## Configuration
 

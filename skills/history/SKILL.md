@@ -111,3 +111,10 @@ Routine delayed classification does not depend on `maintain`; the runtime schedu
 Automatic retention and size pruning physically remove only whole closed monthly partitions. The active month is preserved even if that leaves the configured cap short, and chats with pending unclassified deletions also keep their closed partitions until classification is durably appended. `contacts.json` is rebuilt from the retained canonical JSONL, so identities and aliases disappear once no retained partition still contains evidence for them. No record-level or right-to-erasure command ships in v1.
 
 Human-readable CLI output escapes carriage returns, tabs, ESC/control bytes, and DEL in stored text while keeping Unicode readable. JSONL export remains the raw machine-readable stream.
+
+
+### Turn metrics and owner DM
+
+Stats also report known-side turns and median elapsed response seconds with sample counts. Timing runs from the last message of the preceding turn to the first of the adjacent opposite-side turn, inside the same session and range. Unknown directions and gaps longer than the configured session threshold break adjacency. Empty samples have a null median. Unanswered incoming turns are observational and split into historical session endings, unknown interruptions, range endings, and the latest pending incoming turn. Only an explicit `--overdue-after 24h` enables overdue classification; this never enables notifications. Voice/media and unretained history can hide replies.
+
+Owners may use `/business_stats --connection ID --contact @alice --since 30d` in their private bot DM after starting the bot. Fresh API verification of that exact enabled connection scopes the resolver before any report. Never send stats to a monitored Business chat. CLI owner flags and transcription-mode mappings are not stats authorization. Notifications/digests remain unimplemented and OFF; do not claim to configure or deliver them.
