@@ -36,7 +36,7 @@ Out of scope:
 
 - **No telemetry.** The plugin sends no usage data, analytics, or crash reports anywhere.
 - Media goes to the STT backend configured in Hermes, which may be local or external. The downloaded file is deleted after processing.
-- Transcript cleanup and dossiers use the host-owned `ctx.llm` facade. The plugin has no credentials of its own. Dossiers are off until turned on in the owner panel's Dossier section or with `hermes telesec dossier enable`; the switch is stored in `$HERMES_HOME/data/telesec/dossiers/settings.json`. Until it is first set, `TELESEC_DOSSIER_ENABLE` or the Desktop `dossier_enable` setting gives the starting state.
+- Transcript cleanup and dossiers use the host-owned `ctx.llm` facade. The plugin has no credentials of its own. Dossiers are off until turned on in the owner panel's Dossier section or with `hermes telesec dossier enable`; the switch is stored in `$HERMES_HOME/data/telesec/dossiers/settings.json`. No environment variable or Desktop setting turns them on.
 - History is off until `TELESEC_HISTORY_ENABLE=1` is set. It stays on the gateway host. See [retention and removal](docs/HISTORY.md#retention-and-removal) and [dossier storage](docs/DOSSIERS.md#storage-and-privacy).
 - Logs record IDs, counts, and errors, never message text or transcripts.
 

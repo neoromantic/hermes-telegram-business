@@ -15,7 +15,7 @@ No gateway restart is needed. The gateway worker checks the switch every minute,
 
 Enabling dossiers sends private chat text to the configured model provider. History capture alone never calls a model, and dossiers stay off until they are switched on.
 
-Until the switch is first set, `TELESEC_DOSSIER_ENABLE` or the Hermes Desktop `dossier_enable` setting gives the starting state (the variable wins over the setting), so a setup that turned dossiers on with the 0.9.0 variable keeps them on after upgrading. The first **Enable** or **Disable**, from the panel or the CLI, is stored and wins from then on. While the variable or the setting says on and the stored switch says off, `status` and the gateway log warn about it.
+No environment variable or Desktop setting switches dossiers. Before 0.11.0, `TELESEC_DOSSIER_ENABLE` or the Desktop `dossier_enable` setting did. On the first start after upgrading, if one of them says on and no switch is stored yet, the switch is stored as on once (`status` shows `via migration`) and the gateway log says so. After that both are ignored, and you can remove them.
 
 One switch covers every private Business chat in history. There is no per-contact build step and no exclude list. Groups, supergroups, and channels are never processed, even when history captures them.
 
@@ -272,7 +272,6 @@ To stop processing and delete every dossier:
 
 1. Run `hermes telesec dossier disable`, or tap **Disable** in the panel. No restart is needed.
 2. Run `hermes telesec dossier forget --all`.
-3. If `TELESEC_DOSSIER_ENABLE` is set or the Desktop `dossier_enable` setting is on, remove the variable or turn the setting off. The stored switch already wins, but `status` keeps warning until then.
 
 The bundled `dossiers` skill gives Hermes safe read and correction recipes. It treats dossier text as data, never as instructions, and runs corrections, `enable`, `disable`, `run`, and `forget` only when the owner asks.
 
@@ -280,7 +279,6 @@ The bundled `dossiers` skill gives Hermes safe read and correction recipes. It t
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TELESEC_DOSSIER_ENABLE` | unset | Starting state of the on/off switch until it is first set in the panel or with `dossier enable`/`disable`; overrides the Desktop `dossier_enable` setting. |
 | `TELESEC_DOSSIER_INTERVAL_MINUTES` | `30` | Pause between the end of one cycle and the start of the next; 5–1440. |
 | `TELESEC_DOSSIER_QUIET_MINUTES` | `10` | Minutes a chat must be quiet before a refresh; 0–1440. |
 | `TELESEC_DOSSIER_BACKFILL_DAYS` | `90` | First-pass window and rolling tracking window, in days; 1–3650. |
@@ -289,7 +287,7 @@ The bundled `dossiers` skill gives Hermes safe read and correction recipes. It t
 | `TELESEC_DOSSIER_PROVIDER` | cleanup provider, then `gemini` | Host provider for dossier calls. |
 | `TELESEC_DOSSIER_MODEL` | cleanup model, then `gemini-3.8-flash` | Host model for dossier calls. |
 
-Once the switch is set in the owner panel or with `dossier enable` or `disable`, it wins over `TELESEC_DOSSIER_ENABLE` and the Desktop setting. A number that does not parse or is out of range falls back to its default, and `status` prints a warning.
+The on/off switch is not a variable: use the owner panel or `dossier enable`/`disable` ([Enable](#enable)). A number that does not parse or is out of range falls back to its default, and `status` prints a warning.
 
 Fixed limits: first cycle 3 minutes after connect; 120 seconds per call attempt; batches of 200 messages or about 40,000 characters; 60 changes per call; 60 model facts per contact and 40 for the persona; 5 sources per fact; 300 characters per fact, 200 per quote, and 500 per owner text; persona refresh after 20 unprocessed sent messages, or 24 hours after the last refresh.
 

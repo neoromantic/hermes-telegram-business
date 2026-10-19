@@ -2676,6 +2676,10 @@ def register(ctx: Any) -> None:
     if deprecated and not _deprecated_env_warned:
         logger.warning("Deprecated Telesec environment aliases (removed next release): %s", ", ".join(deprecated))
         _deprecated_env_warned = True
+    try:
+        _dossier_support.migrate_legacy_switch()
+    except Exception as exc:  # noqa: BLE001 - plugin load must stay available
+        logger.warning("%s: dossier switch migration failed (%s)", _PLUGIN_NAME, type(exc).__name__)
     _llm_facade = getattr(ctx, "llm", None)
     _dossier_support.bind_llm(_llm_facade)
     ctx.register_telegram_handler(_register_telegram_handlers)

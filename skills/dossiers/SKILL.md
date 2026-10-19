@@ -45,7 +45,7 @@ hermes telesec dossier preview --contact @alice
 - `--contact` accepts the same names as `history show` (`@username`, display name, alias). Use `--chat <id>` with optional `--connection <id>` when a name is ambiguous, and `--persona` for the owner persona.
 - `show --fact f3` follows each source back to canonical history and prints a `history show` command for the surrounding messages.
 - `preview` prints the exact JSON the next model call would send (stdout) and its metadata (stderr). It never calls the model and never writes. Pipe it to `jq .` to read it.
-- `status` reports whether dossiers are enabled (and when and how the switch was last changed), the model, worker timing, failures and the last cycle. Its `warning:` lines come first; one says when `TELESEC_DOSSIER_ENABLE` or the Desktop `dossier_enable` setting says on while the stored switch says off. Those only give the starting state until the switch is first set; after that the switch wins.
+- `status` reports whether dossiers are enabled (and when and how the switch was last changed), the model, worker timing, failures and the last cycle. Its `warning:` lines come first. The switch is stored; no environment variable or setting changes it.
 
 ## Enable And Disable
 

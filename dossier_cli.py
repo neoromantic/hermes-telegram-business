@@ -295,8 +295,6 @@ def _stale(dossier: dict[str, Any]) -> tuple[dict[str, Any], dict[str, list[dict
 
 
 def _since(settings: dict[str, Any]) -> str:
-    if settings.get("initial_source"):
-        return f" (from {settings['initial_source']} until the switch is set)"
     if not settings.get("updated_at"):
         return ""
     return f" (since {settings['updated_at']} via {settings.get('updated_via') or 'unknown'})"
@@ -368,17 +366,12 @@ def _cmd_enable(args: argparse.Namespace) -> int:
 
 def _cmd_disable(args: argparse.Namespace) -> int:
     result = _dossier.set_enabled(False, via="cli")
-    ignored = _dossier.ignored_enable_source(result)
-    # Disabling on purpose: no advice to turn dossiers back on.
-    lines = [w for w in _dossier.load_config().warnings if not (ignored and w.startswith(f"warning: {ignored} "))]
+    lines = list(_dossier.load_config().warnings)
     if result["changed"]:
         lines.append(f"Dossiers: disabled ({result['updated_at']} via cli). No more chat text is sent to the model; "
                      "a cycle already running stops before its next model call.")
     else:
         lines.append(f"Dossiers are already disabled{_since(result)}.")
-    if ignored:
-        lines.append(f"note: {ignored} still says on; the stored switch wins, but "
-                     f"{_dossier.clear_enable_hint(ignored)} to avoid confusion.")
     lines.append(f"Stored dossiers are kept; delete them with '{FORGET_ALL_COMMAND}'.")
     _emit(lines)
     return 0

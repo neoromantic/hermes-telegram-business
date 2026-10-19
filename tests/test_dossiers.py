@@ -373,8 +373,7 @@ def test_set_enabled_api_validates_and_records_time_and_source(
 ) -> None:
     plugin = dossier_history
     ds = dossier_module(plugin)
-    assert ds.load_settings() == {"schema_version": 1, "enabled": False, "updated_at": None, "updated_via": None,
-                                 "initial_source": None}
+    assert ds.load_settings() == {"schema_version": 1, "enabled": False, "updated_at": None, "updated_via": None}
     with pytest.raises(ValueError, match="unknown switch source"):
         ds.set_enabled(True, via="env")
     assert not ds.dossier_root().exists()
@@ -400,57 +399,42 @@ def test_set_enabled_api_validates_and_records_time_and_source(
 
 
 @pytest.mark.asyncio
-async def test_env_and_desktop_setting_seed_the_switch_until_it_is_set(
-    dossier_history: ModuleType, dossier_env: Callable[..., None], monkeypatch: pytest.MonkeyPatch
+async def test_old_env_or_desktop_setting_moves_into_the_switch_once(
+    dossier_history: ModuleType, dossier_env: Callable[..., None], monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     plugin = dossier_history
     ds = dossier_module(plugin)
     await two_sided(plugin, 5560, "SEED")
     settings_file = ds.dossier_root() / "settings.json"
     settings_file.unlink(missing_ok=True)
-    dossier_env(ENABLE=None)
-    assert (ds.load_config().enabled, ds.load_settings()["initial_source"]) == (False, None)
-
+    dossier_env(ENABLE="1")
     monkeypatch.setattr(ds._history, "get_config", {"dossier_enable": True}.get)  # Desktop setting
     cfg = ds.load_config()
-    assert (cfg.enabled, cfg.warnings) == (True, ())
-    _code, out, _err = cli(plugin, "dossier", "status")
-    assert "Dossiers: enabled (from the dossier_enable setting until the switch is set)" in out.splitlines()
-    dossier_env(ENABLE="0")  # the env variable overrides the Desktop setting
-    assert ds.load_config().enabled is False
-    assert ds.load_settings()["initial_source"] == "TELESEC_DOSSIER_ENABLE"
-    dossier_env(ENABLE="1")
-    assert ds.load_config().enabled is True
-    assert not settings_file.exists()  # reading never writes
+    assert (cfg.enabled, cfg.warnings) == (False, ())  # neither switches dossiers
+    assert not settings_file.exists()
 
-    warning = ("warning: TELESEC_DOSSIER_ENABLE says on, but the stored switch is off and wins; to keep dossiers "
-               "off, remove TELESEC_DOSSIER_ENABLE from the profile's environment; to turn them on, run "
-               "'hermes telesec dossier enable' or use the owner panel")
-    ds.set_enabled(False, via="telegram")  # the stored switch decides once set
+    dossier_env(ENABLE="0")  # the variable beats the setting for the one-time move
+    assert ds.migrate_legacy_switch() is False and not settings_file.exists()
+    dossier_env(ENABLE=None)
+    with caplog.at_level(logging.INFO):
+        assert ds.migrate_legacy_switch(now=NOW) is True
+    assert read_settings(ds) == {"schema_version": 1, "enabled": True, "updated_at": iso(NOW),
+                                 "updated_via": "migration"}
+    assert "the dossier_enable setting was moved to the stored switch and is no longer read" in caplog.text
+    _code, out, _err = cli(plugin, "dossier", "status")
+    assert f"Dossiers: enabled (since {iso(NOW)} via migration)" in out.splitlines()
+
+    ds.set_enabled(False, via="telegram")
+    dossier_env(ENABLE="1")
+    assert ds.migrate_legacy_switch() is False  # once only: a stored switch is never overwritten
     cfg = ds.load_config()
-    assert (cfg.enabled, cfg.warnings) == (False, (warning,))
+    assert (cfg.enabled, cfg.warnings) == (False, ())
     fake = FakeLlm(quote_first)
     assert cycle(ds, fake).outcome == "disabled"
     assert fake.calls == []
-    _code, out, _err = cli(plugin, "dossier", "status")
-    assert out.splitlines()[0] == warning
-    assert re.search(rf"^Dossiers: disabled \(since {STAMP} via telegram\)\. ", out, re.MULTILINE), out
-    dossier_env(ENABLE=None)
-    assert ds.load_config().warnings == (("warning: the dossier_enable setting says on, but the stored switch is "
-                                          "off and wins; to keep dossiers off, turn the dossier_enable setting off; "
-                                          "to turn them on, run 'hermes telesec dossier enable' or use the owner "
-                                          "panel"),)
-    _code, out, _err = cli(plugin, "dossier", "disable")  # on purpose: no advice to turn them back on
-    assert "run 'hermes telesec dossier enable'" not in out
-    assert ("note: the dossier_enable setting still says on; the stored switch wins, but turn the dossier_enable "
-            "setting off to avoid confusion.") in out.splitlines()
-    monkeypatch.setattr(ds._history, "get_config", {}.get)
-    assert ds.load_config().warnings == ()
-
-    dossier_env(ENABLE="0")
-    on = ds.set_enabled(True, via="cli")
-    assert on["changed"] is True and ds.load_config().enabled is True  # the switch also wins over an "off"
-    assert ds.load_config().warnings == ()
+    _code, out, _err = cli(plugin, "dossier", "disable")
+    assert "DOSSIER_ENABLE" not in out and "dossier_enable" not in out
 
 
 @pytest.mark.asyncio

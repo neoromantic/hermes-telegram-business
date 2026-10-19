@@ -43,11 +43,10 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Dossiers follow the stored switch (owner panel or `dossier enable|disable`). Until it is first set, the Desktop
-# setting `dossier_enable` or this variable (0.9.0's HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE is aliased to it)
-# gives the starting state; afterwards they only warn when they say on and the switch is off.
-ENABLE_ENV = "TELESEC_DOSSIER_ENABLE"
-ENABLE_SETTING = "dossier_enable"
+# Dossiers follow only the stored switch (owner panel or `dossier enable|disable`). Before 0.11.0 this variable
+# or the Desktop setting turned them on; migrate_legacy_switch() carries an "on" into the switch once.
+LEGACY_ENABLE_ENV = "TELESEC_DOSSIER_ENABLE"
+LEGACY_ENABLE_SETTING = "dossier_enable"
 ENABLE_COMMAND = "hermes telesec dossier enable"
 DISABLE_COMMAND = "hermes telesec dossier disable"
 INTERVAL_ENV = "TELESEC_DOSSIER_INTERVAL_MINUTES"
@@ -142,9 +141,6 @@ def load_config() -> DossierConfig:
     settings = load_settings()
     if settings.get("error"):
         warnings.append(f"warning: {settings['error']}")
-    ignored = ignored_enable_source(settings)
-    if ignored:
-        warnings.append(f"warning: {ignored_enable_text(ignored)}")
     return DossierConfig(
         enabled=settings["enabled"],
         interval_minutes=_env_int_bounded(INTERVAL_ENV, 30, 5, 1440, warnings),
@@ -404,52 +400,45 @@ def _default_settings() -> dict[str, Any]:
     return {"schema_version": SCHEMA_VERSION, "enabled": False, "updated_at": None, "updated_via": None}
 
 
-def initial_enable() -> tuple[bool, str | None]:
-    """The starting state before the switch is first set: (enabled, its source or None when unset).
-
-    ``TELESEC_DOSSIER_ENABLE`` overrides the Desktop setting, as for every other setting.
-    """
-    if ENABLE_ENV in os.environ:
-        return _history._truthy_env(ENABLE_ENV), ENABLE_ENV
-    value = _history.get_config(ENABLE_SETTING, None)
-    if value is None:
-        return False, None
+def _legacy_enable_source() -> str | None:
+    """The pre-0.11.0 variable or Desktop setting when it turns dossiers on, else None."""
+    if LEGACY_ENABLE_ENV in os.environ:
+        return LEGACY_ENABLE_ENV if _history._truthy_env(LEGACY_ENABLE_ENV) else None
+    value = _history.get_config(LEGACY_ENABLE_SETTING, None)
     on = value is True or (isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "on"})
-    return on, f"the {ENABLE_SETTING} setting"
+    return f"the {LEGACY_ENABLE_SETTING} setting" if on else None
 
 
-def ignored_enable_source(settings: dict[str, Any]) -> str | None:
-    """The env variable or Desktop setting that says on while a stored switch says off, else None."""
-    if settings.get("updated_via") is None or settings["enabled"]:
-        return None
-    on, source = initial_enable()
-    return source if on else None
+def migrate_legacy_switch(now: datetime | None = None) -> bool:
+    """Store "on" once when no switch is stored yet and the old variable or Desktop setting says on.
 
-
-def clear_enable_hint(source: str) -> str:
-    return f"remove {ENABLE_ENV} from the profile's environment" if source == ENABLE_ENV \
-        else f"turn the {ENABLE_SETTING} setting off"
-
-
-def ignored_enable_text(source: str) -> str:
-    """Explain an on-saying env variable or setting that the stored off switch overrides."""
-    return (f"{source} says on, but the stored switch is off and wins; to keep dossiers off, "
-            f"{clear_enable_hint(source)}; to turn them on, run '{ENABLE_COMMAND}' or use the owner panel")
+    Afterwards neither is read again. Returns True when it wrote the switch.
+    """
+    source = _legacy_enable_source()
+    if source is None or settings_path().exists():
+        return False
+    with _data_lock():
+        if settings_path().exists():
+            return False
+        _history._write_json_atomic(settings_path(), {
+            "schema_version": SCHEMA_VERSION, "enabled": True,
+            "updated_at": _iso(now or _history._utcnow()), "updated_via": "migration"})
+    logger.info("%s: dossiers stay on: %s was moved to the stored switch and is no longer read; use the owner "
+                "panel or '%s' to change it", _history.PLUGIN_NAME, source, DISABLE_COMMAND)
+    return True
 
 
 def load_settings() -> dict[str, Any]:
     """The stored switch. Never writes.
 
-    Until the switch is first set, ``initial_enable()`` gives the state ("updated_via" None,
-    "initial_source" names it). An unreadable or corrupt file reads as disabled, with "error" set
-    (surfaced as a load_config() warning); only an explicit set_enabled() replaces it.
+    Off until first set ("updated_via" None). An unreadable or corrupt file reads as disabled, with
+    "error" set (surfaced as a load_config() warning); only an explicit set_enabled() replaces it.
     """
     path = settings_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        on, source = initial_enable()
-        return {**_default_settings(), "enabled": on, "initial_source": source}
+        return _default_settings()
     except (OSError, ValueError):
         data = None
     if (not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION
@@ -458,7 +447,8 @@ def load_settings() -> dict[str, Any]:
                                                  f"'{ENABLE_COMMAND}' or 'disable' rewrites it"}
     at, via = data.get("updated_at"), data.get("updated_via")
     return {"schema_version": SCHEMA_VERSION, "enabled": data["enabled"],
-            "updated_at": at if isinstance(at, str) else None, "updated_via": via if via in SETTINGS_VIA else None}
+            "updated_at": at if isinstance(at, str) else None,
+            "updated_via": via if via in (*SETTINGS_VIA, "migration") else None}
 
 
 def set_enabled(enabled: bool, *, via: str, now: datetime | None = None) -> dict[str, Any]:
@@ -2137,9 +2127,6 @@ def ensure_worker_started() -> bool:
         if settings.get("error"):
             logger.warning("%s: dossier switch %s is unreadable or corrupt, so dossiers stay off until '%s' or the "
                            "owner panel rewrites it", _history.PLUGIN_NAME, SETTINGS_FILE, ENABLE_COMMAND)
-        ignored = ignored_enable_source(settings)
-        if ignored:
-            logger.warning("%s: %s", _history.PLUGIN_NAME, ignored_enable_text(ignored))
         return True
     except Exception as exc:  # noqa: BLE001 - dossier start must never break adapter connect
         logger.warning("%s: dossier worker start failed error=%s", _history.PLUGIN_NAME, type(exc).__name__)

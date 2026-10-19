@@ -120,7 +120,7 @@ The same report for one chat is in Telegram: tap **Manage Bot** in a Business ch
 
 ## Contact dossiers (opt-in)
 
-With history enabled, turn dossiers on from the owner panel (Manage Bot > Dossier > Enable, offered only to an owner of every Business connection the bot knows about) or with `hermes telesec dossier enable`; no restart is needed. Until you first switch them, the Desktop `dossier_enable` setting or `TELESEC_DOSSIER_ENABLE` gives the starting state. A gateway-only background worker then builds an evidence-backed dossier for every private Business contact, plus one owner writing persona, and refreshes them incrementally through the host `ctx.llm` facade. Every fact cites its source messages. You can trace, correct, pin, or remove facts, and owner edits survive refreshes.
+With history enabled, turn dossiers on from the owner panel (Manage Bot > Dossier > Enable, offered only to an owner of every Business connection the bot knows about) or with `hermes telesec dossier enable`; no restart is needed. A gateway-only background worker then builds an evidence-backed dossier for every private Business contact, plus one owner writing persona, and refreshes them incrementally through the host `ctx.llm` facade. Every fact cites its source messages. You can trace, correct, pin, or remove facts, and owner edits survive refreshes.
 
 ```bash
 hermes telesec dossier list
@@ -206,7 +206,7 @@ Removing the plugin leaves its data under `$HERMES_HOME/data/telesec/`: history,
 
 ## Configuration
 
-All plugin variables are optional. Hermes Desktop's plugin settings form exposes `history_enable`, `dossier_enable`, `cleanup_style`, `timezone`, and `agent_enable`. They are read through `ctx.get_config` under `plugins.entries.telesec.settings`; environment variables override the form. Settings are re-read when used. Restart the gateway after changing environment variables or the other settings. The dossier on/off switch in the owner panel or `hermes telesec dossier enable|disable` needs no restart, and neither does the Desktop `dossier_enable` setting while that switch is unset; once the switch is set, it wins over `dossier_enable` and `TELESEC_DOSSIER_ENABLE`, which only give the starting state.
+All plugin variables are optional. Hermes Desktop's plugin settings form exposes `history_enable`, `cleanup_style`, `timezone`, and `agent_enable`. They are read through `ctx.get_config` under `plugins.entries.telesec.settings`; environment variables override the form. Settings are re-read when used. Restart the gateway after changing environment variables or these settings. Dossiers have no variable or setting: they are switched in the owner panel or with `hermes telesec dossier enable|disable`, with no restart. On upgrade, an old `TELESEC_DOSSIER_ENABLE=1` or Desktop `dossier_enable: true` is moved into that switch once and then ignored.
 
 ```yaml
 plugins:
@@ -214,7 +214,6 @@ plugins:
     telesec:
       settings:
         history_enable: false
-        dossier_enable: false
         cleanup_style: conservative
         timezone: UTC
         agent_enable: false
@@ -240,7 +239,6 @@ See the [Hermes plugin settings API](https://hermes-agent.nousresearch.com/docs/
 | `TELESEC_AUDIO_FILE_MAX_BYTES` | `20971520` | Maximum attached-audio size; bounded to 1024–104857600 bytes. Missing or zero metadata is rejected before download. |
 | `TELESEC_AUDIO_FILE_PROBE_SECONDS` | `10` | Prefix duration extracted locally for speech probing; bounded to 1–60 seconds and capped at the configured maximum duration. |
 | `TELESEC_AUDIO_FILE_MIN_WORDS` | `3` | Minimum lexical words in the probe transcript; bounded to 1–20. Continuous-script text uses an equivalent conservative letter threshold. |
-| `TELESEC_DOSSIER_ENABLE` | unset | Starting state of the [contact dossier](docs/DOSSIERS.md#enable) switch until it is first set in the owner panel or with `dossier enable`/`disable`. |
 | `TELESEC_DOSSIER_INTERVAL_MINUTES` | `30` | Pause between dossier cycles; bounded to 5–1440. |
 | `TELESEC_DOSSIER_QUIET_MINUTES` | `10` | Minutes a chat must be quiet before a dossier refresh; bounded to 0–1440. |
 | `TELESEC_DOSSIER_BACKFILL_DAYS` | `90` | First-pass and tracking window for dossiers, in days; bounded to 1–3650. |
