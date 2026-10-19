@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -132,3 +133,26 @@ def test_old_environment_and_cli_aliases_warn_and_new_environment_wins(plugin, m
     commands["telegram-business"]["setup_fn"](parser)
     assert commands["telegram-business"]["handler_fn"](parser.parse_args(["mode", "list"])) == 0
     assert "hermes telegram-business is deprecated; use hermes telesec" in caplog.text
+
+
+def test_migration_works_without_pyyaml(plugin, tmp_path, monkeypatch):
+    # Hermes 0.22+ depends on ruamel.yaml and no longer installs PyYAML.
+    from importlib import import_module
+
+    migration = import_module(f"{plugin.__name__}.migration")
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("plugins:\n  enabled: [telesec]\n")
+
+    migration.migrate(tmp_path)
+
+    assert config_path.read_text() == "plugins:\n  enabled: [telesec]\n"
+    pytest.importorskip("ruamel.yaml")
+    old_id = "telegram-business-voice-transcriber"
+    config_path.write_text(f"# kept\nplugins:\n  enabled: [{old_id}, other]\n  entries:\n    {old_id}: {{settings: {{a: 1}}}}\n")
+
+    migration.migrate(tmp_path)
+
+    text = config_path.read_text()
+    assert text.startswith("# kept\n") and old_id not in text
+    assert yaml.safe_load(text)["plugins"] == {"enabled": ["telesec", "other"], "entries": {"telesec": {"settings": {"a": 1}}}}
