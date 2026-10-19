@@ -34,7 +34,7 @@ The [assistant design](ASSISTANT.md) explains the owner experience, modes, conte
 | [Raw-first transcripts #8](https://github.com/neoromantic/hermes-telegram-business/issues/8) | Show raw STT immediately, then edit the same caption/reply after cleanup; start with one output target. |
 | [Transcription controls #7](https://github.com/neoromantic/hermes-telegram-business/issues/7) | Implemented in the 0.9.0 branch: manual per-chat `both`, `own`, `peer`, and `off`. Automatic peer detection remains a separate investigation. |
 | [Scheduled sending #3](https://github.com/neoromantic/hermes-telegram-business/issues/3) | Recover the existing static-text send CLI; Hermes cron owns timing, with explicit targets and no ledger. |
-| [Correspondence insights #4](https://github.com/neoromantic/hermes-telegram-business/issues/4) | Inspectable counts/unanswered conversations and opt-in owner notifications for unexplained deletions. |
+| [Correspondence insights #4](https://github.com/neoromantic/hermes-telegram-business/issues/4) | First slice implemented, unreleased: the deterministic [`stats` command](STATS.md) with per-contact counts, active days, sessions, latest activity, and deletions. Remaining: response-time and turn metrics, then opt-in owner notifications for unexplained deletions and overdue incoming turns. |
 | [Voice bursts #9](https://github.com/neoromantic/hermes-telegram-business/issues/9) | Opt-in same-sender grouping with ordering and explicit boundaries; avoid delaying every single note. |
 | [Release and launch #10](https://github.com/neoromantic/hermes-telegram-business/issues/10) | Align versions, verify installation, refresh visual docs, and publish accurate release/demo material. |
 

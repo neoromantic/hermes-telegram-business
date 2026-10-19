@@ -2090,7 +2090,7 @@ def _handle_cli(args: Any) -> int:
     if getattr(args, "_mode_action", None) or command == "mode":
         return _transcription_modes.handle_mode_cli(args)
     if command is None:
-        print("Usage: hermes telegram-business <history|mode> ...")
+        print("Usage: hermes telegram-business <history|stats|mode> ...")
         return 1
     return _history_support.handle_cli(args)
 

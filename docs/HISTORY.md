@@ -63,6 +63,7 @@ These are observable text-similarity categories, not judgments about a person's 
 | `HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | Pre-delete replacement window, in seconds. |
 | `HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS` | `0` | Closed-partition retention target; `0` disables age pruning. |
 | `HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES` | `1073741824` | Total storage target before pruning old closed partitions. |
+| `HERMES_TELEGRAM_BUSINESS_TIMEZONE` | UTC | Default `--tz` for [correspondence stats](STATS.md); it does not affect capture. |
 
 Unknown chat types are excluded unless an exact chat ID or earlier canonical profile evidence establishes eligibility. No member-count requests run on capture.
 
@@ -84,6 +85,8 @@ hermes telegram-business history verify
 hermes telegram-business history verify --repair-tails
 hermes telegram-business history maintain
 ```
+
+`history stats` shows storage stats: records, bytes, and settings. For correspondence stats per contact (text messages received and sent, active days, sessions, and deletions by Telegram send time), use `hermes telegram-business stats`. See [Correspondence stats](STATS.md).
 
 Read commands do not repair canonical files. `verify --repair-tails` explicitly repairs a torn final line; invalid interior records need investigation. Startup recovery and maintenance operate on persisted history, and the catalog can be rebuilt from retained JSONL. Query results and verification diagnostics are bounded. Human-readable output escapes terminal control characters; JSONL export retains raw text.
 

@@ -8,6 +8,9 @@
 - Store modes in a private, atomically written `transcription-modes.json` that the gateway reloads on change without a restart. Entries hold no message text. An empty file reads as no modes. A corrupt or unreadable file keeps the last valid modes in the gateway, transient read errors are retried instead of cached, an in-chat `/transcribe <mode>` or `reset` never overwrites a corrupt file (a bare `/transcribe` shows the mode in effect), the gateway stops recording connection owners while it is corrupt or unreadable, and only an explicit CLI `set`/`reset --owner` backs it up and starts fresh.
 - Check the mode once before any download or STT. Skipped media is claimed silently, and decisions are logged with a reason but no content. An unknown direction under `own`/`peer` transcribes as usual. A failed owner lookup uses the owner last recorded for that Business connection, for the mode, own/peer direction, and owner `/transcribe` authorization, and otherwise transcribes, so one owner's mode never applies to another owner's chat. With `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` set, `/transcribe` stays ordinary text.
 - Share one Business owner/direction helper between transcription and history.
+- Add `hermes telegram-business stats`: deterministic per-contact text-message counts, active days, sessions, latest activity, deletions, and missing-history notes over retained history, by Telegram send time, as text or JSON. No LLM and no new stored state.
+- Add `HERMES_TELEGRAM_BUSINESS_TIMEZONE` as the default `--tz` for `stats`; `history stats` is now described as storage stats.
+- Document stats in `docs/STATS.md` and add stats recipes to the bundled `history` skill.
 
 ## 0.8.0 - 2026-10-18
 
