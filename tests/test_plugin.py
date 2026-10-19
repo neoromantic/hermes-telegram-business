@@ -248,7 +248,7 @@ def test_manifest_uses_current_fields():
     assert {key: value for key, value in manifest.items() if key != "config_schema"} == {
         "manifest_version": 2,
         "name": PLUGIN_ID,
-        "version": "0.10.1",
+        "version": "0.11.0",
         "description": (
             "Telesec — Telegram Business secretary for Hermes."
         ),
@@ -279,7 +279,7 @@ def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "telesec"
-    assert metadata["version"] == "0.10.1"
+    assert metadata["version"] == "0.11.0"
     assert metadata["description"] == (
         "Telesec — Telegram Business secretary for Hermes."
     )
