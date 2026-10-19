@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import html
 import inspect
 import json
 import logging
@@ -85,7 +84,6 @@ from . import history_support as _history_support
 from . import owner_panel as _owner_panel
 from . import settings_panel as _settings_panel
 from . import stats_panel as _stats_panel
-from . import stats_render as _stats_render
 from . import transcription_modes as _transcription_modes
 from .migration import migrate
 
@@ -2693,11 +2691,6 @@ def _stats_echo_key(message: Any, kind: str, visible_text: Any) -> tuple[str, ..
     return ("stats-echo", connection, chat_id, digest)
 
 
-def _stats_visible_text(text: str) -> str:
-    """A card's text as Telegram echoes it: the renderer's tags dropped and its entities decoded."""
-    return html.unescape(re.sub(r"<[^>]+>", "", text))
-
-
 def _expected_stats_echo(message: Any) -> str | None:
     """"card" or "notice" when ``message`` is the bot's echo of a fallback whose send returned no id."""
     if _get(message, "sender_business_bot") is None:
@@ -2812,7 +2805,7 @@ async def _handle_stats_command_update(update: Any, *, bot: Any, adapter: Any) -
         card = _stats_panel.StatsCard(_owner_panel.tr("stats.card.read_error", language_code), ok=False)
     try:
         if card.ok:
-            outcome = await _post_stats_card(bot=bot, adapter=adapter, message=payload, text=card.text)
+            outcome = await _post_stats_card(bot=bot, adapter=adapter, message=payload, card=card)
         else:
             outcome = await _post_stats_notice(bot=bot, adapter=adapter, message=payload, text=card.text)
     except Exception as exc:  # noqa: BLE001 - the owner's command must never reach history or core
@@ -2829,22 +2822,32 @@ async def _handle_stats_command_update(update: Any, *, bot: Any, adapter: Any) -
     return True
 
 
-async def _edit_stats_command(bot: Any, message: Any, **kwargs: Any) -> str:
-    """Edit the owner's `/stats` message in place: "applied", "gone" (the owner deleted it), or "failed"."""
-    edit_text = getattr(bot, "edit_message_text", None)
-    if not callable(edit_text):
+def _stats_rich_message(html_text: str) -> dict[str, Any]:
+    # Entity detection off, as for the dossier: the card holds no command or link to detect.
+    return {"html": html_text, "skip_entity_detection": True}
+
+
+async def _edit_stats_command(bot: Any, message: Any, *, rich_html: str | None = None, **kwargs: Any) -> str:
+    """Edit the owner's `/stats` message in place: "applied", "gone" (the owner deleted it), or "failed".
+
+    With ``rich_html`` the edit is a rich message (editMessageText with ``rich_message``),
+    else ``kwargs`` go to ``edit_message_text``.
+    """
+    target = {
+        "chat_id": _get(_get(message, "chat"), "id"),
+        "message_id": _get(message, "message_id"),
+        "business_connection_id": _business_connection_id(message),
+    }
+    method = getattr(bot, "edit_message_text" if rich_html is None else "do_api_request", None)
+    if not callable(method):
         return "failed"
     try:
-        outcome = _classify_caption_edit_result(
-            await _maybe_await(
-                edit_text(
-                    chat_id=_get(_get(message, "chat"), "id"),
-                    message_id=_get(message, "message_id"),
-                    business_connection_id=_business_connection_id(message),
-                    **kwargs,
-                )
-            )
-        )
+        if rich_html is None:
+            result = method(**target, **kwargs)
+        else:
+            # Lower case: Bot API methods are case-insensitive, and PTB warns about its own camelCase alias.
+            result = method("editmessagetext", api_kwargs={**target, "rich_message": _stats_rich_message(rich_html)})
+        outcome = _classify_caption_edit_result(await _maybe_await(result))
     except Exception as exc:  # noqa: BLE001 - every other failed edit falls back to a new message
         logger.info("%s: stats command edit failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         if _STATS_COMMAND_GONE_MARKER in _caption_edit_error_detail(exc):
@@ -2876,10 +2879,33 @@ async def _send_stats_message(*, bot: Any, adapter: Any, message: Any, kind: str
     return sent_id
 
 
-async def _post_stats_card(*, bot: Any, adapter: Any, message: Any, text: str) -> str:
-    """Edit the command into the card, else send the card and delete the command; returns the log outcome."""
-    kwargs = {"text": text, "parse_mode": _stats_render.PARSE_MODE, **_no_link_preview_kwargs()}
-    edit = await _edit_stats_command(bot, message, **kwargs)
+async def _send_stats_rich_card(*, bot: Any, adapter: Any, message: Any, rich_html: str) -> None:
+    """Send the card as a new rich message and mark it as the command's own.
+
+    A rich message the Business bot sends is never history (``is_dossier_post``),
+    even when its send timed out after Telegram delivered it.
+    """
+    sent = await bot.do_api_request(
+        "sendRichMessage",
+        api_kwargs={
+            "business_connection_id": _business_connection_id(message),
+            "chat_id": _get(_get(message, "chat"), "id"),
+            "rich_message": _stats_rich_message(rich_html),
+            **_notification_kwargs(adapter),
+        },
+    )
+    sent_id = _get(sent, "message_id")
+    if isinstance(sent_id, int):
+        # Its echo and its deletion are the command's too.
+        _mark_identity_seen(_stats_control_key(message, sent_id))
+
+
+async def _post_stats_card(*, bot: Any, adapter: Any, message: Any, card: _stats_panel.StatsCard) -> str:
+    """Edit the command into the rich card, else send the card and delete the command; returns the log outcome.
+
+    The new card is a rich message, else the plain-text fallback.
+    """
+    edit = await _edit_stats_command(bot, message, rich_html=card.html or "")
     if edit == "applied":
         return "edited"
     if edit == "gone":
@@ -2887,15 +2913,27 @@ async def _post_stats_card(*, bot: Any, adapter: Any, message: Any, text: str) -
         return "gone"
     # An uncertain edit may still have landed: a new card plus deleting the
     # command leaves exactly one card either way.
+    outcome = "sent"
     try:
-        await _send_stats_message(
-            bot=bot, adapter=adapter, message=message, kind="card", visible_text=_stats_visible_text(text), **kwargs
-        )
-    except Exception as exc:  # noqa: BLE001 - leave the command visible rather than lose it silently
-        logger.warning("%s: stats card could not be sent (%s)", _PLUGIN_NAME, type(exc).__name__)
-        return "failed"
+        await _send_stats_rich_card(bot=bot, adapter=adapter, message=message, rich_html=card.html or "")
+    except Exception as exc:  # noqa: BLE001 - the plain-text card below is the fallback
+        logger.info("%s: stats rich card could not be sent (%s)", _PLUGIN_NAME, type(exc).__name__)
+        try:
+            await _send_stats_message(
+                bot=bot,
+                adapter=adapter,
+                message=message,
+                kind="card",
+                visible_text=card.text,
+                text=card.text,
+                **_no_link_preview_kwargs(),
+            )
+        except Exception as exc:  # noqa: BLE001 - leave the command visible rather than lose it silently
+            logger.warning("%s: stats card could not be sent (%s)", _PLUGIN_NAME, type(exc).__name__)
+            return "failed"
+        outcome = "sent_text"
     await _delete_stats_messages(bot, str(_business_connection_id(message)), [_get(message, "message_id")])
-    return "sent"
+    return outcome
 
 
 async def _post_stats_notice(*, bot: Any, adapter: Any, message: Any, text: str) -> str:

@@ -615,9 +615,14 @@ async def test_stats_section_says_history_is_paused(cs, history_enabled):
 
     cs.default_store().set_flag(OWNER, CHAT, "history", False, via="cli")
 
-    assert plugin._stats_panel.render_section(ctx).text.endswith("\nHistory is paused for this chat.")
+    # The note goes right before the footer, in the rich view and in its plain fallback.
+    view = plugin._stats_panel.render_section(ctx)
+    assert "\nHistory is paused for this chat.\nhistory since " in view.text
+    assert "<p>History is paused for this chat.</p>\n<footer>history since " in view.html
     ctx_ru = plugin._owner_panel.PanelContext(str(OWNER), str(CHAT), None, BCID, language_code="ru")
-    assert plugin._stats_panel.render_section(ctx_ru).text.endswith("\nИстория этого чата сейчас не сохраняется.")
+    view_ru = plugin._stats_panel.render_section(ctx_ru)
+    assert "\nИстория этого чата сейчас не сохраняется.\nистория с " in view_ru.text
+    assert "<p>История этого чата сейчас не сохраняется.</p>\n<footer>история с " in view_ru.html
 
 
 # --- CLI -------------------------------------------------------------------------------------------

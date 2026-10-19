@@ -47,55 +47,74 @@ COMMAND_ID = 900
 
 # The Alice fixture of test_stats, all history, clock at 2026-10-19 11:32 UTC, no Hermes time zone.
 CARD_ALL_EN = """
-<b>📊 Sam × Alice · all time</b>
-<i>3 Oct–19 Oct</i>
+<h3>📊 Sam × Alice</h3>
+<p>all time · 3 Oct – 19 Oct · 💬 <b>10</b> · <b>4</b> days in touch</p>
+<p>67% 🟦🟦🟦🟦🟦🟦🟦🟩🟩🟩 33%</p>
+<table striped compact>
+<tr><th></th><th align="right">🟦 Alice</th><th align="right">🟩 Sam</th></tr>
+<tr><td>messages</td><td align="right"><b>6</b> · 67%</td><td align="right"><b>3</b> · 33%</td></tr>
+<tr><td>⚡ reply</td><td align="right"><b>52 min</b></td><td align="right"><b>30 min</b></td></tr>
+<tr><td>per turn</td><td align="right">1.5</td><td align="right">1.0</td></tr>
+<tr><td>length</td><td align="right">10</td><td align="right">10</td></tr>
+</table>
+<h4>🗓 When</h4>
+<table compact>
+<tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td>🟥</td><td>·</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td><td>·</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟧</td><td>🟨</td></tr>
+<tr><td>·</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+</table>
+<table compact>
+<tr><th>0</th><th>3</th><th>6</th><th>9</th><th>12</th><th>15</th><th>18</th><th>21</th></tr>
+<tr><td>·</td><td>·</td><td>🟧</td><td>🟥</td><td>·</td><td>🟨</td><td>🟧</td><td>🟧</td></tr>
+</table>
+<p>🎯 Most often — <mark>Sat, 9–10</mark></p>
+<table compact>
+<tr><td>🏆 record</td><td align="right"><b>2</b> days in a row</td></tr>
+<tr><td>🗣 sessions</td><td align="right"><b>5</b> · first 🟦 <b>60%</b></td></tr>
+</table>
+<footer>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></footer>
+""".strip("\n")
 
-<b>💬 10</b> · days in touch 4
-<pre>Alice ███████████░░░░░ 67%
-Sam   █████░░░░░░░░░░░ 33%
-
-           Alice    Sam
-messages       6      3
-reply        52m    30m
-per turn     1.5    1.0
-length        10     10</pre>
-<b>🕘 peak</b> Sat 9–10
-<pre>········▆█······▃·▃·▃▆··
-0     6     12    18  23
-·· ·· ·· ·· ·· ██ ▁▁
-Mo Tu We Th Fr Sa Su
-█······▆······▄▂·
-by day 3 Oct → 19 Oct
-
-record   2 days in a row
-sessions 5 · Alice starts 60%</pre>
-<i>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></i>
+CARD_ALL_EN_TEXT = """
+📊 Sam × Alice
+all time · 3 Oct – 19 Oct · 💬 10 · 4 days in touch
+🟦 Alice: 6 (67%) · ⚡ 52 min
+🟩 Sam: 3 (33%) · ⚡ 30 min
+🎯 Most often — Sat, 9–10
+counted by Telesec · telesec.sergeybaus.com
 """.strip("\n")
 
 CARD_ALL_RU = """
-<b>📊 Сергей × Alice · всё время</b>
-<i>03.10–19.10</i>
-
-<b>💬 10</b> · дней общения 4
-<pre>Alice  ███████████░░░░░ 67%
-Сергей █████░░░░░░░░░░░ 33%
-
-         Alice Сергей
-сообщ.       6      3
-ответ      52м    30м
-подряд     1.5    1.0
-длина       10     10</pre>
-<b>🕘 пик</b> сб 9–10
-<pre>········▆█······▃·▃·▃▆··
-0     6     12    18  23
-·· ·· ·· ·· ·· ██ ▁▁
-пн вт ср чт пт сб вс
-█······▆······▄▂·
-по дням 03.10 → 19.10
-
-рекорд   2 дн. подряд
-беседы   5 · старт Alice 60%</pre>
-<i>посчитал <a href="https://telesec.sergeybaus.com">Telesec</a></i>
+<h3>📊 Сергей × Alice</h3>
+<p>всё время · 3 окт – 19 окт · 💬 <b>10</b> · <b>4</b> дня общения</p>
+<p>67% 🟦🟦🟦🟦🟦🟦🟦🟩🟩🟩 33%</p>
+<table striped compact>
+<tr><th></th><th align="right">🟦 Alice</th><th align="right">🟩 Сергей</th></tr>
+<tr><td>сообщений</td><td align="right"><b>6</b> · 67%</td><td align="right"><b>3</b> · 33%</td></tr>
+<tr><td>⚡ ответ</td><td align="right"><b>52 мин</b></td><td align="right"><b>30 мин</b></td></tr>
+<tr><td>подряд</td><td align="right">1,5</td><td align="right">1,0</td></tr>
+<tr><td>длина</td><td align="right">10</td><td align="right">10</td></tr>
+</table>
+<h4>🗓 Когда</h4>
+<table compact>
+<tr><th>пн</th><th>вт</th><th>ср</th><th>чт</th><th>пт</th><th>сб</th><th>вс</th></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td>🟥</td><td>·</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td><td>·</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟧</td><td>🟨</td></tr>
+<tr><td>·</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+</table>
+<table compact>
+<tr><th>0</th><th>3</th><th>6</th><th>9</th><th>12</th><th>15</th><th>18</th><th>21</th></tr>
+<tr><td>·</td><td>·</td><td>🟧</td><td>🟥</td><td>·</td><td>🟨</td><td>🟧</td><td>🟧</td></tr>
+</table>
+<p>🎯 Чаще всего — <mark>сб, 9–10</mark></p>
+<table compact>
+<tr><td>🏆 рекорд</td><td align="right"><b>2</b> дня подряд</td></tr>
+<tr><td>🗣 бесед</td><td align="right"><b>5</b> · первым 🟦 <b>60%</b></td></tr>
+</table>
+<footer>посчитал <a href="https://telesec.sergeybaus.com">Telesec</a></footer>
 """.strip("\n")
 
 NOTICES = {
@@ -127,18 +146,36 @@ def alice(history_enabled, modes):
 
 
 class StatsBot(ttm.CommandBot):
-    """A Business bot whose sends return a message id, like Telegram's."""
+    """A Business bot whose sends return a message id, like Telegram's, with rich messages (``do_api_request``)."""
 
     def __init__(self) -> None:
         super().__init__(business_owner_id=OWNER)
         self.next_message_id = COMMAND_ID + 1
+        self.api_calls: list[tuple[str, dict[str, Any]]] = []
+        self.rich_edit_error: Exception | None = None
+        self.rich_edit_result: object = True
+        self.rich_send_error: Exception | None = None
+
+    def _new_id(self) -> int:
+        message_id, self.next_message_id = self.next_message_id, self.next_message_id + 1
+        return message_id
 
     async def send_message(self, **kwargs):
         self.calls.append(kwargs)
         if self.send_error is not None:
             raise self.send_error
-        message_id, self.next_message_id = self.next_message_id, self.next_message_id + 1
-        return SimpleNamespace(message_id=message_id)
+        return SimpleNamespace(message_id=self._new_id())
+
+    async def do_api_request(self, endpoint: str, api_kwargs: dict[str, Any] | None = None, **_: Any):
+        self.api_calls.append((endpoint, dict(api_kwargs or {})))
+        if endpoint == "editmessagetext":
+            if self.rich_edit_error is not None:
+                raise self.rich_edit_error
+            return self.rich_edit_result
+        assert endpoint == "sendRichMessage"
+        if self.rich_send_error is not None:
+            raise self.rich_send_error
+        return {"message_id": self._new_id()}
 
 
 def stats_update(
@@ -208,19 +245,32 @@ def contact_stats(plugin, period: str = "all"):
     return cs.collect_contact_stats(entry, window), window
 
 
-def card_for(plugin, period: str = "all", lang: str | None = "en", owner: str = "Sam", contact: str = "Alice") -> str:
+def card_for(plugin, period: str = "all", lang: str | None = "en", owner: str = "Sam", contact: str = "Alice"):
     stats, window = contact_stats(plugin, period)
     return module(plugin, "stats_render").card(
         stats, window, period=period, owner_name=owner, contact_name=contact, language_code=lang
     )
 
 
+def rich_edits(bot) -> list[dict[str, Any]]:
+    return [call for endpoint, call in bot.api_calls if endpoint == "editmessagetext"]
+
+
+def rich_sends(bot) -> list[dict[str, Any]]:
+    return [call for endpoint, call in bot.api_calls if endpoint == "sendRichMessage"]
+
+
 def edit_call(bot) -> dict[str, Any]:
-    """The one edit, with the link preview option checked and dropped."""
-    [call] = bot.text_edit_calls
-    call = dict(call)
-    assert call.pop("link_preview_options").is_disabled is True
+    """The one rich edit of the command."""
+    [call] = rich_edits(bot)
+    assert bot.text_edit_calls == []
     return call
+
+
+def edit_html(bot) -> str:
+    call = edit_call(bot)
+    assert call["rich_message"]["skip_entity_detection"] is True
+    return call["rich_message"]["html"]
 
 
 def edit_call_text(bot) -> str:
@@ -242,14 +292,13 @@ async def test_owner_stats_is_edited_in_place_into_the_card(alice):
     assert await dispatch(alice, stats_update(), bot)
 
     assert edit_call(bot) == {
-        "text": CARD_ALL_EN,
         "chat_id": CHAT,
         "message_id": COMMAND_ID,
         "business_connection_id": BCID,
-        "parse_mode": "HTML",
+        "rich_message": {"html": CARD_ALL_EN, "skip_entity_detection": True},
     }
-    assert CARD_ALL_EN == card_for(alice)
-    assert bot.calls == [] and bot.delete_calls == []
+    assert (CARD_ALL_EN, CARD_ALL_EN_TEXT) == (card_for(alice).html, card_for(alice).text)
+    assert bot.calls == [] and bot.delete_calls == [] and rich_sends(bot) == []
     assert COMMAND_ID not in record_ids(alice)
 
 
@@ -264,7 +313,7 @@ async def test_card_language_follows_the_owner_client(alice, code, expected):
 
     assert await dispatch(alice, stats_update(lang=code, first_name=owner), bot)
 
-    assert edit_call(bot)["text"] == (CARD_ALL_RU if expected == "ru" else CARD_ALL_EN)
+    assert edit_html(bot) == (CARD_ALL_RU if expected == "ru" else CARD_ALL_EN)
 
 
 @pytest.mark.asyncio
@@ -289,11 +338,11 @@ async def test_each_period_argument(alice, text, period):
 
     assert await dispatch(alice, stats_update(text), bot)
 
-    assert edit_call(bot)["text"] == card_for(alice, period)
-    labels = {"all": "all time", "7d": "7 d", "30d": "30 d", "90d": "90 d"}
+    assert edit_html(bot) == card_for(alice, period).html
+    labels = {"all": "all time", "7d": "7 days", "30d": "30 days", "90d": "90 days"}
     # 7d is 7 dates, not 8: the period starts at midnight of its first day.
-    dates = {"all": "3 Oct–19 Oct", "7d": "13 Oct–19 Oct", "30d": "20 Sep–19 Oct", "90d": "22 Jul–19 Oct"}
-    assert edit_call(bot)["text"].startswith(f"<b>📊 Sam × Alice · {labels[period]}</b>\n<i>{dates[period]}</i>\n")
+    dates = {"all": "3 Oct – 19 Oct", "7d": "13 Oct – 19 Oct", "30d": "20 Sep – 19 Oct", "90d": "22 Jul – 19 Oct"}
+    assert edit_html(bot).startswith(f"<h3>📊 Sam × Alice</h3>\n<p>{labels[period]} · {dates[period]} · ")
     assert COMMAND_ID not in record_ids(alice)
 
 
@@ -313,17 +362,18 @@ async def test_card_reads_only_this_chat_under_this_connection(history_enabled, 
     other.business_message.business_connection_id = "business-456"
     assert await dispatch(history_enabled, other, bot)
 
-    unknown, carol = bot.text_edit_calls
+    [unknown] = bot.text_edit_calls
     assert (unknown["text"], unknown["business_connection_id"], unknown["chat_id"]) == (
         NOTICES["no_history"]["en"],
         BCID,
         994,
     )
+    [carol] = rich_edits(bot)
     assert carol["business_connection_id"] == "business-456" and carol["chat_id"] == 994
-    assert carol["text"].startswith("<b>📊 Sam × Carol · all time</b>\n<i>20 Sep–19 Oct</i>\n")
-    assert "<b>💬 1</b>" in carol["text"]
+    html = carol["rich_message"]["html"]
+    assert html.startswith("<h3>📊 Sam × Carol</h3>\n<p>all time · 20 Sep – 19 Oct · 💬 <b>1</b> · ")
     # Alice's chat 991 under business-123 never reaches either chat.
-    assert all("Alice" not in call["text"] for call in bot.text_edit_calls)
+    assert "Alice" not in html + unknown["text"]
 
 
 @pytest.mark.asyncio
@@ -335,28 +385,30 @@ async def test_card_uses_first_names_and_falls_back_to_history(alice):
     assert await dispatch(alice, update, bot)
 
     # The contact's first name from history, and a generic owner label: never "You".
-    assert edit_call(bot)["text"].startswith("<b>📊 Owner × Alice · all time</b>")
-    assert "You" not in edit_call(bot)["text"]
+    assert edit_html(bot).startswith("<h3>📊 Owner × Alice</h3>")
+    assert "You" not in edit_html(bot)
 
 
 @pytest.mark.asyncio
 async def test_card_never_shows_owner_only_details_or_text(alice):
     # The fixture has deletions, edits, an unanswered message, missing history, and p90 reply times:
     # the owner panel shows them all.
-    panel = module(alice, "stats_render").panel(*contact_stats(alice), period="all", contact_name="Alice")
-    for word in ("deleted", "unexplained", "edits", "no reply", "p90", "history since", "not in history"):
+    panel = module(alice, "stats_render").panel(*contact_stats(alice), period="all", contact_name="Alice").html
+    for word in ("deleted", "❓", "edits", "waiting", "p90", "history since"):
         assert word in panel
     cards = {}
     for lang, owner in (("en", "Sam"), ("ru", "Сергей")):
         bot = StatsBot()
         update = stats_update(lang=lang, first_name=owner, message_id=COMMAND_ID + len(cards))
         assert await dispatch(alice, update, bot)
-        cards[lang] = _visible(edit_call(bot)["text"])
+        cards[lang] = _visible(edit_html(bot))
+        cards[f"{lang} text"] = card_for(alice, lang=lang, owner=owner).text
 
     forbidden = {
-        "en": ("deleted", "unexplained", "edits", "no reply", "p90", "history", "without original", "You", "vs prev."),
-        "ru": ("удалено", "неясн", "правки", "без ответа", "p90", "история", "без оригинала", "Вы ", "к пред."),
+        "en": ("deleted", "❓", "edits", "waiting", "p90", "history", "You", "previous", "📈"),
+        "ru": ("удалено", "❓", "правки", "ждёт", "p90", "история", "Вы", "прошлым", "📈"),
     }
+    forbidden.update({f"{lang} text": words for lang, words in list(forbidden.items())})
     for lang, card in cards.items():
         assert "SECRET" not in card  # the fixture's message text
         for word in forbidden[lang]:
@@ -371,7 +423,7 @@ async def test_duplicate_delivery_posts_once(alice):
     assert await dispatch(alice, update, bot)
     assert await dispatch(alice, update, bot)
 
-    assert len(bot.text_edit_calls) == 1
+    assert len(rich_edits(bot)) == 1
     assert bot.calls == [] and COMMAND_ID not in record_ids(alice)
 
 
@@ -383,10 +435,10 @@ async def test_command_skips_the_dm_allowlist_and_never_reaches_core(alice, monk
 
     assert await dispatch(alice, stats_update(), bot, adapter=adapter)
     # The edit's echo is the command's too.
-    echo = stats_update(_visible(CARD_ALL_EN), edited=True, sender_business_bot=555, update_id=501)
+    echo = stats_update(CARD_ALL_EN_TEXT, edited=True, sender_business_bot=555, update_id=501)
     assert await dispatch(alice, echo, bot, adapter=adapter)
 
-    assert edit_call(bot)["text"] == CARD_ALL_EN
+    assert edit_html(bot) == CARD_ALL_EN
     adapter._is_user_authorized_from_message.assert_not_called()
     # Ordinary text still takes the agent path when it is enabled.
     assert not await dispatch(alice, stats_update("Hello", sender=PEER, message_id=950, update_id=502), bot)
@@ -400,7 +452,7 @@ async def test_stored_owner_binding_verifies_when_the_lookup_fails(alice):
 
     assert await dispatch(alice, stats_update(), bot)
 
-    assert edit_call(bot)["text"] == CARD_ALL_EN
+    assert edit_html(bot) == CARD_ALL_EN
 
 
 @pytest.mark.asyncio
@@ -417,7 +469,7 @@ async def test_paused_chat_gets_the_same_card_and_stays_control_traffic(alice, l
     echo = stats_update(_visible(expected), edited=True, sender_business_bot=555, update_id=501)
     assert await dispatch(alice, echo, bot)
 
-    assert edit_call(bot)["text"] == expected
+    assert edit_html(bot) == expected
     assert "History is paused" not in expected and "не сохраняется" not in expected
     # The pause still skips the chat's ordinary messages.
     await dispatch(alice, stats_update("Hello", sender=PEER, message_id=950, update_id=502), bot)
@@ -446,7 +498,7 @@ async def test_contact_stats_is_ordinary_text_and_captured(alice, text):
 
     await dispatch(alice, stats_update(text, sender=PEER), bot)
 
-    assert bot.text_edit_calls == [] and bot.calls == [] and bot.delete_calls == []
+    assert bot.text_edit_calls == [] and bot.api_calls == [] and bot.calls == [] and bot.delete_calls == []
     [record] = [record for record in th.load_records(alice) if record["message_id"] == COMMAND_ID]
     assert (record["direction"], record["text"]) == ("inbound", text)
 
@@ -471,7 +523,7 @@ async def test_unknown_argument_or_other_text_is_ordinary_text(alice, text):
 
     await dispatch(alice, stats_update(text), bot)
 
-    assert bot.text_edit_calls == [] and bot.calls == [] and bot.delete_calls == []
+    assert bot.text_edit_calls == [] and bot.api_calls == [] and bot.calls == [] and bot.delete_calls == []
     [record] = [record for record in th.load_records(alice) if record["message_id"] == COMMAND_ID]
     assert (record["direction"], record["text"]) == ("outbound", text)
 
@@ -490,7 +542,7 @@ async def test_forwarded_inline_edited_or_bot_sent_stats_is_not_a_command(alice,
 
     await dispatch(alice, update, bot)
 
-    assert bot.text_edit_calls == [] and bot.calls == [] and bot.delete_calls == []
+    assert bot.text_edit_calls == [] and bot.api_calls == [] and bot.calls == [] and bot.delete_calls == []
     [record] = [record for record in th.load_records(alice) if record["message_id"] == COMMAND_ID]
     assert (record["direction"], record["text"]) == ("outbound", "/stats")
     assert record["event_type"] == ("message.edited" if kind == "edited" else "message.created")
@@ -503,7 +555,7 @@ async def test_unverified_owner_stats_is_ordinary_unknown_text(alice):
 
     await dispatch(alice, stats_update(), bot)
 
-    assert bot.text_edit_calls == []
+    assert bot.text_edit_calls == [] and bot.api_calls == []
     [record] = [record for record in th.load_records(alice) if record["message_id"] == COMMAND_ID]
     assert (record["direction"], record["text"]) == ("unknown", "/stats")
 
@@ -512,21 +564,45 @@ async def test_unverified_owner_stats_is_ordinary_unknown_text(alice):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["cant_edit", "false_result", "timed_out", "network", "no_edit_method"])
-async def test_failed_edit_sends_the_card_and_deletes_the_command(alice, failure):
+@pytest.mark.parametrize("failure", ["cant_edit", "false_result", "timed_out", "network"])
+async def test_failed_edit_sends_the_rich_card_and_deletes_the_command(alice, failure):
     bot = StatsBot()
     if failure == "cant_edit":
-        bot.text_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
+        bot.rich_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
     elif failure == "false_result":
-        bot.text_edit_result = False
+        bot.rich_edit_result = False
     elif failure == "timed_out":
-        bot.text_edit_error = ttm.TimedOut("timed out")
-    elif failure == "network":
-        bot.text_edit_error = ttm.NetworkError("connection reset")
+        bot.rich_edit_error = ttm.TimedOut("timed out")
     else:
-        bot.edit_message_text = None
+        bot.rich_edit_error = ttm.NetworkError("connection reset")
 
     assert await dispatch(alice, stats_update(), bot)
+
+    assert rich_sends(bot) == [
+        {
+            "business_connection_id": BCID,
+            "chat_id": CHAT,
+            "rich_message": {"html": CARD_ALL_EN, "skip_entity_detection": True},
+            "disable_notification": True,
+        }
+    ]
+    assert bot.calls == []
+    # Right away, not after the notice delay: the new card replaces the command.
+    assert bot.delete_calls == [{"business_connection_id": BCID, "message_ids": [COMMAND_ID]}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["rejected", "no_rich_api"])
+async def test_failed_rich_send_sends_the_plain_card(alice, failure, caplog):
+    bot = StatsBot()
+    if failure == "rejected":
+        bot.rich_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
+        bot.rich_send_error = ttm.BadRequest("Bad Request: rich messages are not supported")
+    else:
+        bot.do_api_request = None  # an older client without raw Bot API requests
+
+    with caplog.at_level(logging.INFO):
+        assert await dispatch(alice, stats_update(), bot)
 
     [call] = bot.calls
     call = dict(call)
@@ -534,35 +610,35 @@ async def test_failed_edit_sends_the_card_and_deletes_the_command(alice, failure
     assert call == {
         "chat_id": CHAT,
         "business_connection_id": BCID,
-        "text": CARD_ALL_EN,
-        "parse_mode": "HTML",
+        "text": CARD_ALL_EN_TEXT,
         "disable_notification": True,
     }
-    # Right away, not after the notice delay: the new card replaces the command.
     assert bot.delete_calls == [{"business_connection_id": BCID, "message_ids": [COMMAND_ID]}]
+    assert "outcome=sent_text" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_message_not_modified_counts_as_edited(alice):
     bot = StatsBot()
-    bot.text_edit_error = ttm.BadRequest("Bad Request: message is not modified")
+    bot.rich_edit_error = ttm.BadRequest("Bad Request: message is not modified")
 
     assert await dispatch(alice, stats_update(), bot)
 
-    assert len(bot.text_edit_calls) == 1 and bot.calls == [] and bot.delete_calls == []
+    assert len(rich_edits(bot)) == 1 and rich_sends(bot) == [] and bot.calls == [] and bot.delete_calls == []
 
 
 @pytest.mark.asyncio
 async def test_failed_fallback_keeps_the_command_and_logs_only_the_error_type(alice, caplog):
     bot = StatsBot()
-    bot.text_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
+    bot.rich_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
+    bot.rich_send_error = RuntimeError("rich send failed with private detail")
     bot.send_error = RuntimeError("send failed with private detail")
 
     with caplog.at_level(logging.INFO):
         assert await dispatch(alice, stats_update(), bot)
 
     assert bot.delete_calls == []
-    assert "stats card could not be sent (RuntimeError)" in caplog.text
+    assert "stats card could not be sent (RuntimeError)" in caplog.text and "outcome=failed" in caplog.text
     assert "private detail" not in caplog.text
     assert COMMAND_ID not in record_ids(alice)
 
@@ -570,13 +646,13 @@ async def test_failed_fallback_keeps_the_command_and_logs_only_the_error_type(al
 @pytest.mark.asyncio
 async def test_fallback_card_its_echo_and_the_deletion_never_reach_history(alice):
     bot = StatsBot()
-    bot.text_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
+    bot.rich_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
     before, _ = contact_stats(alice)
 
     assert await dispatch(alice, stats_update(), bot)
     card_id = COMMAND_ID + 1
     # Telegram echoes the bot's card and reports the command's deletion.
-    assert await dispatch(alice, stats_update(_visible(CARD_ALL_EN), message_id=card_id, sender_business_bot=555), bot)
+    assert await dispatch(alice, stats_update(CARD_ALL_EN_TEXT, message_id=card_id, sender_business_bot=555), bot)
     assert await dispatch(alice, deleted_update(COMMAND_ID), bot)
     # A deletion that also holds a real message keeps only the real one.
     assert await dispatch(alice, deleted_update(card_id, 112, update_id=601), bot)
@@ -594,14 +670,14 @@ async def test_fallback_card_its_echo_and_the_deletion_never_reach_history(alice
 async def test_command_deleted_before_the_card_is_ready_posts_nothing(alice, caplog):
     bot = StatsBot()
     # The owner deleted `/stats` while the card was built: the edit finds no message.
-    bot.text_edit_error = ttm.BadRequest("Bad Request: message to edit not found")
+    bot.rich_edit_error = ttm.BadRequest("Bad Request: message to edit not found")
 
     with caplog.at_level(logging.INFO):
         assert await dispatch(alice, stats_update(), bot)
         assert await dispatch(alice, deleted_update(COMMAND_ID), bot)
 
     # No card reaches the contact, and there is nothing left to delete.
-    assert len(bot.text_edit_calls) == 1 and bot.calls == [] and bot.delete_calls == []
+    assert len(rich_edits(bot)) == 1 and rich_sends(bot) == [] and bot.calls == [] and bot.delete_calls == []
     assert "outcome=gone" in caplog.text
     assert COMMAND_ID not in record_ids(alice)
 
@@ -609,15 +685,16 @@ async def test_command_deleted_before_the_card_is_ready_posts_nothing(alice, cap
 @pytest.mark.asyncio
 async def test_card_delivered_despite_a_send_timeout_never_reaches_history(alice, monkeypatch):
     bot = StatsBot()
-    bot.text_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
+    bot.rich_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
+    bot.rich_send_error = ttm.BadRequest("Bad Request: rich messages are not supported")
     bot.send_error = ttm.TimedOut("timed out")
     before, _ = contact_stats(alice)
     records_before = len(th.load_records(alice))
     card_id = COMMAND_ID + 1
-    card_text = _visible(CARD_ALL_EN)
+    card_text = CARD_ALL_EN_TEXT
 
     assert await dispatch(alice, stats_update(), bot)
-    # Telegram delivered the card anyway, so only its echo tells its id: the echo,
+    # Telegram delivered the plain card anyway, so only its echo tells its id: the echo,
     # a later edit, and its deletion are the command's.
     assert await dispatch(alice, stats_update(card_text, message_id=card_id, sender_business_bot=555, update_id=501), bot)
     edit = stats_update(card_text, message_id=card_id, edited=True, sender_business_bot=555, update_id=502)
@@ -771,7 +848,7 @@ async def test_command_card_and_echoes_are_never_recorded_or_counted(alice, capl
     with caplog.at_level(logging.DEBUG):
         assert await dispatch(alice, stats_update(), bot)
         # Telegram echoes the edit as the owner's edited message, sent by the bot.
-        echo = stats_update(_visible(CARD_ALL_EN), edited=True, sender_business_bot=555, update_id=501)
+        echo = stats_update(CARD_ALL_EN_TEXT, edited=True, sender_business_bot=555, update_id=501)
         assert await dispatch(alice, echo, bot)
         # The owner deletes the card later.
         assert await dispatch(alice, deleted_update(COMMAND_ID), bot)
@@ -779,7 +856,7 @@ async def test_command_card_and_echoes_are_never_recorded_or_counted(alice, capl
         assert await dispatch(alice, stats_update(message_id=COMMAND_ID + 5, update_id=502), bot)
 
     assert len(th.load_records(alice)) == records_before
-    assert [call["text"] for call in bot.text_edit_calls] == [CARD_ALL_EN, CARD_ALL_EN]
+    assert [call["rich_message"]["html"] for call in rich_edits(bot)] == [CARD_ALL_EN, CARD_ALL_EN]
     after, _ = contact_stats(alice)
     assert after == before
     # Logs carry ids and the period, never names or text.
@@ -799,8 +876,8 @@ async def test_docs_card_example_matches_the_real_card(alice):
 
     [(language, documented)] = _fenced_blocks(section)
 
-    assert language == "text"
-    assert documented == _visible(edit_call(bot)["text"])
+    assert language == "html"
+    assert documented == edit_html(bot)
     assert "the contact sees it too" in section
     # `/dossier` is the other owner command typed in a Business chat; both post what the contact sees.
     assert "one of the two commands" in section and "/dossier" in section

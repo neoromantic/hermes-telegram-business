@@ -357,9 +357,9 @@ Timestamps are ISO 8601 in `--tz`, with the offset. Dates (`start`, `longest_sta
 
 The one-contact stats are also in Telegram, in your private chat with the bot. Open a Business chat and tap **Manage Bot**. Telegram opens your private chat with the bot, and the bot shows the owner panel for that chat. Tap **📊 Stats**.
 
-<img src="images/stats-panel-en@2x.png" width="430" alt="Synthetic screenshot of the 📊 Stats view in the owner panel for a fictional contact, Alex Rivera, over 30 days: 252 messages on 27 of 30 days, share bars (Alex 60%, You 40%), a table with messages, median and p90 reply times, messages per turn, length, and edits for each side, a line saying Alex has had no reply since 12:04, the peak Sun 22–23, sparklines for hours, weekdays, and days, the streak, the longest pause, sessions, deletions, the change against the previous 30 days, and the footer, with 7d, 30d, 90d, All, and Back buttons.">
+<img src="images/stats-panel-en@2x.png" width="430" alt="Screenshot of the 📊 Stats view in the owner panel for a fictional contact, Alex Rivera, over 30 days, with 7d, 30d, 90d, All, and Back buttons.">
 
-The screenshot is synthetic: fictional history (Alex Rivera and the owner Sam, about 2,000 text messages over 12 months) run through the real view. It is also in [Russian](images/stats-panel-ru@2x.png). [`scripts/render-stats-screenshots.py`](../scripts/render-stats-screenshots.py) rebuilds it; the pages in `images/src/` hold the exact Telegram HTML of each view.
+Real Telegram screenshots of the new view over fictional data will replace this image; until then it shows the previous design. The fictional history is Alex Rivera and the owner Sam, about 2,000 text messages over 12 months, run through the real view. It is also in [Russian](images/stats-panel-ru@2x.png). [`scripts/render-stats-screenshots.py`](../scripts/render-stats-screenshots.py) writes the exact rich message HTML of each view to `images/src/`, ready to send for a screenshot.
 
 The buttons under the report pick the period:
 
@@ -372,65 +372,71 @@ The buttons under the report pick the period:
 
 A period is whole local days: it starts at midnight of its first day, so `7d` shows 7 days, not 8 partial ones. The current period is marked `•`. Tap it again to refresh. The report runs to now. It uses the default time zone of the CLI (the Hermes time zone, else UTC) and the default 6-hour session gap. So the numbers are the same as `hermes telesec stats --chat <id> --connection <id>` with that `--since` date, run at the same moment.
 
-The report speaks the language of your Telegram app: Russian for a Russian app, English otherwise. In Russian the buttons are `7 дн.`, `30 дн.`, `90 дн.`, and `Всё`. It is a compact view of the CLI numbers, laid out for a phone screen with Telegram formatting. Two blocks use a monospace font and fit 31 columns: the share bars with the table, and the sparklines with the summary. Telegram shows a copy bar on each. From top to bottom:
+The report speaks the language of your Telegram app: Russian for a Russian app, English otherwise. In Russian the buttons are `7 дн.`, `30 дн.`, `90 дн.`, and `Всё`. It is a Telegram rich message: headings, tables, and a quote, with no code blocks. The contact is always 🟦 and you are always 🟩. Heat maps use `·` for zero, then 🟨, 🟧, and 🟥 for up to a third, two thirds, and all of the largest value in the same table. They sit in table cells, so the columns line up in any font. From top to bottom:
 
-- **Title.** The contact and the period, then the dates the period covers and the time zone.
-- **💬** Messages in the period, and active days out of the days in the period.
-- **Share.** Bars for each side's share of messages. `You` is the owner.
-- **Table.** Per side: messages, median and p90 reply time, messages per turn, median text length, and edits (only when there are edits). `–` means there is no data.
-- **⏳ no reply.** The side that is still waiting for a reply, since when, and for how long. Left out when nobody is waiting.
-- **🕘 peak.** The busiest weekday and hour.
-- **Rhythm.** Sparklines of messages per hour (0 to 23), per weekday (Monday to Sunday), and over the period: per day, week, month, quarter, or year, depending on the length. `·` means zero.
-- **Summary.** The current and longest streak of active days, the longest silence with its dates, sessions and the share the contact started, and deletions with the unexplained ones (only when there are deletions).
-- **📈 vs prev.** The change in messages and in reply times against the same number of days right before the period. Left out when retained history does not cover the previous period, and for `All`.
-- **Footer.** When history starts, marked `period partial` when it starts inside the period. Then missing history counts (only when above zero), `text only`, and the time the report was made.
+- **Title.** The contact and the period (`7 days`, `30 days`, `90 days`, or `all time`).
+- **Dates and totals.** The dates the period covers, 💬 messages, and active days out of the days in the period.
+- **Balance.** One bar of 10 squares with each side's share around it, such as `58% 🟦🟦🟦🟦🟦🟦🟩🟩🟩🟩 42%`. A side with any messages gets one square at least. Left out when a side's share is not known.
+- **Table.** Per side: messages with the share, ⚡ median reply time, p90 reply time, messages per turn, median text length, and edits (only when there are edits). `–` means there is no data.
+- **⏳ Waiting.** Who is still waiting for a reply, and for how long. Left out when nobody is waiting. It shows no clock time, since Telegram may show the message in another time zone.
+- **🗓 When.** Heat maps of activity over the period, then weekdays and three-hour blocks of the day (0, 3, …, 21). The period map depends on its length: a calendar of weeks for days (it then shows the weekdays itself), a row of weeks per month, a row of months per year, a row of quarters per year, or the years. Cells outside the period are empty.
+- **🎯 Peak.** The busiest weekday and hour.
+- **Tiles.** 🔥 the current streak of active days, 🏆 the longest one, 💤 the longest pause, 🗣 sessions, 👋 who starts sessions more often and how often, and 🗑 deletions with ❓ the unexplained ones (only when there are deletions).
+- **📈 Previous period.** The change in messages and in each side's median reply time against the same number of days right before the period. Left out when retained history does not cover the previous period, and for `All`.
+- **Footer.** When history starts, and `text only`.
 
-Durations are compact and rounded down: `45s`, `12m`, `2h10m`, `2h`, `1d17h`, `12d`. A zero minor unit is left out, and days show hours only below 10 days. Numbers have a thousands separator: `1,284` in English and `1 284` in Russian. The deletion details, the turn counts, and the latest activity are CLI-only.
+Durations are rounded down: `45 s`, `12 min`, `2 h 10 min`, `2 h`, `1 d 17 h`, `12 d`. A zero minor unit is left out, and days show hours only below 10 days. Numbers have a thousands separator: `1,284` in English and `1 284` in Russian, and Russian decimals use a comma (`2,4`). The deletion details, missing history counts, the turn counts, and the latest activity are CLI-only.
 
-Example (synthetic): Alice from the [example above](#example-synthetic), period `30d`, Hermes time zone `Europe/Moscow`, clock at 2026-10-19 11:32 UTC, English app. Bold, italic, and monospace are lost here. The last line shows the period buttons; the panel adds a Back button below them. A test checks that this block still matches the real view.
+When Telegram does not take the rich message, the panel shows a short plain-text version instead: the title, dates and totals, each side's messages and median reply time, who is waiting, the peak, and the footer. A very large report drops the heat maps first, then the tiles; the title, the paused line, and the footer always stay.
 
-```text
-📊 Alice Example · 30 d
-20 Sep–19 Oct · Europe/Moscow
+Example (synthetic): Alice from the [example above](#example-synthetic), period `30d`, Hermes time zone `Europe/Moscow`, clock at 2026-10-19 11:32 UTC, English app. This is the exact rich message HTML; the period buttons and a Back button come below it. A test checks that this block still matches the real view.
 
-💬 10 · active days 5/30
-Alice ███████████░░░░░ 67%
-You   █████░░░░░░░░░░░ 33%
-
-           Alice    You
-msgs           6      3
-reply        52m    30m
-p90        1h34m    30m
-per turn     1.5    1.0
-length        10     10
-edits          0      1
-⏳ no reply: Alice, since 17 Oct 21:04 (1d17h)
-🕘 peak Sat 12–13
-▆··········▆█······▃·▃·▃
-0     6     12    18  23
-▁▁ ·· ·· ·· ·· ██ ▁▁
-Mo Tu We Th Fr Sa Su
-·············█▃·····█······▆·▃
-by day 20 Sep → 19 Oct
-
-streak   1 d · max 2
-pause    7d7h · 10 Oct–17 Oct
-sessions 5 · Alice starts 60%
-deleted  4 · unexplained 1
-history since 3 Oct 2026 (period partial) · deletions not in history 1 · edits without original 1 · text only · 14:32
-
-[7d] [• 30d] [90d] [All]
+```html
+<h3>📊 Alice Example · 30 days</h3>
+<p>20 Sep – 19 Oct · 💬 <b>10</b> · <b>5</b> of 30 days</p>
+<p>67% 🟦🟦🟦🟦🟦🟦🟦🟩🟩🟩 33%</p>
+<table striped compact>
+<tr><th></th><th align="right">🟦 Alice</th><th align="right">🟩 You</th></tr>
+<tr><td>messages</td><td align="right"><b>6</b> · 67%</td><td align="right"><b>3</b> · 33%</td></tr>
+<tr><td>⚡ reply</td><td align="right"><b>52 min</b></td><td align="right"><b>30 min</b></td></tr>
+<tr><td>p90</td><td align="right">1 h 34 min</td><td align="right">30 min</td></tr>
+<tr><td>per turn</td><td align="right">1.5</td><td align="right">1.0</td></tr>
+<tr><td>length</td><td align="right">10</td><td align="right">10</td></tr>
+<tr><td>edits</td><td align="right">0</td><td align="right">1</td></tr>
+</table>
+<blockquote>⏳ Alice is waiting for your reply <b>1 d 17 h</b></blockquote>
+<h4>🗓 When</h4>
+<table compact>
+<tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td><td>·</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td><td>🟨</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td><td>·</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟧</td><td>·</td></tr>
+<tr><td>🟨</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+</table>
+<table compact>
+<tr><th>0</th><th>3</th><th>6</th><th>9</th><th>12</th><th>15</th><th>18</th><th>21</th></tr>
+<tr><td>🟧</td><td>·</td><td>·</td><td>🟧</td><td>🟥</td><td>·</td><td>🟨</td><td>🟧</td></tr>
+</table>
+<p>🎯 Peak — <mark>Sat, 12–13</mark></p>
+<table compact>
+<tr><td>🔥 streak</td><td align="right"><b>1</b> d</td><td>🏆 record</td><td align="right"><b>2</b> d</td></tr>
+<tr><td>💤 pause</td><td align="right"><b>7</b> d</td><td>🗣 sessions</td><td align="right"><b>5</b></td></tr>
+<tr><td>👋 first</td><td align="right">🟦 <b>60%</b></td><td>🗑 deleted</td><td align="right"><b>4</b> · ❓1</td></tr>
+</table>
+<footer>history since 3 Oct 2026 · text only</footer>
 ```
 
 There is no `📈` line here because history starts inside the period.
 
-Other states:
+Other states are short plain-text messages:
 
 - **History is off.** `History is off. Turn it on in Settings (/telesec).`
-- **History paused for this chat.** The chat is set to Don't save in its panel ([per-chat history](../README.md#per-chat-history-and-dossier)). The report still shows what was saved, with `History is paused for this chat.` (Russian: `История этого чата сейчас не сохраняется.`) as its last line, above the period buttons.
+- **History paused for this chat.** The chat is set to Don't save in its panel ([per-chat history](../README.md#per-chat-history-and-dossier)). The report still shows what was saved, with `History is paused for this chat.` (Russian: `История этого чата сейчас не сохраняется.`) as its last line before the footer.
 - **Connection not known yet.** The bot has not seen the Business connection for this chat yet.
 - **No history for this chat.** History records new text messages only, so a chat with no message since capture started has no report yet. It also shows when the chat is outside the history scope settings (see [HISTORY.md](HISTORY.md)); widen the scope to include it.
-- **No activity in the period.** The title, the dates, and `no messages in this period`. It is not an error, and the period buttons stay.
+- **No activity in the period.** The title, `no messages in this period`, and the footer. It is not an error, and the period buttons stay.
 - **History could not be read.** For example, a stale or damaged catalog, a torn final line, or a missing lock. The panel shows the `stats` command to run on the gateway host for details, and keeps the period buttons so you can retry. The gateway log gets a warning with only the error type: no names, paths, or error text.
 
 Privacy:
@@ -438,7 +444,7 @@ Privacy:
 - The report is shown only in your private chat with the bot. Nothing is posted into the Business chat, and the contact sees nothing. The [`/stats` card](#in-a-business-chat-stats) is different: you post it into the chat, and the contact sees it.
 - It shows only the chat under the Business connection you were verified for. The same chat ID under another connection is never shown.
 - Like the CLI, it first checks that the whole history catalog is current. So damaged history anywhere on the gateway, even in another connection, shows the "could not be read" state.
-- It is read-only, uses no LLM, and stores nothing. It never shows message text; it reads text only to count its characters. Contact names are escaped as in the CLI, then escaped for Telegram formatting. They are cut to 64 characters in the title and 8 columns in the monospace blocks, where a wide character such as a CJK letter or an emoji takes two columns, so the columns stay aligned. A name with right-to-left letters (Arabic, Hebrew) is wrapped in invisible left-to-right marks, so it cannot flip a line or move numbers past it. Link previews are off.
+- It is read-only, uses no LLM, and stores nothing. It never shows message text; it reads text only to count its characters. Contact names are escaped as in the CLI, then escaped for HTML. They are cut to 64 characters in the title and 16 in the table, never inside a character a reader sees (an emoji sequence or a letter with its marks). A name with right-to-left letters (Arabic, Hebrew) is wrapped in invisible left-to-right marks, so it cannot flip a line or move numbers past it. Telegram's entity detection is off for the report, so nothing in it becomes a link or a command.
 
 ## In a Business chat (/stats)
 
@@ -453,48 +459,53 @@ Privacy:
 
 The command is case-insensitive and may name the bot (`/stats@YourBot 7d`). The bot edits your message in place into the card. The window rules are the panel's: whole local days that run to now, in the Hermes time zone (else UTC), with the 6-hour session gap. The card counts only this chat under this Business connection. In a chat set to [Don't save](../README.md#per-chat-history-and-dossier), the card still counts what was saved and says nothing about the pause.
 
-The card speaks the language of your Telegram app: Russian for a Russian app, English otherwise. It names both people by first name: yours from your Telegram profile and the contact's from the chat, never `You`. It holds only the numbers that are fine to share:
+The card speaks the language of your Telegram app: Russian for a Russian app, English otherwise. It names both people by first name: yours from your Telegram profile and the contact's from the chat, never `You`. It is a rich message with the panel's layout and colours (the contact 🟦, you 🟩), and it holds only the numbers that are fine to share:
 
-- **Title.** Both names and the period, then the dates the period covers.
-- **💬** Messages in the period and the days you were in touch.
-- **Share.** Bars for each side's share of messages.
-- **Table.** Per side: messages, median reply time, messages per turn, and median text length.
-- **🕘 peak** and the **rhythm** sparklines, as in the panel.
-- **Summary.** The longest streak of active days, and the sessions with the share the contact started.
-- **Footer.** `counted by Telesec`, with a link to the Telesec site. Link previews are off.
+- **Title.** Both names.
+- **Dates and totals.** The period, the dates it covers, 💬 messages, and the days you were in touch.
+- **Balance.** The bar of 10 squares with each side's share.
+- **Table.** Per side: messages with the share, ⚡ median reply time, messages per turn, and median text length.
+- **🗓 When** and **🎯 Most often**, as in the panel.
+- **Tiles.** 🏆 the longest streak of active days, and 🗣 sessions with who starts them more often.
+- **Footer.** `counted by Telesec`, with a link to the Telesec site.
 
 The card never shows deletions, edits, who is waiting for a reply, p90 reply times, missing history, the change against the previous period, or any message text. Those stay in the owner panel.
 
-<img src="images/stats-card-en@2x.png" width="430" alt="Synthetic screenshot of a Business chat with a fictional contact, Alex Rivera. Alex asks how much they actually text, and the owner's /stats message has become the card: Sam × Alex, all time, 2,046 messages, 250 days in touch, share bars (Alex 58%, Sam 42%), a table with messages, median reply time, messages per turn, and length for each side, the peak Tue 21–22, sparklines for hours, weekdays, and months, a record of 13 days in a row, 306 sessions, and counted by Telesec.">
+<img src="images/stats-card-en@2x.png" width="430" alt="Screenshot of a Business chat with a fictional contact, Alex Rivera: the owner's /stats message has become the stats card for Sam and Alex, all time.">
 
-The card is a normal message in the chat: the contact can read, copy, or forward it, and it stays until you delete it. The screenshot uses the same fictional history as the [panel screenshot](#in-telegram-owner-panel), with the owner Sam; it is also in [Russian](images/stats-card-ru@2x.png).
+The card is a normal message in the chat: the contact can read, copy, or forward it, and it stays until you delete it. Real Telegram screenshots of the new card over fictional data will replace this image; until then it shows the previous design. It uses the same fictional history as the [panel screenshot](#in-telegram-owner-panel), with the owner Sam; it is also in [Russian](images/stats-card-ru@2x.png).
 
-Example (synthetic): Alice from the [example above](#example-synthetic), `/stats`, no Hermes time zone (UTC), clock at 2026-10-19 11:32 UTC, English app, owner first name Sam. Bold, italic, monospace, and the link are lost here. A test checks that this block still matches the real card.
+Example (synthetic): Alice from the [example above](#example-synthetic), `/stats`, no Hermes time zone (UTC), clock at 2026-10-19 11:32 UTC, English app, owner first name Sam. This is the exact rich message HTML. A test checks that this block still matches the real card.
 
-```text
-📊 Sam × Alice · all time
-3 Oct–19 Oct
-
-💬 10 · days in touch 4
-Alice ███████████░░░░░ 67%
-Sam   █████░░░░░░░░░░░ 33%
-
-           Alice    Sam
-messages       6      3
-reply        52m    30m
-per turn     1.5    1.0
-length        10     10
-🕘 peak Sat 9–10
-········▆█······▃·▃·▃▆··
-0     6     12    18  23
-·· ·· ·· ·· ·· ██ ▁▁
-Mo Tu We Th Fr Sa Su
-█······▆······▄▂·
-by day 3 Oct → 19 Oct
-
-record   2 days in a row
-sessions 5 · Alice starts 60%
-counted by Telesec
+```html
+<h3>📊 Sam × Alice</h3>
+<p>all time · 3 Oct – 19 Oct · 💬 <b>10</b> · <b>4</b> days in touch</p>
+<p>67% 🟦🟦🟦🟦🟦🟦🟦🟩🟩🟩 33%</p>
+<table striped compact>
+<tr><th></th><th align="right">🟦 Alice</th><th align="right">🟩 Sam</th></tr>
+<tr><td>messages</td><td align="right"><b>6</b> · 67%</td><td align="right"><b>3</b> · 33%</td></tr>
+<tr><td>⚡ reply</td><td align="right"><b>52 min</b></td><td align="right"><b>30 min</b></td></tr>
+<tr><td>per turn</td><td align="right">1.5</td><td align="right">1.0</td></tr>
+<tr><td>length</td><td align="right">10</td><td align="right">10</td></tr>
+</table>
+<h4>🗓 When</h4>
+<table compact>
+<tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td>🟥</td><td>·</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td><td>·</td></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟧</td><td>🟨</td></tr>
+<tr><td>·</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+</table>
+<table compact>
+<tr><th>0</th><th>3</th><th>6</th><th>9</th><th>12</th><th>15</th><th>18</th><th>21</th></tr>
+<tr><td>·</td><td>·</td><td>🟧</td><td>🟥</td><td>·</td><td>🟨</td><td>🟧</td><td>🟧</td></tr>
+</table>
+<p>🎯 Most often — <mark>Sat, 9–10</mark></p>
+<table compact>
+<tr><td>🏆 record</td><td align="right"><b>2</b> days in a row</td></tr>
+<tr><td>🗣 sessions</td><td align="right"><b>5</b> · first 🟦 <b>60%</b></td></tr>
+</table>
+<footer>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></footer>
 ```
 
 Who can use it:
@@ -505,12 +516,12 @@ Who can use it:
 
 When something goes wrong:
 
-- **The edit fails.** If Telegram does not let the bot edit your message, the bot sends the card as a new message and deletes your command. If that send fails too, your command stays.
+- **The edit fails.** If Telegram does not let the bot edit your message, the bot sends the card as a new rich message and deletes your command. If Telegram does not take the rich message, the bot sends a short plain-text card instead: both names, the dates and totals, each side's messages and median reply time, the peak, and `counted by Telesec`. If that send fails too, your command stays.
 - **You deleted the command.** If you delete `/stats` before the card is ready, the bot posts nothing.
 - **No card to show.** The bot edits your command into a short notice instead, then deletes it about 5 seconds later. The notices are `📊 Stats are unavailable: history is off.`, `📊 No history for this chat yet.`, and `📊 Stats are unavailable: history could not be read.` The contact may see them, so they hold no details. For details, open **📊 Stats** in the owner panel. If the edit fails here too, the bot replies with the notice and deletes both.
 - **Deleting needs a permission.** Give the bot the right to delete messages in Telegram Business > Chatbots. Without it, the command or notice stays, and the gateway log gets a hint.
 
-Never in history: the command, the card, a fallback card or notice, Telegram's copies of their edits, and their deletion are never recorded, so they are never counted in stats. The bot remembers these message IDs in memory for 24 hours. A send can time out after Telegram already delivered the message, so the bot learns its ID only from Telegram's copy: for 10 minutes it expects a copy from the bot with exactly that card or notice text, keeps it out of history, and still deletes such a notice. If you edit or delete the card more than 24 hours later, or after a gateway restart, history records an edit or deletion of a message it never had, and stats count it as an edit without original or a deletion not in history.
+Never in history: the command, the card, a fallback card or notice, Telegram's copies of their edits, and their deletion are never recorded, so they are never counted in stats. The bot remembers these message IDs in memory for 24 hours. A send can time out after Telegram already delivered the message, so the bot learns its ID only from Telegram's copy. A rich card from the bot is never history anyway. For a plain-text card or notice, the bot expects a copy with exactly that text for 10 minutes, keeps it out of history, and still deletes such a notice. If you edit or delete the card more than 24 hours later, or after a gateway restart, history records an edit or deletion of a message it never had, and stats count it as an edit without original or a deletion not in history.
 
 Like the panel, the command is read-only, uses no LLM, and stores nothing. The gateway log gets one line per command with the chat ID, message ID, period, and outcome: no names and no text.
 

@@ -297,11 +297,11 @@ async def test_real_ptb_transcribe_text_is_ordinary_business_text(plugin, telegr
 
 
 @pytest.mark.asyncio
-async def test_real_ptb_owner_stats_edits_the_command_into_an_html_card(plugin, telegram_app, monkeypatch):
+async def test_real_ptb_owner_stats_edits_the_command_into_a_rich_card(plugin, telegram_app, monkeypatch):
     app, request = telegram_app
     test_history.set_switch(plugin, "history", True)
     monkeypatch.setitem(sys.modules, "hermes_time", None)
-    request.responses["editMessageText"] = (200, {"ok": True, "result": {
+    request.responses["editmessagetext"] = (200, {"ok": True, "result": {
         "message_id": 78, "date": 1, "chat": {"id": 991, "type": "private"}, "text": "card",
     }})
     core = _register_native(plugin, app)
@@ -312,13 +312,13 @@ async def test_real_ptb_owner_stats_edits_the_command_into_an_html_card(plugin, 
         await app.process_update(Update.de_json({"update_id": 43, "business_message": command}, app.bot))
 
         method, params = request.calls[-1]
-        assert method == "editMessageText"
+        assert method == "editmessagetext"
         assert (params["chat_id"], params["message_id"]) == ("991", "78")
         assert params["business_connection_id"] == "business-123"
-        assert params["parse_mode"] == "HTML"
-        assert json.loads(params["link_preview_options"]) == {"is_disabled": True}
-        assert params["text"].startswith("<b>📊 Speaker × Casey · 30 d</b>\n")
-        assert "<b>💬 1</b>" in params["text"]
+        assert "parse_mode" not in params and "text" not in params
+        rich = json.loads(params["rich_message"])
+        assert rich["skip_entity_detection"] is True
+        assert rich["html"].startswith("<h3>📊 Speaker × Casey</h3>")
         core.assert_not_awaited()
         records = [json.loads(line)
                    for path in plugin._history_support.history_root().rglob("*.jsonl")
@@ -339,6 +339,10 @@ async def test_real_ptb_stats_fallbacks_send_and_delete(plugin, telegram_app, mo
     request.responses["editMessageText"] = (400, {
         "ok": False, "error_code": 400, "description": "Bad Request: message can't be edited",
     })
+    request.responses["editmessagetext"] = request.responses["editMessageText"]
+    request.responses["sendRichMessage"] = (200, {"ok": True, "result": {
+        "message_id": 701, "date": 1, "chat": {"id": 991, "type": "private"},
+    }})
     request.responses["deleteBusinessMessages"] = (200, {"ok": True, "result": True})
     core = _register_native(plugin, app)
     command = _business_update(app, sender_id=1000, update_id=43, text="/stats").to_dict()["business_message"]
@@ -350,16 +354,17 @@ async def test_real_ptb_stats_fallbacks_send_and_delete(plugin, telegram_app, mo
             await asyncio.gather(*plugin._pending_tasks)
 
         endpoints = [method for method, _params in request.calls]
-        assert endpoints[-3:] == ["editMessageText", "sendMessage", "deleteBusinessMessages"]
         _method, sent = request.calls[-2]
         _method, deleted = request.calls[-1]
         assert sent["business_connection_id"] == "business-123"
         if history:
-            # The card itself, as a new message; the command goes right away.
-            assert sent["parse_mode"] == "HTML" and sent["text"].startswith("<b>📊 Speaker × Casey · all time</b>")
-            assert json.loads(sent["link_preview_options"]) == {"is_disabled": True}
+            # The card itself, as a new rich message; the command goes right away.
+            assert endpoints[-3:] == ["editmessagetext", "sendRichMessage", "deleteBusinessMessages"]
+            assert json.loads(sent["rich_message"])["html"].startswith("<h3>📊 Speaker × Casey</h3>")
+            assert "parse_mode" not in sent
             assert json.loads(deleted["message_ids"]) == [78]
         else:
+            assert endpoints[-3:] == ["editMessageText", "sendMessage", "deleteBusinessMessages"]
             # A notice replies to the command, and both go after the short delay.
             assert sent["text"] == "📊 Stats are unavailable: history is off."
             assert "parse_mode" not in sent
