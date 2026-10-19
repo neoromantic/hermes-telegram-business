@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1 - 2026-10-19
+
+- Fix loading on Hermes 0.22+, which no longer installs PyYAML: the one-time config migration now reads YAML only when the config still names the old plugin, and uses Hermes's ruamel.yaml when PyYAML is missing.
+
 ## 0.10.0 - 2026-10-19
 
 - Rename the product, runtime plugin ID, catalog key, CLI, skills, and repository to Telesec.

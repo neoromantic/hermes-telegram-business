@@ -8,10 +8,20 @@ import os
 import tempfile
 from pathlib import Path
 
-import yaml
-
 OLD_ID = "telegram-business-voice-transcriber"
 NEW_ID = "telesec"
+
+
+def _yaml_io():
+    """PyYAML where the host has it (Hermes 0.21); Hermes 0.22+ ships ruamel.yaml instead."""
+    try:
+        import yaml
+    except ImportError:
+        from ruamel.yaml import YAML
+
+        round_trip = YAML()
+        return round_trip.load, round_trip.dump
+    return yaml.safe_load, lambda data, stream: yaml.safe_dump(data, stream, sort_keys=False, allow_unicode=True)
 
 
 def migrate(home: Path) -> None:
@@ -22,8 +32,11 @@ def migrate(home: Path) -> None:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         config_path = home / "config.yaml"
         config = {}
-        if config_path.exists():
-            config = yaml.safe_load(config_path.read_text())
+        text = config_path.read_text() if config_path.exists() else ""
+        # A config that never named the old plugin needs no YAML parser at all.
+        if OLD_ID in text:
+            load, dump = _yaml_io()
+            config = load(text) or {}
         plugins = config.get("plugins", {})
         entries = plugins.get("entries", {})
         changed = False
@@ -62,7 +75,7 @@ def migrate(home: Path) -> None:
             descriptor, temporary = tempfile.mkstemp(dir=home, prefix=".telesec-config-")
             with os.fdopen(descriptor, "w") as output:
                 os.fchmod(output.fileno(), 0o600)
-                yaml.safe_dump(config, output, sort_keys=False, allow_unicode=True)
+                dump(config, output)
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, config_path)
