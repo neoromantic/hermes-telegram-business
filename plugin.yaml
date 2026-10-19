@@ -1,6 +1,6 @@
 manifest_version: 2
 name: telesec
-version: 0.12.1
+version: 0.12.2
 description: "Telesec — Telegram Business secretary for Hermes."
 author: neoromantic
 license: MIT

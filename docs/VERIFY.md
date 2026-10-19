@@ -14,6 +14,10 @@ History checks must cover one-time opt-in, private-chat defaults, explicit scope
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## 0.12.2 release: 2026-10-20
+
+Before tagging, `hermes plugins validate --install-deps --json` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`, Python 3.14) passed: exit 0, `ok: true`, all 14 checks, security scan `safe`, and the dependency environment resolved with no "unsatisfiable" in stderr. The warnings are the known private imports (`transcribe_audio`, `hermes_time`). 1177 tests passed locally on Python 3.12.
+
 ## 0.12.0 and 0.12.1 release and live smoke: 2026-10-19
 
 Before tagging, `hermes plugins validate --install-deps` on a clean Hermes v0.22.2 passed for 0.12.0. CI ran 1026 tests on Python 3.11–3.14.

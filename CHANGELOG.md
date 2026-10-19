@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.2 - 2026-10-20
+
+- Transcribe Business voice messages, round videos, and audio from every contact, with no variable. The ordinary DM allowlist no longer applies to Business media; per-chat modes and Settings decide what is transcribed. `TELESEC_VOICE_BYPASS_AUTH` is removed and ignored.
+
 ## Unreleased
 
 - Add conversation metrics to `stats`: each side's share, turns and messages per turn, reply times with median and p90 ([#28](https://github.com/neoromantic/telesec/issues/28)), who is waiting for a reply, median message length, edits, messages per hour and weekday with the peak, activity over the range, streaks, the longest silence, and a comparison with the previous period of the same length when retained history covers it (as many whole days when the range starts at midnight). JSON `schema_version` is now 2; the new keys come after `missing_history`, and the existing keys are unchanged. Message text is read only to count its characters.

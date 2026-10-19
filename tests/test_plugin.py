@@ -67,7 +67,6 @@ def isolate_plugin_environment(monkeypatch: pytest.MonkeyPatch):
         "TELESEC_AUDIO_FILE_MAX_BYTES",
         "TELESEC_AUDIO_FILE_PROBE_SECONDS",
         "TELESEC_AUDIO_FILE_MIN_WORDS",
-        "TELESEC_VOICE_BYPASS_AUTH",
         "TELESEC_AGENT_ENABLE",
         "TELEGRAM_BOT_TOKEN",
         # Old switches: register() would move a developer's own value into the test's settings.json.
@@ -251,7 +250,7 @@ def test_manifest_uses_current_fields():
     assert {key: value for key, value in manifest.items() if key != "config_schema"} == {
         "manifest_version": 2,
         "name": PLUGIN_ID,
-        "version": "0.12.1",
+        "version": "0.12.2",
         "description": (
             "Telesec — Telegram Business secretary for Hermes."
         ),
@@ -282,7 +281,7 @@ def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "telesec"
-    assert metadata["version"] == "0.12.1"
+    assert metadata["version"] == "0.12.2"
     assert metadata["description"] == (
         "Telesec — Telegram Business secretary for Hermes."
     )
