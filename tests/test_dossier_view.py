@@ -539,7 +539,7 @@ def test_stale_error_failure_and_busy_notes(dv: ModuleType, contact: SimpleNames
 def test_disabled_with_stored_dossier(dv: ModuleType, contact: SimpleNamespace) -> None:
     view = dv.render_overview(replace(contact.snap, enabled=False), "en")
     check_view(dv, view)
-    assert "<p><i>Processing is off: this dossier is not updated.</i></p>" in view.html
+    assert "<p><i>Processing is off: this dossier is not updated. Turn dossiers on in Settings.</i></p>" in view.html
     assert "<b>f1</b>" in view.html
     assert view.buttons == ((("Manage facts", "m.c.0"),), (("My persona", "o.p"),))  # the switch is in Settings
 

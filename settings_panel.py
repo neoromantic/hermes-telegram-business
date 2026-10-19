@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 SECTION_KEY = _owner_panel.SETTINGS_SECTION
 SECTION_LABEL = "⚙️ Settings"
 ORDER = 900  # after every chat section
-# "<feature>.<target value>"; "d.ask" opens the dossier confirm, since dossiers send chat text to a model.
-ARGS = ("t.on", "t.off", "h.on", "h.off", "d.ask", "d.on", "d.off")
+# "<feature>.<target value>"; "d.ask" opens the dossier confirm, since dossiers send chat text to a model,
+# and only the confirm's "d.yes" turns them on.
+ARGS = ("t.on", "t.off", "h.on", "h.off", "d.ask", "d.yes", "d.on", "d.off")
 _FEATURES = {"t": "transcription", "h": "history", "d": "dossiers"}
 CURRENT_MARK = "• "
 
@@ -149,7 +150,7 @@ def _confirm_view(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
     cfg = _ds.load_config()
     text, yes, cancel = _dossier_view.enable_confirm(_dossier_view.lang_for(ctx.language_code), cfg.provider,
                                                      cfg.model)
-    return _owner_panel.PanelView(text=text, buttons=[[(yes, _callback(ctx, "d.on")), (cancel, _callback(ctx))]])
+    return _owner_panel.PanelView(text=text, buttons=[[(yes, _callback(ctx, "d.yes")), (cancel, _callback(ctx))]])
 
 
 def render(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
@@ -161,12 +162,13 @@ def render(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
     if arg is not None and not manager:
         logger.info("%s: settings change refused reason=owner_scope", _history.PLUGIN_NAME)
         notice = _owner_panel.tr("not_allowed", ctx.language_code)
-    elif arg == "d.ask":
+    elif arg == "d.ask" or (arg == "d.on" and not _settings.enabled("dossiers")):
+        # A stale "• Keep dossiers" from before dossiers were turned off asks again, never enables.
         if _settings.enabled("history"):
             return _confirm_view(ctx)
         notice = _tr("settings.needs_history", ctx)
     elif arg is not None:
-        notice = _apply(ctx, arg)
+        notice = _apply(ctx, "d.on" if arg == "d.yes" else arg)
     return _main_view(ctx, manager, notice)
 
 

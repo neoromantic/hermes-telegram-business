@@ -443,7 +443,7 @@ async def test_disable_keeps_stored_dossiers(plug, ds, panel):
     settings = read_settings(ds)
     assert (settings["enabled"], settings["updated_via"]) == (False, "telegram")
     assert read_dossier(ds, CHAT) is not None
-    assert COMMITMENT in off.html and "Обработка выключена" in off.text
+    assert COMMITMENT in off.html and "Обработка выключена: досье не обновляется. Включить можно в настройках." in off.text
     assert args_of(off) == ["m.c.0", "o.p"]
 
 
@@ -457,7 +457,7 @@ async def test_refresh_refused_when_disabled_or_without_a_model(plug, ds, panel)
     disabled = await act(panel, "rf.c")
 
     for view in (no_model, disabled):
-        assert view.notice == "Refresh is unavailable: dossiers are off or the model is not connected."
+        assert view.notice == "Refresh is unavailable: dossiers or history are off, or the model is not connected."
     assert panel.load_contact_snapshot(BUSINESS_ID, CHAT).refreshing is False
 
 
@@ -636,12 +636,17 @@ async def test_unreadable_persona_keeps_the_operator_in_control(plug, ds, panel)
 @pytest.mark.asyncio
 async def test_history_capture_off_is_explained(plug, ds, panel, monkeypatch):
     await build(plug, ds)
+    ds.bind_llm(FakeLlm())
+    assert "rf.c" in args_of(await act(panel))
     test_history.set_switch(plug, "history", False)
 
     view = await act(panel)
 
     assert "History is off, so dossiers are paused. Turn it on in Settings." in view.text
+    assert "rf.c" not in args_of(view)  # start_refresh would refuse it
     assert "История выключена, поэтому досье на паузе" in (await act(panel, lang="ru")).text
+    refused = await act(panel, "rf.c")
+    assert refused.notice == "Refresh is unavailable: dossiers or history are off, or the model is not connected."
 
 
 @pytest.mark.asyncio

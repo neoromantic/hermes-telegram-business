@@ -71,7 +71,7 @@ def register_ctx(config: dict | None = None) -> SimpleNamespace:
         ({"TELESEC_HISTORY_ENABLE": "0"}, {}, {}),
         ({}, {"history_enable": True}, {"history": True}),  # Desktop
         ({}, {"history_enable": "yes"}, {"history": True}),
-        ({"TELESEC_HISTORY_ENABLE": "0"}, {"history_enable": True}, {}),  # the variable wins, as before
+        ({"TELESEC_HISTORY_ENABLE": "0"}, {"history_enable": True}, {"history": False}),  # the variable wins
         ({"TELESEC_DISABLE": "1"}, {}, {"transcription": False}),
         ({"TELESEC_DISABLE": "0"}, {}, {}),
         ({"TELESEC_DISABLE": "true", "TELESEC_HISTORY_ENABLE": "yes"}, {}, {"transcription": False, "history": True}),
@@ -119,6 +119,26 @@ def test_a_cli_process_without_the_service_environment_never_writes(gs, plugin):
 
     assert not gs.settings_path().exists()
     assert (gs.enabled("transcription"), gs.enabled("history"), gs.enabled("dossiers")) == (True, False, False)
+
+
+def test_a_variable_that_turns_off_desktop_history_keeps_it_off_later(gs, plugin, monkeypatch):
+    desktop = {"history_enable": True}
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "0")  # the gateway's unit overrides the Desktop setting
+    plugin.register(register_ctx(desktop))
+    assert stored(plugin)["history"]["enabled"] is False
+
+    monkeypatch.delenv("TELESEC_HISTORY_ENABLE")  # an SSH shell, or the operator removed the variable
+    plugin.register(register_ctx(desktop))
+
+    assert gs.enabled("history") is False
+    assert stored(plugin)["history"]["updated_via"] == "migration"
+
+
+def test_a_cli_process_stores_the_desktop_history_setting(gs, plugin):
+    plugin.register(register_ctx({"history_enable": True}))  # Desktop config, no service environment
+
+    assert gs.enabled("history") is True
+    assert stored(plugin)["history"]["updated_via"] == "migration"
 
 
 def test_production_upgrade_keeps_history_transcription_and_dossiers_on(gs, plugin, monkeypatch, caplog):
@@ -297,10 +317,10 @@ def test_dossiers_ask_first_and_need_history(gs, plugin):
     assert panel.render(ctx(plugin, arg="h.on")).text.splitlines()[1] == "History is on."
     confirm = panel.render(ctx(plugin, arg="d.ask"))
     assert confirm.text.startswith("Turn on dossiers?\n\nThe text of ALL private chats will be sent to gemini / ")
-    assert rows(confirm) == [[("Enable", "tb:s:0:settings/d.on"), ("Cancel", "tb:s:0:settings")]]
+    assert rows(confirm) == [[("Enable", "tb:s:0:settings/d.yes"), ("Cancel", "tb:s:0:settings")]]
     assert gs.enabled("dossiers") is False  # asking writes nothing
 
-    on = panel.render(ctx(plugin, arg="d.on"))
+    on = panel.render(ctx(plugin, arg="d.yes"))
     assert on.text.splitlines()[1] == "Dossiers are on."
     assert rows(on)[2] == [("• Keep dossiers", "tb:s:0:settings/d.on"), ("No dossiers", "tb:s:0:settings/d.off")]
     assert plugin._dossier_support.load_settings()["updated_via"] == "telegram"
@@ -314,6 +334,23 @@ def test_dossiers_ask_first_and_need_history(gs, plugin):
     off = panel.render(ctx(plugin, arg="d.off", lang="ru"))
     assert off.text.splitlines()[1] == "Досье выключены во всех чатах."
     assert "на паузе" not in off.text
+
+
+def test_a_stale_keep_dossiers_button_asks_again(gs, plugin):
+    top.bind_owner(plugin)
+    panel = plugin._settings_panel
+    set_switch(plugin, "history", True)
+    set_switch(plugin, "dossiers", True)
+    assert rows(panel.render(ctx(plugin)))[2][0] == ("• Keep dossiers", "tb:s:0:settings/d.on")
+    set_switch(plugin, "dossiers", False)  # turned off since that message was sent
+
+    stale = panel.render(ctx(plugin, arg="d.on"))
+
+    assert stale.text.startswith("Turn on dossiers?")
+    assert rows(stale)[0][0] == ("Enable", "tb:s:0:settings/d.yes")
+    assert gs.enabled("dossiers") is False
+    assert panel.render(ctx(plugin, arg="d.on", chat=str(CHAT))).text.startswith("Turn on dossiers?")
+    assert gs.enabled("dossiers") is False
 
 
 def test_switches_from_telegram_apply_without_a_restart(gs, plugin):

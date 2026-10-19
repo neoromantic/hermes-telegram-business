@@ -254,17 +254,22 @@ def _setting_on(value: Any) -> bool:
 
 
 def _legacy_values(get_config: Callable[..., Any]) -> dict[str, tuple[bool, str]]:
-    """feature -> (value, source name) for each old switch that differs from the default.
+    """feature -> (value, source name) for each old switch to store.
 
-    The variable wins over the Desktop setting, as it did up to 0.11.0.
+    That is a value that differs from the default, plus history off when the variable turns off a
+    Desktop "on": the variable wins over the Desktop setting, as it did up to 0.11.0, and without a
+    stored "off" a later process without the variable would store the stale Desktop "on".
     """
     found: dict[str, tuple[bool, str]] = {}
     if _history._truthy_env(LEGACY_TRANSCRIPTION_ENV):
         found["transcription"] = (False, LEGACY_TRANSCRIPTION_ENV)
+    desktop_history = _setting_on(get_config(LEGACY_HISTORY_SETTING, None))
     if LEGACY_HISTORY_ENV in os.environ:
         if _history._truthy_env(LEGACY_HISTORY_ENV):
             found["history"] = (True, LEGACY_HISTORY_ENV)
-    elif _setting_on(get_config(LEGACY_HISTORY_SETTING, None)):
+        elif desktop_history:
+            found["history"] = (False, LEGACY_HISTORY_ENV)
+    elif desktop_history:
         found["history"] = (True, f"the {LEGACY_HISTORY_SETTING} setting")
     return found
 
@@ -279,11 +284,11 @@ def _ignored_line(name: str, feature: str, on: bool, source: str) -> str:
 
 
 def migrate_legacy(*, get_config: Callable[..., Any] | None = None, now: datetime | None = None) -> list[str]:
-    """Store each old switch once, only when it differs from the default and nothing is stored yet.
+    """Store each old switch once (see ``_legacy_values``) when nothing is stored for it yet.
 
     ``register()`` runs in CLI processes too, where a service's environment may be missing, so a
-    default value is never stored: it would later mask the service's setting. A corrupt file is
-    left alone. Returns the migrated features.
+    default value is stored only when the variable overrides a Desktop "on"; otherwise it would
+    later mask the service's setting. A corrupt file is left alone. Returns the migrated features.
     """
     legacy = _legacy_values(get_config or _history.get_config)
     if not legacy:

@@ -73,7 +73,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "model": "Model",
         "count_facts": "Facts", "count_stale": "stale", "count_unsupported": "unsupported",
         "count_contradictions": "contradictions",
-        "note_off": "Processing is off: this dossier is not updated.",
+        "note_off": "Processing is off: this dossier is not updated. Turn dossiers on in Settings.",
         "note_history_off": "History is off, so dossiers are paused. Turn it on in Settings.",
         "note_no_llm": "The model is not connected in this process, so refresh is unavailable.",
         "note_refreshing": "Refreshing now…",
@@ -132,7 +132,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "notice": {"changed": "This dossier changed. Open it again.",
                    "busy": "Another dossier cycle is running. Try again in a minute.",
                    "refresh_started": "Refresh started. Open the dossier again in a minute.",
-                   "unavailable": "Refresh is unavailable: dossiers are off or the model is not connected.",
+                   "unavailable": "Refresh is unavailable: dossiers or history are off, or the model is not connected.",
                    "pinned": "{fid} pinned.", "unpinned": "{fid} unpinned.", "removed": "{fid} removed.",
                    "failed": "That did not work ({error}).",
                    "operator_only": "Only the owner of every Business connection the bot knows about can open "
@@ -167,7 +167,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "model": "Модель",
         "count_facts": "Фактов", "count_stale": "устарели", "count_unsupported": "без подтверждения",
         "count_contradictions": "противоречий",
-        "note_off": "Обработка выключена: досье не обновляется.",
+        "note_off": "Обработка выключена: досье не обновляется. Включить можно в настройках.",
         "note_history_off": "История выключена, поэтому досье на паузе. Включите её в настройках.",
         "note_no_llm": "Модель не подключена в этом процессе, поэтому обновление недоступно.",
         "note_refreshing": "Идёт обновление…",
@@ -229,7 +229,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "notice": {"changed": "Досье изменилось. Откройте его заново.",
                    "busy": "Сейчас идёт другой цикл обработки. Попробуйте через минуту.",
                    "refresh_started": "Обновление запущено. Откройте досье через минуту.",
-                   "unavailable": "Обновление недоступно: досье выключены или модель не подключена.",
+                   "unavailable": "Обновление недоступно: досье или история выключены, либо модель не подключена.",
                    "pinned": "{fid} закреплён.", "unpinned": "{fid} откреплён.", "removed": "{fid} удалён.",
                    "failed": "Не получилось ({error}).",
                    "operator_only": "Персона и включение досье доступны только владельцу всех бизнес-подключений, "
@@ -982,8 +982,8 @@ def _overview_buttons(cx: _Cx, has_facts: bool) -> Rows:
         return _rows([(s["b_manage"], build_args("manage", "persona"))] if has_facts else [],
                      [(s["b_back_dossier"], build_args("overview"))])
     first = [(s["b_manage"], build_args("manage"))] if has_facts else []
-    if (snap.enabled and snap.llm_ready and snap.in_history and not snap.refreshing and snap.status != "corrupt"
-            and not (snap.dossier is None and snap.missing_reason == "unqualified")):
+    if (snap.enabled and snap.history_enabled and snap.llm_ready and snap.in_history and not snap.refreshing
+            and snap.status != "corrupt" and not (snap.dossier is None and snap.missing_reason == "unqualified")):
         first.append((s["b_refresh"], build_args("refresh")))
     if not snap.manage_global:
         return _rows(first)
