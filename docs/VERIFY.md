@@ -12,6 +12,10 @@ History checks must cover one-time opt-in, private-chat defaults, explicit scope
 
 Native-handler checks must demonstrate that Business voice/audio is consumed before the ordinary media handler, unrelated messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## Live gateway smoke: 0.9.0, 2026-10-19
+
+Plugin `0.9.0` ran on the owner's production gateway (Hermes `0.21.6`) with a real Business connection. In a real private chat, `/transcribe off` was confirmed in place and the next voice note was skipped silently (`decision=skip reason=mode_off`). `/transcribe both` restored transcription, and the next voice note got its transcript caption. `/transcribe`, `/transcribe reset` and an unknown argument returned the expected status lines. The modes file was written `0600` and listed by `hermes telegram-business mode list`. The live run showed that the contact could see command messages, so 0.9.0 deletes the command and its status about 5 seconds after confirming.
+
 ## Current-core smoke: 2026-10-18
 
 Plugin `0.8.0` at [`0e758ffc`](https://github.com/neoromantic/hermes-telegram-business/commit/0e758ffc1bbbc759b6b81e8f6bd557927a15ec7a) was installed and enabled through the actual CLI in an isolated profile using tagged Hermes `v0.22.2`, Python `3.14.5`, and PTB `22.8`. [CI passed 243 tests on every Python version from 3.11 through 3.14](https://github.com/neoromantic/hermes-telegram-business/actions/runs/39147890386).

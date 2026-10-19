@@ -10,15 +10,15 @@ The product connects readable Telegram voice messages with useful personal corre
 - Supported native Telegram handler registration in place of adapter monkeypatches.
 - Gemini 3.8 Flash cleanup through Hermes's host-owned LLM interface, plus Python 3.11–3.14 and real PTB contract coverage.
 
-## Implemented in the 0.9.0 branch
+## Implemented in 0.9.0
 
-- [Transcription controls #7](https://github.com/neoromantic/hermes-telegram-business/issues/7): manual per-chat `both`, `own`, `peer`, and `off` modes for voice, round video, and attached audio. Owners set them with the in-chat `/transcribe` command or `hermes telegram-business mode`, and the gateway reloads changes without a restart.
-
-The 0.9.0 section is branch implementation status, not a claim that 0.9.0 has been published or installed in a running gateway. [Verification boundaries](VERIFY.md).
-
-## Unreleased
-
+- [Transcription controls #7](https://github.com/neoromantic/hermes-telegram-business/issues/7): manual per-chat `both`, `own`, `peer`, and `off` modes for voice, round video, and attached audio. Owners set them with the in-chat `/transcribe` command, which the bot confirms and then deletes, or with `hermes telegram-business mode`. The gateway reloads changes without a restart.
+- [Correspondence stats #4](https://github.com/neoromantic/hermes-telegram-business/issues/4), first slice: the deterministic [`stats` command](STATS.md).
 - Opt-in contact dossiers and owner persona ([#17](https://github.com/neoromantic/hermes-telegram-business/issues/17)), built in the gateway background. [Dossier guide](DOSSIERS.md).
+
+## Next
+
+- Show stats and dossiers to the owner from a Business chat without the contact seeing them ([#4](https://github.com/neoromantic/hermes-telegram-business/issues/4), [#17](https://github.com/neoromantic/hermes-telegram-business/issues/17)).
 
 ## Priorities and requirements
 
@@ -38,9 +38,9 @@ Deferred from the #17 first slice: using dossiers in drafts (#18) and automatic 
 | Issue | First useful slice |
 |---|---|
 | [Raw-first transcripts #8](https://github.com/neoromantic/hermes-telegram-business/issues/8) | Show raw STT immediately, then edit the same caption/reply after cleanup; start with one output target. |
-| [Transcription controls #7](https://github.com/neoromantic/hermes-telegram-business/issues/7) | Implemented in the 0.9.0 branch: manual per-chat `both`, `own`, `peer`, and `off`. Automatic peer detection remains a separate investigation. |
+| [Transcription controls #7](https://github.com/neoromantic/hermes-telegram-business/issues/7) | Implemented in 0.9.0: manual per-chat `both`, `own`, `peer`, and `off`. Automatic peer detection remains a separate investigation. |
 | [Scheduled sending #3](https://github.com/neoromantic/hermes-telegram-business/issues/3) | Recover the existing static-text send CLI; Hermes cron owns timing, with explicit targets and no ledger. |
-| [Correspondence insights #4](https://github.com/neoromantic/hermes-telegram-business/issues/4) | First slice implemented, unreleased: the deterministic [`stats` command](STATS.md) with per-contact counts, active days, sessions, latest activity, and deletions. Remaining: response-time and turn metrics, then opt-in owner notifications for unexplained deletions and overdue incoming turns. |
+| [Correspondence insights #4](https://github.com/neoromantic/hermes-telegram-business/issues/4) | First slice in 0.9.0: the deterministic [`stats` command](STATS.md) with per-contact counts, active days, sessions, latest activity, and deletions. Remaining: in-chat stats for the owner, response-time and turn metrics, then opt-in owner notifications for unexplained deletions and overdue incoming turns. |
 | [Voice bursts #9](https://github.com/neoromantic/hermes-telegram-business/issues/9) | Opt-in same-sender grouping with ordering and explicit boundaries; avoid delaying every single note. |
 | [Release and launch #10](https://github.com/neoromantic/hermes-telegram-business/issues/10) | Align versions, verify installation, refresh visual docs, and publish accurate release/demo material. |
 
