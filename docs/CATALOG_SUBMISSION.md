@@ -103,3 +103,11 @@ The plugin security scanner uses `tools.plugin_guard.scan_plugin`, which applies
 The scanner findings are the disclosed local media processes, concurrency-test process, escaped control-character handling/test fixtures, documentation install commands, developer instruction files, and large illustration. No scan exclusions were added. The only admission warning is the STT import disclosed above.
 
 Minimum Hermes version: `0.21.6`, verified with the isolated minimum-version check. Python runtime for validation: 3.14.5; PTB: 22.8. No new Python runtime dependencies are declared by the plugin.
+
+## For the next SHA bump
+
+The text above describes the 0.10.1 submission. Since then, unreleased changes need these disclosure updates:
+
+- Bot API: for the owner's `/dossier`, the bot deletes that command (`deleteBusinessMessages`) and posts the contact's dossier into the same Business chat (`sendRichMessage`); when it posts nothing, the reason goes to the owner's private chat with the bot.
+- Background work: the dossier thread starts on adapter connect even while dossiers are off and then only checks the stored switch every minute; LLM calls happen only after the owner turns dossiers on.
+- Settings: dossiers are switched in the owner panel or with `hermes telesec dossier enable|disable`, with no restart. The stored switch wins once set; `dossier_enable` and `TELESEC_DOSSIER_ENABLE` only give the starting state.

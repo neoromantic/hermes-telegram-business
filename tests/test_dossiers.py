@@ -7,10 +7,13 @@ so payloads and plans are deterministic [L4].
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import json
 import logging
 import re
 import stat
+import time
 from collections.abc import Callable
 from datetime import timedelta
 from types import ModuleType
@@ -42,10 +45,13 @@ from dossier_helpers import (
     read_changes,
     read_dossier,
     read_persona,
+    read_settings,
     read_state,
     seed,
     snapshot_history_tree,
     snapshot_tree,
+    spy_worker_cycles,
+    wait_until,
     wait_worker_cycle,
 )
 
@@ -131,23 +137,35 @@ async def two_sided(plugin: ModuleType, chat_id: int, tag: str, *, minutes: int 
 
 
 @pytest.mark.asyncio
-async def test_disabled_no_worker_no_call(dossier_history: ModuleType) -> None:
+async def test_disabled_worker_idles_without_cycle_call_or_write(
+    dossier_history: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
     plugin = dossier_history
     await two_sided(plugin, 5501, "OFF")
     ds = dossier_module(plugin)
+    monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ds, "DISABLED_POLL_SECONDS", 0.02)  # many switch checks during the test
+    outcomes = spy_worker_cycles(monkeypatch, ds)
     fake = FakeLlm(quote_first)
-    ds.bind_llm(fake)
     try:
-        connect_gateway(plugin)
-        assert ds.ensure_worker_started() is False
+        assert ds.ensure_worker_started() is False  # no facade bound: nothing starts
         assert ds._WORKERS == {}
-        assert live_worker_threads() == []
-        report = cycle(ds, fake)
-        assert report.outcome == "disabled"
-        assert fake.calls == []
-        assert not ds.dossier_root().exists()
+        ds.bind_llm(fake)
+        connect_gateway(plugin)  # the facade is bound, so the worker runs while disabled
+        assert ds.ensure_worker_started() is True
+        threads = live_worker_threads()
+        assert len(ds._WORKERS) == 1 and len(threads) == 1
+        await asyncio.sleep(0.3)
+        worker = next(iter(ds._WORKERS.values()))
+        assert threads[0].is_alive() and not worker.cycle_done.is_set()
+        assert outcomes == [] and fake.calls == []
+        assert not ds.dossier_root().exists()  # checking the switch writes nothing
+        assert cycle(ds, fake).outcome == "disabled"
+        assert fake.calls == [] and not ds.dossier_root().exists()
     finally:
+        ds.stop_workers(timeout=2)
         ds.bind_llm(None)
+    assert live_worker_threads() == []
 
 
 @pytest.mark.asyncio
@@ -172,7 +190,8 @@ async def test_run_cli_refuses_when_disabled(dossier_history: ModuleType, monkey
         ds.bind_llm(None)
     assert code == 1
     assert "dossiers are disabled" in out + err
-    assert "TELESEC_DOSSIER_ENABLE=1" in out + err
+    assert "'hermes telesec dossier enable'" in out + err
+    assert "DOSSIER_ENABLE" not in out + err
     assert fake.calls == []
     assert not ds.dossier_root().exists()  # no lock file was created
 
@@ -253,7 +272,7 @@ async def test_on_unload_registered_and_stops_worker(plug: ModuleType, dossiers:
     fake = FakeLlm()
     ctx = FakeCtx(fake, with_unload=True)
     plug.register(ctx)
-    assert len(ctx.unload_callbacks) == 1
+    assert ctx.unload_callbacks == [plug._dossier_panel.stop_background]  # also stops panel refreshes
     assert "dossiers" in [name for name, _path, _desc in ctx.skills]
 
     connect_gateway(plug)
@@ -286,6 +305,370 @@ async def test_cycle_lock_prevents_concurrent_cycles(plug: ModuleType, dossiers:
     assert not ds.cycle_running()
     assert cycle(ds, fake).outcome == "completed"
     assert fake.calls
+
+
+# ---------------------------------------------------------------------------
+# Stored on/off switch
+# ---------------------------------------------------------------------------
+
+ENABLE_HINT = "Turn on with 'hermes telesec dossier enable' or the owner panel in Telegram."
+STAMP = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"
+
+
+def iso(value: Any) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@pytest.mark.asyncio
+async def test_enable_disable_cli_round_trip_idempotent_with_status(dossier_history: ModuleType) -> None:
+    plugin = dossier_history
+    ds = dossier_module(plugin)
+    code, out, _err = cli(plugin, "dossier", "status")
+    assert code == 0
+    assert f"Dossiers: disabled. {ENABLE_HINT}" in out.splitlines()
+    assert "warning" not in out
+    assert not ds.dossier_root().exists()  # status never writes the switch
+
+    code, out, _err = cli(plugin, "dossier", "enable")
+    assert code == 0, out
+    assert re.search(rf"^Dossiers: enabled \({STAMP} via cli\)\.$", out, re.MULTILINE), out
+    assert "first cycle within a few minutes; no gateway restart is needed" in out
+    assert f"The text of all private Business chats is sent to {ds.DEFAULT_PROVIDER} / {ds.DEFAULT_MODEL}." in out
+    assert "history capture is off" not in out
+    stored = read_settings(ds)
+    assert stored is not None and set(stored) == {"schema_version", "enabled", "updated_at", "updated_via"}
+    assert (stored["schema_version"], stored["enabled"], stored["updated_via"]) == (1, True, "cli")
+    path = ds.dossier_root() / "settings.json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(ds.dossier_root().stat().st_mode) == 0o700
+    assert ds.load_config().enabled is True
+    before = path.read_bytes()
+
+    code, out, _err = cli(plugin, "dossier", "enable")
+    assert code == 0
+    assert f"Dossiers are already enabled (since {stored['updated_at']} via cli)." in out
+    assert path.read_bytes() == before  # idempotent: the switch time stays the first one
+    code, out, _err = cli(plugin, "dossier", "status")
+    assert f"Dossiers: enabled (since {stored['updated_at']} via cli)" in out.splitlines()
+
+    code, out, _err = cli(plugin, "dossier", "disable")
+    assert code == 0
+    assert re.search(rf"^Dossiers: disabled \({STAMP} via cli\)\. No more chat text is sent to the model", out,
+                     re.MULTILINE), out
+    assert "Stored dossiers are kept; delete them with 'hermes telesec dossier forget --all'." in out
+    stored = read_settings(ds)
+    assert (stored["enabled"], stored["updated_via"]) == (False, "cli")
+    assert ds.load_config().enabled is False
+    before = path.read_bytes()
+    code, out, _err = cli(plugin, "dossier", "disable")
+    assert code == 0
+    assert f"Dossiers are already disabled (since {stored['updated_at']} via cli)." in out
+    assert path.read_bytes() == before
+    code, out, _err = cli(plugin, "dossier", "status")
+    assert f"Dossiers: disabled (since {stored['updated_at']} via cli). {ENABLE_HINT}" in out.splitlines()
+
+
+def test_set_enabled_api_validates_and_records_time_and_source(
+    dossier_history: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = dossier_history
+    ds = dossier_module(plugin)
+    assert ds.load_settings() == {"schema_version": 1, "enabled": False, "updated_at": None, "updated_via": None,
+                                 "initial_source": None}
+    with pytest.raises(ValueError, match="unknown switch source"):
+        ds.set_enabled(True, via="env")
+    assert not ds.dossier_root().exists()
+
+    at = NOW - timedelta(minutes=5)
+    on = ds.set_enabled(True, via="telegram", now=at)
+    assert on == {"schema_version": 1, "enabled": True, "updated_at": iso(at), "updated_via": "telegram",
+                  "changed": True}
+    assert read_settings(ds) == ds.load_settings() == {k: v for k, v in on.items() if k != "changed"}
+    assert ds.set_enabled(True, via="cli", now=NOW) == {**on, "changed": False}
+    off = ds.set_enabled(False, via="cli", now=NOW)
+    assert (off["changed"], off["enabled"], off["updated_at"], off["updated_via"]) == (True, False, iso(NOW), "cli")
+
+    (ds.dossier_root() / "settings.json").write_text("{", encoding="utf-8")
+    assert ds.set_enabled(False, via="cli", now=NOW)["changed"] is True  # an explicit switch repairs a bad file
+    assert "error" not in ds.load_settings()
+
+    monkeypatch.delenv("TELESEC_HISTORY_ENABLE")
+    code, out, _err = cli(plugin, "dossier", "enable")
+    assert code == 0
+    assert ("note: history capture is off; dossiers are built from it (turn on the history_enable setting or "
+            "set TELESEC_HISTORY_ENABLE=1).") in out
+
+
+@pytest.mark.asyncio
+async def test_env_and_desktop_setting_seed_the_switch_until_it_is_set(
+    dossier_history: ModuleType, dossier_env: Callable[..., None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = dossier_history
+    ds = dossier_module(plugin)
+    await two_sided(plugin, 5560, "SEED")
+    settings_file = ds.dossier_root() / "settings.json"
+    settings_file.unlink(missing_ok=True)
+    dossier_env(ENABLE=None)
+    assert (ds.load_config().enabled, ds.load_settings()["initial_source"]) == (False, None)
+
+    monkeypatch.setattr(ds._history, "get_config", {"dossier_enable": True}.get)  # Desktop setting
+    cfg = ds.load_config()
+    assert (cfg.enabled, cfg.warnings) == (True, ())
+    _code, out, _err = cli(plugin, "dossier", "status")
+    assert "Dossiers: enabled (from the dossier_enable setting until the switch is set)" in out.splitlines()
+    dossier_env(ENABLE="0")  # the env variable overrides the Desktop setting
+    assert ds.load_config().enabled is False
+    assert ds.load_settings()["initial_source"] == "TELESEC_DOSSIER_ENABLE"
+    dossier_env(ENABLE="1")
+    assert ds.load_config().enabled is True
+    assert not settings_file.exists()  # reading never writes
+
+    warning = ("warning: TELESEC_DOSSIER_ENABLE says on, but the stored switch is off and wins; to keep dossiers "
+               "off, remove TELESEC_DOSSIER_ENABLE from the profile's environment; to turn them on, run "
+               "'hermes telesec dossier enable' or use the owner panel")
+    ds.set_enabled(False, via="telegram")  # the stored switch decides once set
+    cfg = ds.load_config()
+    assert (cfg.enabled, cfg.warnings) == (False, (warning,))
+    fake = FakeLlm(quote_first)
+    assert cycle(ds, fake).outcome == "disabled"
+    assert fake.calls == []
+    _code, out, _err = cli(plugin, "dossier", "status")
+    assert out.splitlines()[0] == warning
+    assert re.search(rf"^Dossiers: disabled \(since {STAMP} via telegram\)\. ", out, re.MULTILINE), out
+    dossier_env(ENABLE=None)
+    assert ds.load_config().warnings == (("warning: the dossier_enable setting says on, but the stored switch is "
+                                          "off and wins; to keep dossiers off, turn the dossier_enable setting off; "
+                                          "to turn them on, run 'hermes telesec dossier enable' or use the owner "
+                                          "panel"),)
+    _code, out, _err = cli(plugin, "dossier", "disable")  # on purpose: no advice to turn them back on
+    assert "run 'hermes telesec dossier enable'" not in out
+    assert ("note: the dossier_enable setting still says on; the stored switch wins, but turn the dossier_enable "
+            "setting off to avoid confusion.") in out.splitlines()
+    monkeypatch.setattr(ds._history, "get_config", {}.get)
+    assert ds.load_config().warnings == ()
+
+    dossier_env(ENABLE="0")
+    on = ds.set_enabled(True, via="cli")
+    assert on["changed"] is True and ds.load_config().enabled is True  # the switch also wins over an "off"
+    assert ds.load_config().warnings == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["{not json", '{"schema_version": 1, "enabled": "yes"}', '{"enabled": true}',
+                                     "[]", ""])
+async def test_corrupt_switch_reads_disabled_with_warning_until_rewritten(
+    plug: ModuleType, dossiers: ModuleType, content: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    ds = dossiers
+    await two_sided(plug, 5561, "BADSWITCH")
+    path = ds.dossier_root() / "settings.json"
+    path.write_text(content, encoding="utf-8")
+    settings = ds.load_settings()
+    assert settings["enabled"] is False and "unreadable or corrupt" in settings["error"]
+    cfg = ds.load_config()
+    assert cfg.enabled is False
+    assert len(cfg.warnings) == 1 and "settings.json is unreadable or corrupt" in cfg.warnings[0]
+    fake = FakeLlm(quote_first)
+    assert cycle(ds, fake).outcome == "disabled" and fake.calls == []
+    code, out, _err = cli(plug, "dossier", "status")
+    assert code == 0
+    assert out.splitlines()[0].startswith("warning: ") and "settings.json is unreadable or corrupt" in out
+    assert f"Dossiers: disabled. {ENABLE_HINT}" in out.splitlines()
+    code, out, _err = cli(plug, "dossier", "run")
+    assert code == 1 and "dossiers are disabled" in out
+    assert path.read_text(encoding="utf-8") == content  # never overwritten silently
+    ds.bind_llm(FakeLlm())
+    with caplog.at_level(logging.WARNING):
+        assert ds.ensure_worker_started() is True  # the gateway log says why dossiers stay off
+    assert "dossier switch settings.json is unreadable or corrupt" in caplog.text
+    ds.stop_workers(timeout=2)
+
+    code, out, _err = cli(plug, "dossier", "enable")  # an explicit switch rewrites it
+    assert code == 0
+    assert "Dossiers: enabled (" in out and "corrupt" not in out
+    assert read_settings(ds)["enabled"] is True
+    assert ds.load_config().warnings == ()
+
+
+@pytest.mark.asyncio
+async def test_switch_on_starts_idle_worker_cycle_without_restart(
+    dossier_history: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = dossier_history
+    ds = dossier_module(plugin)
+    await two_sided(plugin, 5562, "SWITCHON")
+    monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ds, "DISABLED_POLL_SECONDS", 3600)  # only a wake ends the idle wait
+    outcomes = spy_worker_cycles(monkeypatch, ds)
+    fake = FakeLlm(quote_first, quote_first)
+    ds.bind_llm(fake)
+    try:
+        connect_gateway(plugin)
+        threads = live_worker_threads()
+        assert len(threads) == 1
+        await asyncio.sleep(0.2)
+        assert outcomes == [] and fake.calls == []
+
+        assert ds.set_enabled(True, via="telegram")["changed"] is True
+        assert ds.wake_worker() is True
+        wait_worker_cycle(ds, timeout=10)
+        assert outcomes == ["completed"]
+        assert len(contact_payloads(fake)) == 1 and len(persona_payloads(fake)) == 1
+        assert read_dossier(ds, 5562) is not None
+        assert read_state(ds)["last_cycle"]["trigger"] == "worker"
+        assert live_worker_threads() == threads  # the same thread: no restart
+    finally:
+        ds.stop_workers(timeout=2)
+        ds.bind_llm(None)
+    assert ds.wake_worker() is False  # nothing left to wake
+
+
+@pytest.mark.asyncio
+async def test_cli_enable_reaches_gateway_worker_by_polling_after_connect_delay(
+    dossier_history: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = dossier_history
+    ds = dossier_module(plugin)
+    await two_sided(plugin, 5563, "POLL")
+    delay = 0.8
+    monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", delay)
+    monkeypatch.setattr(ds, "DISABLED_POLL_SECONDS", 0.05)
+    outcomes = spy_worker_cycles(monkeypatch, ds)
+    fake = FakeLlm(quote_first, quote_first)
+    ds.bind_llm(fake)
+    try:
+        started = time.monotonic()
+        connect_gateway(plugin)
+        code, _out, _err = cli(plugin, "dossier", "enable")  # another process: no wake reaches the worker
+        assert code == 0
+        assert ds.wake_worker() is True  # and a wake never shortens the post-connect delay
+        await asyncio.sleep(0.3)
+        assert outcomes == [] and fake.calls == []
+        wait_worker_cycle(ds, timeout=10)
+        assert time.monotonic() - started >= delay
+        assert outcomes == ["completed"] and len(fake.calls) == 2
+    finally:
+        ds.stop_workers(timeout=2)
+        ds.bind_llm(None)
+
+
+@pytest.mark.asyncio
+async def test_wake_while_enabled_never_causes_back_to_back_cycles(
+    plug: ModuleType, dossiers: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = dossiers
+    await two_sided(plug, 5564, "NOBURST")
+    monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ds, "DISABLED_POLL_SECONDS", 0.02)  # the interval wait re-reads the switch often
+    outcomes = spy_worker_cycles(monkeypatch, ds)
+    fake = FakeLlm(quote_first, quote_first)
+    ds.bind_llm(fake)
+    connect_gateway(plug)
+    wait_worker_cycle(ds, timeout=10)
+    assert outcomes == ["completed"]
+    for _ in range(5):
+        assert ds.set_enabled(True, via="telegram")["changed"] is False
+        assert ds.wake_worker() is True
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.2)
+    assert outcomes == ["completed"]  # the next cycle still waits for the 30 min interval
+    assert len(fake.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_busy_cycle_retries_after_a_poll_not_an_interval(
+    plug: ModuleType, dossiers: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = dossiers
+    await two_sided(plug, 5566, "BUSY")
+    monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ds, "DISABLED_POLL_SECONDS", 0.05)
+    outcomes = spy_worker_cycles(monkeypatch, ds)
+    ds.bind_llm(FakeLlm(quote_first))
+    with ds._cycle_lock() as acquired:  # a panel Refresh holds the lock when the worker's cycle is due
+        assert acquired
+        connect_gateway(plug)
+        assert wait_until(lambda: outcomes[:1] == ["busy"], timeout=10), outcomes
+    assert wait_until(lambda: "completed" in outcomes, timeout=10), outcomes  # long before the 30 min interval
+
+
+@pytest.mark.asyncio
+async def test_disabling_stops_worker_cycles_and_enabling_resumes(
+    plug: ModuleType, dossiers: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = dossiers
+    await two_sided(plug, 5565, "TOGGLE")
+    monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ds, "DISABLED_POLL_SECONDS", 0.02)
+    real_config = ds.load_config
+    # A 60 ms interval, so a worker that is on keeps cycling during the test.
+    monkeypatch.setattr(ds, "load_config", lambda: dataclasses.replace(real_config(), interval_minutes=0.001))
+    outcomes = spy_worker_cycles(monkeypatch, ds)
+    fake = FakeLlm(quote_first, quote_first)
+    ds.bind_llm(fake)
+    connect_gateway(plug)
+    assert wait_until(lambda: len(outcomes) >= 3, timeout=10), outcomes
+
+    ds.set_enabled(False, via="telegram")
+    ds.wake_worker()
+    await asyncio.sleep(0.2)  # a cycle that was already running may finish
+    settled = len(outcomes)
+    await asyncio.sleep(0.5)
+    assert len(outcomes) == settled, outcomes[settled:]
+    assert len(live_worker_threads()) == 1  # still running, only idle
+    calls = len(fake.calls)
+
+    ds.set_enabled(True, via="telegram")
+    ds.wake_worker()
+    assert wait_until(lambda: len(outcomes) > settled, timeout=10)  # back on without a restart
+    assert outcomes[-1] == "completed"
+    assert len(fake.calls) == calls  # nothing new in history: no model call
+
+
+@pytest.mark.asyncio
+async def test_switch_on_after_off_skips_the_rest_of_the_interval(
+    plug: ModuleType, dossiers: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = dossiers
+    await two_sided(plug, 5567, "RESUME")
+    monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ds, "DISABLED_POLL_SECONDS", 0.02)  # the default 30 min interval stays
+    outcomes = spy_worker_cycles(monkeypatch, ds)
+    ds.bind_llm(FakeLlm(quote_first, quote_first))
+    connect_gateway(plug)
+    assert wait_until(lambda: outcomes == ["completed"], timeout=10), outcomes  # the next one is due in 30 min
+
+    ds.set_enabled(False, via="telegram")
+    ds.wake_worker()
+    await asyncio.sleep(0.2)  # several polls while off
+    assert outcomes == ["completed"]
+
+    ds.set_enabled(True, via="telegram")
+    ds.wake_worker()
+    assert wait_until(lambda: len(outcomes) >= 2, timeout=2), outcomes  # not after the old deadline
+    assert outcomes[-1] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_stop_workers_ends_disabled_poll_promptly(
+    dossier_history: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = dossier_module(dossier_history)
+    monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ds, "DISABLED_POLL_SECONDS", 3600)
+    ds.bind_llm(FakeLlm())
+    try:
+        connect_gateway(dossier_history)
+        [thread] = live_worker_threads()
+        await asyncio.sleep(0.1)  # inside the hour-long disabled poll by now
+        started = time.monotonic()
+        ds.stop_workers(timeout=2)
+        assert not thread.is_alive()
+        assert time.monotonic() - started < 1.5
+        assert ds._WORKERS == {} and ds.wake_worker() is False
+    finally:
+        ds.stop_workers(timeout=2)
+        ds.bind_llm(None)
 
 
 # ---------------------------------------------------------------------------
@@ -1217,8 +1600,8 @@ async def test_dossier_subcommand_coexists_with_history_cli(plug: ModuleType, do
     code, out, _err = cli(plug, "dossier")
     assert code == 1
     assert out.startswith("Usage: hermes telesec dossier <")
-    for command in ("status", "list", "show", "preview", "correct", "pin", "unpin", "remove", "note", "changes",
-                    "export", "forget", "run"):
+    for command in ("status", "enable", "disable", "list", "show", "preview", "correct", "pin", "unpin", "remove",
+                    "note", "changes", "export", "forget", "run"):
         assert command in out.splitlines()[0]
 
     code, out, _err = cli(plug, "history")

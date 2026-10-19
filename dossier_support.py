@@ -43,7 +43,13 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
+# Dossiers follow the stored switch (owner panel or `dossier enable|disable`). Until it is first set, the Desktop
+# setting `dossier_enable` or this variable (0.9.0's HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE is aliased to it)
+# gives the starting state; afterwards they only warn when they say on and the switch is off.
 ENABLE_ENV = "TELESEC_DOSSIER_ENABLE"
+ENABLE_SETTING = "dossier_enable"
+ENABLE_COMMAND = "hermes telesec dossier enable"
+DISABLE_COMMAND = "hermes telesec dossier disable"
 INTERVAL_ENV = "TELESEC_DOSSIER_INTERVAL_MINUTES"
 QUIET_ENV = "TELESEC_DOSSIER_QUIET_MINUTES"
 BACKFILL_DAYS_ENV = "TELESEC_DOSSIER_BACKFILL_DAYS"
@@ -58,6 +64,8 @@ DEFAULT_MODEL = "gemini-3.8-flash"
 
 SCHEMA_VERSION = 1
 INITIAL_DELAY_SECONDS = 180  # "a few minutes after gateway start"
+DISABLED_POLL_SECONDS = 60  # how often an idle worker re-reads the stored switch
+SETTINGS_VIA = ("cli", "telegram")
 MODEL_TIMEOUT_SECONDS = 120.0  # per HTTP attempt; the host may retry
 MAX_OUTPUT_TOKENS = 16_384  # room for thinking tokens plus the change list
 FOLD_MARGIN = timedelta(days=2)  # message_at vs observed_at skew
@@ -90,6 +98,7 @@ REPLACED = frozenset({"likely_duplicate", "likely_correction"})
 LABELS = {"inbound": "contact", "outbound": "owner"}
 DOSSIER_FILE = "dossier.json"
 CHANGES_FILE = "changes.jsonl"
+SETTINGS_FILE = "settings.json"
 
 
 @dataclass(frozen=True)
@@ -128,10 +137,16 @@ def _env_text(*names: str, default: str) -> str:
 
 
 def load_config() -> DossierConfig:
-    """Read the dossier env surface; never cached so every cycle sees edits."""
+    """Read the stored switch and the dossier env surface; never cached so every cycle sees edits."""
     warnings: list[str] = []
+    settings = load_settings()
+    if settings.get("error"):
+        warnings.append(f"warning: {settings['error']}")
+    ignored = ignored_enable_source(settings)
+    if ignored:
+        warnings.append(f"warning: {ignored_enable_text(ignored)}")
     return DossierConfig(
-        enabled=_history._truthy_env(ENABLE_ENV, _history.get_config("dossier_enable", False)),
+        enabled=settings["enabled"],
         interval_minutes=_env_int_bounded(INTERVAL_ENV, 30, 5, 1440, warnings),
         quiet_minutes=_env_int_bounded(QUIET_ENV, 10, 0, 1440, warnings),
         backfill_days=_env_int_bounded(BACKFILL_DAYS_ENV, 90, 1, 3650, warnings),
@@ -230,6 +245,11 @@ def persona_path() -> Path:
 
 def state_path() -> Path:
     return dossier_root() / "state.json"
+
+
+def settings_path() -> Path:
+    # The on/off switch: forget never deletes it, so forgetting dossiers never turns them on or off.
+    return dossier_root() / SETTINGS_FILE
 
 
 def _generation() -> int:
@@ -378,6 +398,86 @@ def load_state() -> dict[str, Any]:
 def save_state(state: dict[str, Any]) -> None:
     with _data_lock():
         _history._write_json_atomic(state_path(), state)
+
+
+def _default_settings() -> dict[str, Any]:
+    return {"schema_version": SCHEMA_VERSION, "enabled": False, "updated_at": None, "updated_via": None}
+
+
+def initial_enable() -> tuple[bool, str | None]:
+    """The starting state before the switch is first set: (enabled, its source or None when unset).
+
+    ``TELESEC_DOSSIER_ENABLE`` overrides the Desktop setting, as for every other setting.
+    """
+    if ENABLE_ENV in os.environ:
+        return _history._truthy_env(ENABLE_ENV), ENABLE_ENV
+    value = _history.get_config(ENABLE_SETTING, None)
+    if value is None:
+        return False, None
+    on = value is True or (isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "on"})
+    return on, f"the {ENABLE_SETTING} setting"
+
+
+def ignored_enable_source(settings: dict[str, Any]) -> str | None:
+    """The env variable or Desktop setting that says on while a stored switch says off, else None."""
+    if settings.get("updated_via") is None or settings["enabled"]:
+        return None
+    on, source = initial_enable()
+    return source if on else None
+
+
+def clear_enable_hint(source: str) -> str:
+    return f"remove {ENABLE_ENV} from the profile's environment" if source == ENABLE_ENV \
+        else f"turn the {ENABLE_SETTING} setting off"
+
+
+def ignored_enable_text(source: str) -> str:
+    """Explain an on-saying env variable or setting that the stored off switch overrides."""
+    return (f"{source} says on, but the stored switch is off and wins; to keep dossiers off, "
+            f"{clear_enable_hint(source)}; to turn them on, run '{ENABLE_COMMAND}' or use the owner panel")
+
+
+def load_settings() -> dict[str, Any]:
+    """The stored switch. Never writes.
+
+    Until the switch is first set, ``initial_enable()`` gives the state ("updated_via" None,
+    "initial_source" names it). An unreadable or corrupt file reads as disabled, with "error" set
+    (surfaced as a load_config() warning); only an explicit set_enabled() replaces it.
+    """
+    path = settings_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        on, source = initial_enable()
+        return {**_default_settings(), "enabled": on, "initial_source": source}
+    except (OSError, ValueError):
+        data = None
+    if (not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION
+            or not isinstance(data.get("enabled"), bool)):
+        return {**_default_settings(), "error": f"{path} is unreadable or corrupt, so dossiers stay disabled; "
+                                                 f"'{ENABLE_COMMAND}' or 'disable' rewrites it"}
+    at, via = data.get("updated_at"), data.get("updated_via")
+    return {"schema_version": SCHEMA_VERSION, "enabled": data["enabled"],
+            "updated_at": at if isinstance(at, str) else None, "updated_via": via if via in SETTINGS_VIA else None}
+
+
+def set_enabled(enabled: bool, *, via: str, now: datetime | None = None) -> dict[str, Any]:
+    """Turn dossiers on or off for all private chats (atomic, private, under the data lock).
+
+    Idempotent: an unchanged switch keeps its stored time and source. Returns the settings plus
+    "changed". Gateway callers call wake_worker() afterwards; the worker also polls the switch.
+    """
+    if via not in SETTINGS_VIA:
+        raise ValueError(f"unknown switch source {via!r}; use one of: {', '.join(SETTINGS_VIA)}")
+    with _data_lock():
+        current = load_settings()
+        if not current.get("error") and current["updated_via"] is not None and current["enabled"] is bool(enabled):
+            return {**current, "changed": False}  # an explicit choice is always stored, even if it matches
+        settings = {"schema_version": SCHEMA_VERSION, "enabled": bool(enabled),
+                    "updated_at": _iso(now or _history._utcnow()), "updated_via": via}
+        _history._write_json_atomic(settings_path(), settings)
+    logger.info("%s: dossiers switched enabled=%s via=%s", _history.PLUGIN_NAME, bool(enabled), via)
+    return {**settings, "changed": True}
 
 
 def list_dossiers() -> list[dict[str, Any]]:
@@ -1431,17 +1531,28 @@ def owner_note(d: dict[str, Any], section: Any, text: Any, *, now: datetime, rev
     return {"op": "note", "fact_id": fid, "section": name, "text": note}
 
 
+class DossierChanged(ValueError):
+    """The dossier an owner action was built for was forgotten or rebuilt since it was shown."""
+
+
 def apply_owner_edit(target: tuple[str, Any], action: str, *, fact_id: Any = None, text: Any = None,
-                     section: Any = None, now: datetime | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+                     section: Any = None, now: datetime | None = None,
+                     expected_dossier_id: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Apply one owner edit under the data lock: load, apply, write dossier.json, append a log line.
 
-    ``action`` is correct | pin | unpin | remove | note. Returns (dossier, op). Raises ValueError.
+    ``action`` is correct | pin | unpin | remove | note. ``expected_dossier_id`` (a prefix of the
+    dossier_id the caller showed) must match the stored dossier, else DossierChanged is raised and
+    nothing is written. Returns (dossier, op). Raises ValueError.
     """
     now = now or _history._utcnow()
     kind, entry = target
     path = target_dir(target)
     with _data_lock():
         d = load_dossier(path)
+        if expected_dossier_id is not None and (
+                not expected_dossier_id or d is None
+                or not str(d.get("dossier_id") or "").startswith(str(expected_dossier_id))):
+            raise DossierChanged("this dossier changed since it was shown; reopen it")
         if d is None:
             if action != "note":
                 raise ValueError(f"no dossier yet for {target_label(target)}")
@@ -1481,7 +1592,8 @@ def _forget_summary(path: Path) -> dict[str, Any]:
 def forget(target: tuple[str, Any]) -> dict[str, Any]:
     """Delete a dossier (or all of them) with its owner edits and log. Never touches history.
 
-    ``target`` is ("contact", entry_or_stub) | ("persona", None) | ("all", None).
+    ``target`` is ("contact", entry_or_stub) | ("persona", None) | ("all", None). The on/off
+    switch (settings.json) is always kept.
     """
     with _data_lock():
         # Bumped first: a cycle that started before this forget discards its in-flight results.
@@ -1983,6 +2095,7 @@ class _Worker:
     stop: threading.Event
     thread: threading.Thread | None = None
     cycle_done: threading.Event = field(default_factory=threading.Event)  # test hook
+    wake: threading.Event = field(default_factory=threading.Event)  # re-check the switch now (also set on stop)
 
 
 _WORKERS: dict[str, _Worker] = {}  # key = str(dossier_root()); module-level, so fresh per plugin load
@@ -1994,14 +2107,17 @@ def bind_llm(llm: Any) -> None:
 
 
 def ensure_worker_started() -> bool:
-    """Start the gateway worker once per dossier root. Never raises; no-op when disabled."""
+    """Start the gateway worker once per dossier root whenever the host LLM facade is bound.
+
+    It runs while dossiers are disabled too and checks the stored switch on every tick, so turning
+    dossiers on needs no restart. Never raises.
+    """
     try:
         cfg = load_config()
-        if not cfg.enabled:
-            return False
         llm = _LLM
         if llm is None or not callable(getattr(llm, "complete_structured", None)):
-            logger.warning("%s: dossier worker not started: host LLM facade unavailable", _history.PLUGIN_NAME)
+            if cfg.enabled:
+                logger.warning("%s: dossier worker not started: host LLM facade unavailable", _history.PLUGIN_NAME)
             return False
         key = str(dossier_root())
         with _WORKERS_LOCK:
@@ -2015,12 +2131,36 @@ def ensure_worker_started() -> bool:
                                              name="telesec-dossiers", daemon=True)
             _WORKERS[key] = worker
             worker.thread.start()
-        logger.info("%s: dossier worker started initial_delay_s=%d interval_m=%d", _history.PLUGIN_NAME,
-                    INITIAL_DELAY_SECONDS, cfg.interval_minutes)
+        logger.info("%s: dossier worker started enabled=%s initial_delay_s=%d interval_m=%d", _history.PLUGIN_NAME,
+                    cfg.enabled, INITIAL_DELAY_SECONDS, cfg.interval_minutes)
+        settings = load_settings()
+        if settings.get("error"):
+            logger.warning("%s: dossier switch %s is unreadable or corrupt, so dossiers stay off until '%s' or the "
+                           "owner panel rewrites it", _history.PLUGIN_NAME, SETTINGS_FILE, ENABLE_COMMAND)
+        ignored = ignored_enable_source(settings)
+        if ignored:
+            logger.warning("%s: %s", _history.PLUGIN_NAME, ignored_enable_text(ignored))
         return True
     except Exception as exc:  # noqa: BLE001 - dossier start must never break adapter connect
         logger.warning("%s: dossier worker start failed error=%s", _history.PLUGIN_NAME, type(exc).__name__)
         return False
+
+
+def wake_worker() -> bool:
+    """Make the live worker of this dossier root re-check the switch now (after set_enabled in the gateway).
+
+    A worker idling while disabled starts a cycle at once if dossiers are on, but never before its
+    post-connect delay; a worker waiting out its interval while enabled keeps waiting. Never raises.
+    """
+    try:
+        with _WORKERS_LOCK:
+            worker = _WORKERS.get(str(dossier_root()))
+    except Exception:  # noqa: BLE001 - a wake is best effort
+        return False
+    if worker is None or worker.stop.is_set() or worker.thread is None or not worker.thread.is_alive():
+        return False
+    worker.wake.set()
+    return True
 
 
 def stop_workers(timeout: float = 0.0) -> None:
@@ -2030,24 +2170,61 @@ def stop_workers(timeout: float = 0.0) -> None:
         _WORKERS.clear()
     for worker in workers:
         worker.stop.set()
+        worker.wake.set()  # ends an idle wait at once
     if timeout:
         for worker in workers:
             if worker.thread is not None:
                 worker.thread.join(timeout)
 
 
+def _config_if_on() -> DossierConfig | None:
+    """The config while dossiers are on, else None; a failing read counts as off."""
+    try:
+        cfg = load_config()
+    except Exception as exc:  # noqa: BLE001 - keep the worker alive
+        logger.warning("%s: dossier switch check failed error=%s", _history.PLUGIN_NAME, type(exc).__name__)
+        return None
+    return cfg if cfg.enabled else None
+
+
+def _worker_idle(worker: _Worker, due: float | None) -> bool:
+    """Wait for the next cycle: until ``due`` (monotonic) while on, until switched on while off.
+
+    The switch is re-read every DISABLED_POLL_SECONDS and on each wake. Switching off ends an
+    interval wait, so a later switch-on starts a cycle at once; a wake while on changes nothing,
+    so it never causes back-to-back cycles. Returns True when stopped.
+    """
+    while True:
+        timeout = DISABLED_POLL_SECONDS if due is None else min(DISABLED_POLL_SECONDS, due - time.monotonic())
+        worker.wake.wait(max(timeout, 0))
+        worker.wake.clear()
+        if worker.stop.is_set():
+            return True
+        if _config_if_on() is None:
+            due = None
+        elif due is None or time.monotonic() >= due:
+            return False
+
+
 def _worker_loop(llm: Any, worker: _Worker) -> None:
-    if worker.stop.wait(INITIAL_DELAY_SECONDS):
+    if worker.stop.wait(INITIAL_DELAY_SECONDS):  # a wake never shortens the post-connect delay
         return
+    worker.wake.clear()
     while not worker.stop.is_set():
-        try:
-            r = run_cycle(llm=llm, trigger="worker", stop=worker.stop)
-            logger.info("%s: dossier cycle outcome=%s calls=%d refreshed=%d maintained=%d waiting=%d failed=%d "
-                        "unchanged=%d unqualified=%d orphans=%d persona=%s duration_ms=%d", _history.PLUGIN_NAME,
-                        r.outcome, r.calls, r.refreshed, r.maintained, r.waiting, r.failed, r.unchanged,
-                        r.unqualified, r.orphans, r.persona, r.duration_ms)
-        except Exception as exc:  # noqa: BLE001 - keep the worker alive
-            logger.warning("%s: dossier cycle failed error=%s", _history.PLUGIN_NAME, type(exc).__name__)
-        worker.cycle_done.set()
-        if worker.stop.wait(load_config().interval_minutes * 60):
+        cfg, due = _config_if_on(), None
+        if cfg is not None:
+            wait = cfg.interval_minutes * 60
+            try:
+                r = run_cycle(llm=llm, trigger="worker", stop=worker.stop)
+                if r.outcome == "busy":  # a panel Refresh or CLI run holds the lock: retry soon, not in an interval
+                    wait = DISABLED_POLL_SECONDS
+                logger.info("%s: dossier cycle outcome=%s calls=%d refreshed=%d maintained=%d waiting=%d "
+                            "failed=%d unchanged=%d unqualified=%d orphans=%d persona=%s duration_ms=%d",
+                            _history.PLUGIN_NAME, r.outcome, r.calls, r.refreshed, r.maintained, r.waiting,
+                            r.failed, r.unchanged, r.unqualified, r.orphans, r.persona, r.duration_ms)
+            except Exception as exc:  # noqa: BLE001 - keep the worker alive
+                logger.warning("%s: dossier cycle failed error=%s", _history.PLUGIN_NAME, type(exc).__name__)
+            worker.cycle_done.set()
+            due = time.monotonic() + wait
+        if _worker_idle(worker, due):
             return

@@ -31,7 +31,9 @@ To try a change in a real gateway, install your checkout into a test Hermes prof
 - `transcription_modes.py` and `owner_panel.py`: per-chat modes and the owner panel.
 - `history_support.py`: opt-in history and the `history` CLI.
 - `correspondence_stats.py`: the `stats` CLI.
-- `dossier_support.py` and `dossier_cli.py`: opt-in dossiers.
+- `dossier_support.py` and `dossier_cli.py`: the opt-in dossier worker, storage, the stored on/off switch, and the `dossier` CLI.
+- `dossier_view.py`: pure Telegram views of dossiers (rich HTML, plain fallback, buttons, Russian and English).
+- `dossier_panel.py`: the owner panel's Dossier section, the switch and persona gating, and the owner's in-chat `/dossier` command.
 - `skills/`: the bundled `history` and `dossiers` skills.
 - `docs/`: feature guides, the roadmap, and the verification log.
 

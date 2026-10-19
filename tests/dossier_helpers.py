@@ -16,6 +16,7 @@ import io
 import itertools
 import json
 import threading
+import time
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -67,10 +68,13 @@ __all__ = [
     "read_dossier",
     "read_json",
     "read_persona",
+    "read_settings",
     "read_state",
     "seed",
     "snapshot_history_tree",
     "snapshot_tree",
+    "spy_worker_cycles",
+    "wait_until",
     "wait_worker_cycle",
 ]
 
@@ -539,6 +543,11 @@ def read_state(ds: ModuleType) -> dict[str, Any]:
     return read_json(ds.dossier_root() / "state.json") or {}
 
 
+def read_settings(ds: ModuleType) -> dict[str, Any] | None:
+    """The stored on/off switch (``settings.json``), or None when it does not exist."""
+    return read_json(ds.dossier_root() / "settings.json")
+
+
 def read_changes(directory: Path) -> list[dict[str, Any]]:
     """Every line of ``<directory>/changes.jsonl``, oldest first; blank lines skipped."""
     path = directory / "changes.jsonl"
@@ -575,6 +584,30 @@ def wait_worker_cycle(ds: ModuleType, timeout: float = 5.0) -> Any:
     assert len(workers) == 1, f"expected one dossier worker, found {len(workers)}"
     assert workers[0].cycle_done.wait(timeout), "dossier worker did not finish a cycle in time"
     return workers[0]
+
+
+def spy_worker_cycles(monkeypatch: Any, ds: ModuleType) -> list[str]:
+    """Record the outcome of every ``run_cycle`` the worker makes, in order."""
+    outcomes: list[str] = []
+    real = ds.run_cycle
+
+    def spy(**kwargs: Any) -> Any:
+        report = real(**kwargs)
+        outcomes.append(report.outcome)
+        return report
+
+    monkeypatch.setattr(ds, "run_cycle", spy)
+    return outcomes
+
+
+def wait_until(predicate: Callable[[], bool], timeout: float = 5.0, interval: float = 0.01) -> bool:
+    """Poll ``predicate`` until it is true or ``timeout`` seconds pass; returns its last value."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            return predicate()
+        time.sleep(interval)
+    return True
 
 
 class FakeCtx:

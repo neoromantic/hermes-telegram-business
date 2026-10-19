@@ -456,13 +456,13 @@ async def test_forget_all_during_first_pass_call_discards_result(dossier_plugin,
 
 
 @pytest.mark.asyncio
-async def test_disable_while_waiting_for_rate_limit_sends_nothing(dossier_plugin, dossiers, dossier_env):
+async def test_disable_while_waiting_for_rate_limit_sends_nothing(dossier_plugin, dossiers):
     ds = dossiers
     await seed_alice(dossier_plugin)
 
     class DisablingLimiter(ds.RateLimiter):
         def acquire(self) -> bool:
-            dossier_env(ENABLE=None)  # the owner disabled dossiers while the cycle waited
+            ds.set_enabled(False, via="telegram")  # the owner disabled dossiers while the cycle waited
             return super().acquire()
 
     fake = scripted(contact=[output(email_fact())])
@@ -655,8 +655,89 @@ async def test_forget_cli_reports_and_keeps_history(dossier_plugin, dossiers):
 
     code, out, err = cli(dossier_plugin, "dossier", "forget", "--all")
     assert code == 0, (out, err)
-    assert "To stop processing" in out
+    assert "Dossiers are still enabled, so the worker rebuilds them from history on its next cycle." in out
+    assert ("To stop processing: run 'hermes telesec dossier disable', "
+            "then 'hermes telesec dossier forget --all'.") in out
+    assert "DOSSIER_ENABLE" not in out
     assert snapshot_history_tree(dossier_plugin) == history_before
+
+    ds.set_enabled(False, via="cli")
+    code, out, err = cli(dossier_plugin, "dossier", "forget", "--all")
+    assert code == 0, (out, err)
+    assert "Dossiers are disabled; nothing will be rebuilt." in out
+
+
+@pytest.mark.asyncio
+async def test_forget_never_touches_the_switch(dossier_plugin, dossiers):
+    ds = dossiers
+    entry = await seed_alice(dossier_plugin)
+    assert cycle(ds, scripted(contact=[output(email_fact())], persona=[quote_first])).refreshed == 1
+    switch = ds.dossier_root() / "settings.json"
+    before = switch.read_bytes()
+    assert json.loads(before)["enabled"] is True
+
+    assert ds.forget(("contact", entry))["existed"] is True
+    assert ds.forget(("persona", None))["existed"] is True
+    assert switch.read_bytes() == before
+    assert cycle(ds, scripted(contact=[output(email_fact())])).refreshed == 1
+    code, out, err = cli(dossier_plugin, "dossier", "forget", "--all")
+    assert code == 0, (out, err)
+    assert ds.list_dossiers() == [] and not (ds.dossier_root() / "state.json").exists()
+    assert switch.read_bytes() == before  # forget --all keeps dossiers switched on
+    assert ds.load_config().enabled is True
+
+    ds.set_enabled(False, via="telegram")
+    before = switch.read_bytes()
+    assert ds.forget(("all", None))["existed"] is False
+    assert switch.read_bytes() == before  # ... and keeps them switched off
+    assert ds.load_config().enabled is False
+
+
+@pytest.mark.asyncio
+async def test_owner_edit_with_stale_dossier_id_raises_and_writes_nothing(dossier_plugin, dossiers):
+    ds = dossiers
+    entry = await seed_alice(dossier_plugin)
+    target = ("contact", entry)
+    assert cycle(ds, scripted(contact=[output(email_fact(), harbour_fact())], persona=[quote_first])).refreshed == 1
+    old_id = read_dossier(ds, ALICE)["dossier_id"]
+    assert issubclass(ds.DossierChanged, ValueError)
+
+    before = snapshot_tree(dossier_dir(ds, ALICE))
+    for expected in ("zzzzzz", "", old_id + "0"):
+        with pytest.raises(ds.DossierChanged):
+            ds.apply_owner_edit(target, "pin", fact_id="f1", expected_dossier_id=expected)
+    with pytest.raises(ds.DossierChanged):
+        ds.apply_owner_edit(target, "remove", fact_id="f2", expected_dossier_id="zzzzzz")
+    assert snapshot_tree(dossier_dir(ds, ALICE)) == before
+
+    d, op = ds.apply_owner_edit(target, "pin", fact_id="f1", expected_dossier_id=old_id[:6])
+    assert op == {"op": "pin", "fact_id": "f1"} and fact(d, "f1")["pinned"] is True
+    d, _op = ds.apply_owner_edit(target, "remove", fact_id="f2", expected_dossier_id=old_id)
+    assert fact(d, "f2") is None
+    assert ds.apply_owner_edit(target, "unpin", fact_id="f1")[0]["revision"] == 4  # no id: no check
+
+    ds.forget(target)
+    with pytest.raises(ds.DossierChanged):  # forgotten: nothing to edit, not even a note skeleton
+        ds.apply_owner_edit(target, "note", section="preferences", text="Call her Sasha.",
+                            expected_dossier_id=old_id[:6])
+    assert not dossier_dir(ds, ALICE).exists()
+
+    assert cycle(ds, scripted(contact=[output(email_fact())]), now=ago(-5)).refreshed == 1  # rebuilt
+    new_id = read_dossier(ds, ALICE)["dossier_id"]
+    assert new_id[:6] != old_id[:6]
+    before = snapshot_tree(dossier_dir(ds, ALICE))
+    with pytest.raises(ds.DossierChanged):  # a button on an old message never edits the rebuilt dossier
+        ds.apply_owner_edit(target, "remove", fact_id="f1", expected_dossier_id=old_id[:6])
+    assert snapshot_tree(dossier_dir(ds, ALICE)) == before
+
+    persona = read_persona(ds)
+    persona_before = snapshot_tree(persona_dir(ds))
+    with pytest.raises(ds.DossierChanged):
+        ds.apply_owner_edit(("persona", None), "pin", fact_id="f1", expected_dossier_id=new_id[:6])
+    assert snapshot_tree(persona_dir(ds)) == persona_before
+    d, _op = ds.apply_owner_edit(("persona", None), "pin", fact_id="f1",
+                                 expected_dossier_id=persona["dossier_id"][:6])
+    assert fact(d, "f1")["pinned"] is True
 
 
 @pytest.mark.asyncio
