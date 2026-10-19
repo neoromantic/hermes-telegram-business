@@ -30,10 +30,9 @@ The product connects readable Telegram voice messages with useful personal corre
 ## Unreleased
 
 - Settings in the private chat with the bot: `/telesec` or the ⚙️ Settings button turns transcription, history, and dossiers on or off for all chats, and `hermes telesec settings` does the same from the terminal. The old environment variables and the Desktop `history_enable` setting are moved into Settings once. [Settings](../README.md#settings).
+- Per-chat history and dossier controls: each chat's owner panel has **Save history** / **Don't save** and **Keep dossier** / **No dossier** rows in the style of transcription modes, and `hermes telesec chat` does the same from the terminal. Off pauses the chat and keeps what was saved. [Per-chat history and dossier](../README.md#per-chat-history-and-dossier).
 
 ## Next
-
-- Per-chat history and dossier controls in the owner panel, in the style of transcription modes.
 
 - Known limit: claimed panel taps and Business updates stop propagation before Hermes' group-99 dispatch counter, so the core "ingress healthy but deaf" warning can show a stale gap after quiet periods. The fix belongs in Hermes core (count dispatch in a group before every plugin group).
 
@@ -48,7 +47,7 @@ The product connects readable Telegram voice messages with useful personal corre
 
 The [assistant design](ASSISTANT.md) explains the owner experience, modes, context boundaries, and delivery lifecycle. Each issue is a set of requirements rather than a prescribed storage framework.
 
-Deferred from #17: using dossiers in drafts (#18) and automatic replies (#19), corrections and notes from Telegram (CLI only for now), voice transcripts as a dossier source, per-contact exclusion, and cross-contact persona leakage filters.
+Deferred from #17: using dossiers in drafts (#18) and automatic replies (#19), corrections and notes from Telegram (CLI only for now), voice transcripts as a dossier source, and cross-contact persona leakage filters.
 
 ## Independent improvements
 

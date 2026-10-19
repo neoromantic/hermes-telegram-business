@@ -42,7 +42,7 @@ CONTACT_ORDER = ("commitments", "open_questions", "decisions", "contradictions",
                  "preferences", "relationship", "shared_facts")  # action sections first
 ACTION_SECTIONS = frozenset(CONTACT_ORDER[:4])
 TARGETS = {"contact": "c", "persona": "p"}
-POST_BLOCKERS = ("persona", "disabled", "corrupt", "missing", "unchecked", "empty")
+POST_BLOCKERS = ("persona", "disabled", "chat_off", "corrupt", "missing", "unchecked", "empty")
 POST_REASONS = (*POST_BLOCKERS, "send_failed")
 NOTICE_KEYS = ("changed", "busy", "refresh_started", "unavailable",
                "pinned", "unpinned", "removed", "failed", "operator_only", "no_connection")
@@ -75,6 +75,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "count_contradictions": "contradictions",
         "note_off": "Processing is off: this dossier is not updated. Turn dossiers on in Settings.",
         "note_history_off": "History is off, so dossiers are paused. Turn it on in Settings.",
+        "note_chat_off": "Off for this chat.",
         "note_no_llm": "The model is not connected in this process, so refresh is unavailable.",
         "note_refreshing": "Refreshing now…",
         "note_busy": "A processing cycle is running; the dossier may change shortly.",
@@ -141,6 +142,7 @@ STRINGS: dict[str, dict[str, Any]] = {
                                     "in the chat, then open Manage Bot again."},
         "post_head": "Nothing was posted to the chat with {name}.",
         "post": {"persona": "The persona is never posted to a chat.", "disabled": "Dossiers are off.",
+                 "chat_off": "Dossier is off for this chat.",
                  "empty": "The dossier has no facts to show yet.",
                  "unchecked": "Its sources could not be checked against the chat history ({error}), so it might "
                               "quote a deleted or edited message. Try again later.",
@@ -169,6 +171,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "count_contradictions": "противоречий",
         "note_off": "Обработка выключена: досье не обновляется. Включить можно в настройках.",
         "note_history_off": "История выключена, поэтому досье на паузе. Включите её в настройках.",
+        "note_chat_off": "Для этого чата выключено.",
         "note_no_llm": "Модель не подключена в этом процессе, поэтому обновление недоступно.",
         "note_refreshing": "Идёт обновление…",
         "note_busy": "Сейчас идёт цикл обработки, досье может скоро измениться.",
@@ -238,6 +241,7 @@ STRINGS: dict[str, dict[str, Any]] = {
                                     "сообщение в том чате и снова нажмите кнопку управления ботом."},
         "post_head": "В чат «{name}» ничего не отправлено.",
         "post": {"persona": "Персона никогда не отправляется в чат.", "disabled": "Досье выключены.",
+                 "chat_off": "Досье для этого чата выключено.",
                  "empty": "В досье пока нет фактов, которые можно показать.",
                  "unchecked": "Не удалось сверить источники с историей чата ({error}), и в сообщение могла "
                               "попасть цитата удалённого или изменённого сообщения. Попробуйте позже.",
@@ -296,6 +300,7 @@ class DossierSnapshot:
     manage_global: bool = True  # may open the persona and switch dossiers (it owns every connected account)
     history_enabled: bool = True  # history capture is on; dossiers are built from it
     in_history: bool = True  # the chat is a private chat in the history catalog (a refresh needs it)
+    chat_enabled: bool = True  # the owner did not set "No dossier" or "Don't save" for this chat
 
 
 @dataclass(frozen=True)
@@ -855,6 +860,8 @@ def _owner_notes(cx: _Cx, *, failure: bool = True) -> list[str]:
             notes += [s["notice"]["operator_only"], s["off_cli"]]
     elif not snap.history_enabled:
         notes.append(s["note_history_off"])
+    elif not snap.chat_enabled and not cx.persona:
+        notes.append(s["note_chat_off"])
     elif not snap.llm_ready:
         notes.append(s["note_no_llm"])
     if snap.refreshing:
@@ -982,8 +989,9 @@ def _overview_buttons(cx: _Cx, has_facts: bool) -> Rows:
         return _rows([(s["b_manage"], build_args("manage", "persona"))] if has_facts else [],
                      [(s["b_back_dossier"], build_args("overview"))])
     first = [(s["b_manage"], build_args("manage"))] if has_facts else []
-    if (snap.enabled and snap.history_enabled and snap.llm_ready and snap.in_history and not snap.refreshing
-            and snap.status != "corrupt" and not (snap.dossier is None and snap.missing_reason == "unqualified")):
+    if (snap.enabled and snap.history_enabled and snap.chat_enabled and snap.llm_ready and snap.in_history
+            and not snap.refreshing and snap.status != "corrupt"
+            and not (snap.dossier is None and snap.missing_reason == "unqualified")):
         first.append((s["b_refresh"], build_args("refresh")))
     if not snap.manage_global:
         return _rows(first)
@@ -1009,7 +1017,9 @@ def _missing_view(cx: _Cx) -> View:
         if not snap.manage_global:  # no Enable button here: say who can, and how
             parts += [f"<p>{s['notice']['operator_only']}</p>", f"<p>{s['off_cli']}</p>"]
     else:
-        parts += [f"<p><b>{s['no_dossier'][snap.kind]}</b></p>", f"<p>{_missing_reason_html(cx)}</p>"]
+        parts.append(f"<p><b>{s['no_dossier'][snap.kind]}</b></p>")
+        if snap.chat_enabled or cx.persona:  # a chat that is off gets no "next cycle" promise
+            parts.append(f"<p>{_missing_reason_html(cx)}</p>")
         parts.append(_notes_html(_owner_notes(cx, failure=False)))
     return _view("".join(parts), _overview_buttons(cx, False))
 
@@ -1027,6 +1037,8 @@ def post_blocker(snap: DossierSnapshot) -> str | None:
         return "persona"
     if not snap.enabled:
         return "disabled"
+    if not snap.chat_enabled:
+        return "chat_off"
     if snap.status == "corrupt":
         return "corrupt"
     if not isinstance(snap.dossier, dict) or snap.status == "missing":

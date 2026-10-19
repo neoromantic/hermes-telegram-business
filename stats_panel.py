@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Any
 
 # Attribute access only, like correspondence_stats: monkeypatches of history_support apply.
+from . import chat_settings as _chat_settings
 from . import correspondence_stats as _stats
 from . import history_support as _history
 from . import owner_panel as _owner_panel
@@ -49,6 +50,7 @@ BAD_TIMEZONE = (
     "use an IANA name such as Europe/Moscow."
 )
 NO_HISTORY = "No history for this chat yet. History records new text messages only."
+HISTORY_PAUSED = "History is paused for this chat."
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,8 +178,13 @@ def render_section(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
         period=ctx.arg,
     )
     row = [(label, _owner_panel.section_callback(ctx.chat_id, SECTION_KEY, sub)) for label, sub in view.buttons]
-    return _owner_panel.PanelView(text=view.text, buttons=[row] if row else [])
+    text = view.text
+    if text != HISTORY_DISABLED and _chat_settings.default_store().is_off(ctx.owner_user_id, ctx.chat_id, "history"):
+        text = _fit(f"{text}\n{HISTORY_PAUSED}")  # "Don't save": the saved data still shows
+    return _owner_panel.PanelView(text=text, buttons=[row] if row else [])
 
 
 def register_section() -> None:
+    _owner_panel.register_strings({"en": {f"section.{SECTION_KEY}": SECTION_LABEL},
+                                   "ru": {f"section.{SECTION_KEY}": f"{_ICON} Статистика"}})
     _owner_panel.register_section(SECTION_KEY, SECTION_LABEL, render_section, order=20)

@@ -75,6 +75,7 @@ else:
     )
 
 
+from . import chat_settings as _chat_settings
 from . import dossier_panel as _dossier_panel
 from . import dossier_support as _dossier_support
 from . import global_settings as _global_settings
@@ -2106,6 +2107,7 @@ class _PanelState:
     ctx: _owner_panel.PanelContext
     entry: Any
     store_label: str | None
+    features: tuple[str, str] = _owner_panel.CHAT_DEFAULT_FEATURES  # (history, dossier), see chat_state
 
 
 def _panel_catalog() -> list[dict[str, Any]]:
@@ -2220,11 +2222,13 @@ def _panel_state(
     """
     connection = None
     profile = None
+    chat_type = None
     for item in catalog:
         item_connection = str(item.get("business_connection_id") or "")
         if str(item.get("chat_id")) == chat_id and item_connection in owner.connections:
             connection = item_connection
             profile = item.get("current_profile")
+            chat_type = item.get("chat_type")
             break
     if connection is None:
         # Only a connection this chat was seen on; never guess, so a section
@@ -2236,6 +2240,11 @@ def _panel_state(
     # without a profile the stored label stays.
     store_label = _transcription_modes.build_chat_label(profile) if isinstance(profile, dict) else None
     label = (entry.label if entry is not None else None) or store_label
+    try:
+        features = _chat_settings.chat_state(owner_id, chat_id, connection=connection, chat_type=chat_type)
+    except Exception as exc:  # noqa: BLE001 - hide the rows rather than show a wrong state
+        logger.warning("%s: chat settings state failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        features = ("unreadable", "no_history")
     ctx = _owner_panel.PanelContext(
         owner_user_id=owner_id,
         chat_id=chat_id,
@@ -2245,7 +2254,7 @@ def _panel_state(
         language_code=language_code,
         owner_connections=owner.connections,
     )
-    return _PanelState(ctx=ctx, entry=entry, store_label=store_label)
+    return _PanelState(ctx=ctx, entry=entry, store_label=store_label, features=features)
 
 
 def _settings_context(
@@ -2328,7 +2337,9 @@ async def _handle_owner_panel_update(update: Any, *, bot: Any) -> bool:
         state = await asyncio.to_thread(
             _panel_state, owner, str(sender_id), str(chat_id), catalog, None, language_code
         )
-        view = _owner_panel.render_main(state.ctx, state.entry, _owner_panel.sections(), _voice_module_enabled())
+        view = _owner_panel.render_main(
+            state.ctx, state.entry, _owner_panel.sections(), _voice_module_enabled(), features=state.features
+        )
         await bot.send_message(
             chat_id=private_chat_id, text=_owner_panel.clip_text(view.text), reply_markup=_panel_markup(view)
         )
@@ -2434,6 +2445,35 @@ async def _apply_panel_mode(action: _owner_panel.PanelCallback, state: _PanelSta
     )
 
 
+async def _apply_panel_flag(action: _owner_panel.PanelCallback, state: _PanelState) -> tuple[str, bool]:
+    """Turn this chat's history or dossier on or off; returns (toast, save failed).
+
+    A tap on a hidden row (a stale button) writes nothing and its toast is the row's status. A corrupt
+    chat-settings.json is never overwritten from Telegram.
+    """
+    ctx = state.ctx
+    key, _, value = str(action.arg).partition(".")
+    feature = _owner_panel.FLAG_FEATURES[key]
+    refused = _owner_panel.flag_unavailable(feature, state.features, ctx.language_code)
+    if refused is not None:
+        return refused, False
+    on = value == "on"
+    try:
+        await asyncio.to_thread(
+            _chat_settings.default_store().set_flag, ctx.owner_user_id, ctx.chat_id, feature, on, via="chat"
+        )
+    except (_chat_settings.ChatSettingsFileCorrupt, ValueError, OSError) as exc:
+        logger.warning("%s: could not save chat setting (%s)", _PLUGIN_NAME, type(exc).__name__)
+        return _owner_panel.tr("chat_save_error", ctx.language_code), True
+    connection = ctx.business_connection_id
+    if connection:
+        # Capture then finds this chat's owner without an API call (best effort, as for modes).
+        await _bind_business_connection(_transcription_modes.default_store(), connection, ctx.owner_user_id)
+        if not on:
+            await asyncio.to_thread(_dossier_panel.stop_refresh, connection, ctx.chat_id)
+    return _owner_panel.tr(f"{feature}.done.{value}", ctx.language_code), False
+
+
 async def _edit_panel_message(bot: Any, query: Any, view: _owner_panel.PanelView, fallback: Any = None) -> None:
     """Edit the panel in place; a failed section view falls back to ``fallback`` once."""
     message = _get(query, "message")
@@ -2516,6 +2556,11 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
                 logger.warning("%s: could not save transcription mode (%s)", _PLUGIN_NAME, type(exc).__name__)
                 toast = notice = _owner_panel.tr("save_error", language_code)
         await _answer_panel_callback(bot, query, toast)
+    elif parsed.action == "f":
+        toast, failed = await _apply_panel_flag(parsed, state)
+        notice = toast if failed else None
+        await _answer_panel_callback(bot, query, toast)
+        state = await asyncio.to_thread(_panel_state, owner, str(sender_id), chat_id, catalog, None, language_code)
     else:
         # Answer before rendering, so a slow section never outlives the callback's answer window.
         section = _owner_panel.get_section(parsed.section) if parsed.action == "s" else None
@@ -2533,8 +2578,10 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
             view = await _render_panel_section(section, state.ctx)
             fallback = _owner_panel.unavailable_view(chat_id, state.ctx.chat_label, language_code)
     if view is None:
-        view = _owner_panel.render_main(state.ctx, entry, _owner_panel.sections(), enabled, notice=notice)
-    action_name = f"s:{parsed.arg}" if parsed.action == "s" else parsed.action
+        view = _owner_panel.render_main(
+            state.ctx, entry, _owner_panel.sections(), enabled, notice=notice, features=state.features
+        )
+    action_name = f"{parsed.action}:{parsed.arg}" if parsed.action in ("s", "f") else parsed.action
     _log_panel(action_name, chat_id, entry.mode if entry is not None else None)
     await _edit_panel_message(bot, query, view, fallback)
 
@@ -2564,6 +2611,7 @@ def _setup_cli(subparser: Any) -> None:
     _history_support.add_history_parser(subs)
     _transcription_modes.add_mode_parser(subs)
     _global_settings.add_settings_parser(subs)
+    _chat_settings.add_chat_parser(subs)
 
 
 def _handle_cli(args: Any) -> int:
@@ -2574,8 +2622,10 @@ def _handle_cli(args: Any) -> int:
         return _transcription_modes.handle_mode_cli(args)
     if command == "settings":
         return _global_settings.handle_settings_cli(args)
+    if command == "chat":
+        return _chat_settings.handle_chat_cli(args)
     if command is None:
-        print("Usage: hermes telesec <settings|history|stats|dossier|mode> ...")
+        print("Usage: hermes telesec <settings|chat|history|stats|dossier|mode> ...")
         return 1
     return _history_support.handle_cli(args)
 
@@ -2728,6 +2778,9 @@ terminal tool on this gateway host and prefer `--format json`.
 `hermes telesec mode get <chat_id or @username> --format json`. `effective_mode` is what the \
 next voice note gets; `source` is stored, default, or disabled. Change a mode only when the user asks: \
 `hermes telesec mode set <chat> <mode>` or `hermes telesec mode reset <chat>`.
+- History and dossier per chat: `hermes telesec chat get <chat> --format json` (`effective_history`, \
+`effective_dossier`); change only when the user asks: `hermes telesec chat set <chat> --history on|off` \
+or `--dossier on|off`.
 - Correspondence stats: `hermes telesec stats --chat <chat_id> --format json` (or \
 `--contact @username`; without either it lists contacts).
 - History and dossiers, when enabled: skills `{_PLUGIN_NAME}:history` and `{_PLUGIN_NAME}:dossiers`.

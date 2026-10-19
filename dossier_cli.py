@@ -676,7 +676,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(NO_FACADE)
         return 1
     target = _resolve_target(args) if _has_target(args) else None
+    if target is not None and target[0] == "contact" and _dossier._entry_paused(target[1]):
+        print(f"error: {_dossier.CHAT_OFF}")
+        return 1
     report = _dossier.run_cycle(llm=llm, trigger="cli", target=target)
+    if report.outcome == "chat_off":  # switched off for the chat since the check above
+        print(f"error: {_dossier.CHAT_OFF}")
+        return 1
     if report.outcome == "disabled":
         print(DISABLED_RUN)
         return 1

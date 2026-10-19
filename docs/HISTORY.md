@@ -20,6 +20,18 @@ By default, capture includes private chats Telegram delivers through the bot's B
 
 Text, edits, deletions, reply relationships, sender/direction, and available contact snapshots are recorded. Media bytes, media metadata, and captions are excluded. Missing original text is recorded as missing rather than reconstructed.
 
+## One chat
+
+To stop history for one chat, tap **Manage Bot** in that chat and then **Don't save** in your private chat with the bot, or run:
+
+```bash
+hermes telesec chat set 991 --history off
+hermes telesec chat get 991
+hermes telesec chat list
+```
+
+**Save history** or `--history on` turns it back on; it is the default, so nothing is stored for it. While a chat is set to Don't save, its new messages, edits, and deletions are not recorded, and its dossier pauses too. What was saved before stays, and retention and the size cap still prune it. Edits and deletions of older messages that arrive in the meantime are not recorded, so turning history back on leaves a gap. The setting is stored per owner in `chat-settings.json` and never touches another owner's chat with the same contact. The check fails closed: if the file was never readable, or the chat id is paused by some owner and the owner of the update's connection cannot be found, nothing is recorded. See [per-chat history and dossier](../README.md#per-chat-history-and-dossier).
+
 ## Find a conversation
 
 ```bash
@@ -97,7 +109,7 @@ Telegram-side deletion does **not** erase the archive. The archive deliberately 
 
 Automatic retention and size pruning remove whole closed monthly partitions. The current month and partitions needed for pending deletion classification are preserved, so a configured target is not a hard storage ceiling. The contact catalog is rebuilt from retained evidence after pruning.
 
-No record-level erasure command ships in this version. To remove an entire local archive, turn history off in Settings, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history does not remove dossiers; use `hermes telesec dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
+Don't save for one chat stops capture but keeps what that chat already has. No record-level erasure command ships in this version. To remove an entire local archive, turn history off in Settings, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history does not remove dossiers; use `hermes telesec dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
 
 ## Runtime boundary
 

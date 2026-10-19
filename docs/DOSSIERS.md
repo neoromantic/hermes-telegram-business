@@ -19,7 +19,18 @@ Enabling dossiers sends private chat text to the configured model provider. Hist
 
 No environment variable or Desktop setting switches dossiers. Before 0.11.0, `TELESEC_DOSSIER_ENABLE` or the Desktop `dossier_enable` setting did. On the first start after upgrading, if one of them says on and no switch is stored yet, the switch is stored as on once (`status` shows `via migration`) and the gateway log says so. After that both are ignored, and you can remove them.
 
-One switch covers every private Business chat in history. There is no per-contact build step and no exclude list. Groups, supergroups, and channels are never processed, even when history captures them.
+One switch covers every private Business chat in history. There is no per-contact build step. Groups, supergroups, and channels are never processed, even when history captures them.
+
+### One chat
+
+To leave one chat out, tap **Manage Bot** in that chat and then **No dossier** in your private chat with the bot, or run `hermes telesec chat set 991 --dossier off` ([per-chat history and dossier](../README.md#per-chat-history-and-dossier)). **Keep dossier** or `--dossier on` brings it back; it is the default, so nothing is stored for it. History keeps recording under No dossier, so the next cycle after Keep dossier catches up and sends what was written meanwhile to the model. A chat set to **Don't save** (no history) is paused the same way. For a paused chat:
+
+- The worker skips it, its messages are kept out of the persona, and a running panel Refresh for it stops before its next model call or write.
+- `dossier run --contact` and `dossier preview` for it refuse with `Dossier is off for this chat.`, and the panel offers no Refresh.
+- The stored dossier stays frozen: you can still read it in the panel (with the note `Off for this chat.`) and the CLI, and the worker never treats it as an orphan. `dossier forget` deletes it. Persona facts already learned from the chat stay until you remove them in the persona view.
+- The owner's `/dossier` in the chat posts nothing, and the bot tells you privately: `Dossier is off for this chat.`
+
+The setting is per owner, so it never touches another owner's chat with the same contact. The worker never asks Telegram who owns a connection: when the owner is not known yet, a chat id that some owner paused stays paused.
 
 A contact gets a dossier once its chat has at least one received and one sent text message among the messages the first pass would use: the last 90 days, at most 500 messages. A chat with old received messages and only recent sent ones qualifies only once both sides appear inside that window. Plugin voice transcripts and messages of unknown direction count for neither side.
 
@@ -198,7 +209,7 @@ Tap "Manage Bot" in a Business chat. The bot opens your private chat with it and
 
 - The first screen is an overview: the contact, when the dossier was last updated, coverage and model, fact counts, then the facts grouped by section. Sections that need action come first and open: commitments, open questions, decisions, contradictions. Preferences, relationship, and shared facts follow collapsed, and unsupported facts come last. Each fact shows its ID and marks (📌 pinned, ✎ owner edit, ~ model guess, ⚠ source changed), plus its sources in a collapsed block with the stored quote and the message's current text in history.
 - **Manage facts** lists the facts as buttons, 24 per page. A fact's card shows its sources with the current history text, its kind and revisions, and **Pin** or **Unpin** and **Remove** (with a confirmation). These are the same edits as `dossier pin`, `unpin`, and `remove`, and they survive refreshes the same way. Corrections, notes, history, export, and `forget` stay in the CLI.
-- **Refresh** runs `dossier run --contact` for this chat in the background; open the dossier again a minute later. It is offered while dossiers and history are on, the gateway has the model facade, and the chat is in history. If another cycle is running, the panel says so.
+- **Refresh** runs `dossier run --contact` for this chat in the background; open the dossier again a minute later. It is offered while dossiers and history are on, the gateway has the model facade, the chat is in history, and the chat is not set to [No dossier or Don't save](#one-chat). If another cycle is running, the panel says so.
 - **My persona** shows the owner persona the same way. The on/off switch is in [Settings](../README.md#settings); an older panel message's Enable or Disable button now only shows the dossier.
 - A button from an older panel message never edits a dossier that was rebuilt or forgotten since; the panel says the dossier changed.
 - The persona and the switch are global, and any Telegram Premium account can connect the bot. So the panel and Settings offer them only to an owner of every Business connection the bot knows about: those with a private chat in history, a stored contact dossier, or a chat the persona cites, plus every connection with a recorded or looked-up owner and every connection with a Business update since the gateway started. The bot must know each connection's owner, from a lookup in this gateway process or one the [modes file](../README.md#per-chat-transcription-modes) records; otherwise the persona button stays hidden, Settings is read-only, the dossier screen says who can turn dossiers on, and the CLI still works.
@@ -212,7 +223,7 @@ The post leaves out owner notes (`dossier note`), unsupported facts, and facts w
 
 - Only a bare `/dossier` (or `/dossier@YourBot`) from the owner counts. `/dossier <text>`, a contact's `/dossier`, and a forwarded or inline-bot one are ordinary messages. So is a `/dossier` the bot cannot confirm as yours: its owner lookup failed and the [modes file](../README.md#per-chat-transcription-modes) records no owner for the connection.
 - Telegram lets a Business bot post only in chats where the contact wrote in the last 24 hours. In an older chat your command is still deleted, nothing is posted, and the bot tells you privately; send `/dossier` again after the contact writes.
-- When there is nothing to post (dossiers are off, no dossier yet, an unreadable file, no facts to show, or history could not be read to check the sources) or Telegram rejects the message, nothing appears in the chat. The bot tells you why in your private chat with it, which you need to have started once (Manage Bot does that).
+- When there is nothing to post (dossiers are off, the chat is set to [No dossier or Don't save](#one-chat), no dossier yet, an unreadable file, no facts to show, or history could not be read to check the sources) or Telegram rejects the message, nothing appears in the chat. The bot tells you why in your private chat with it, which you need to have started once (Manage Bot does that).
 - Deleting the command needs the bot's "Delete messages" permission in Telegram Business > Chatbots. Without it the command stays and the gateway log says so.
 - Once the bot confirms you as the owner, the command and the posted dossier are never written to history and never reach the ordinary Hermes path. An edited `/dossier` is never executed; when you edit a message history already has into `/dossier`, history records that edit.
 
@@ -237,7 +248,7 @@ When pruning removes a whole chat, its dossier stays as an orphan. The worker on
 ## Background worker
 
 - The worker runs only inside the gateway, never in CLI processes. It starts when the Telegram adapter connects, also while dossiers are off, and then only checks the switch every minute. Once dossiers are on, it waits at least 3 minutes after connect and runs a cycle. Each next cycle starts 30 minutes after the previous one ended. A cycle that finds another one running (a panel refresh or `dossier run`) retries a minute later.
-- A cycle goes through all private contacts, most recently active first, then orphan dossiers, then the persona.
+- A cycle goes through all private contacts, most recently active first, then orphan dossiers, then the persona. Chats set to [No dossier or Don't save](#one-chat) are skipped, and their messages are left out of the persona.
 - A contact whose history files have not changed since its last check is skipped without reading history.
 - A contact with new or changed messages is refreshed only after its chat has been quiet for at least 10 minutes: no new, edited, or deleted message was observed in that time.
 - Rate limit: at most 20 model calls per minute, over a sliding 60-second window that `dossier run` shares. It counts the plugin's `complete_structured` calls; retries and fallbacks inside the host are not counted. There is no per-cycle cap, so a cycle works through every due contact at that rate.
@@ -550,6 +561,6 @@ f6  [observed] The contact first needed installation before 15 March, then said 
 - Orphan dossiers keep their unsupported facts until `forget`.
 - A crash between saving a dossier and appending to its log can lose one log line, never a fact.
 - On platforms without `fcntl`, there is no file locking, the same as history.
-- There is no per-contact exclusion, per-chat model consent, cross-contact persona filter, or per-connection persona. Group, supergroup, and channel dossiers are not supported.
+- There is no per-chat model consent, cross-contact persona filter, or per-connection persona. [No dossier](#one-chat) skips a chat but does not remove what the persona already learned from it. Group, supergroup, and channel dossiers are not supported.
 - Removed facts cannot be restored; add a `note` instead. Fact sources cannot be edited from the CLI.
 - Drafts and automatic replies do not use dossiers yet, and there is no Telegram-side dossier UI.

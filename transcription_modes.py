@@ -777,6 +777,8 @@ def _mode_json(
 
     ``source`` is ``stored`` (an owner set it), ``default`` (no stored mode), or
     ``disabled`` (transcription is off in Settings, so nothing is transcribed).
+    ``effective_history`` and ``effective_dossier`` are "on" or "off" in effect for the chat
+    (Settings, the env scope, and the chat's own switches; see ``hermes telesec chat get``).
     """
     if not _transcription_enabled():
         effective, source = "off", "disabled"
@@ -784,6 +786,7 @@ def _mode_json(
         effective, source = entry.mode, "stored"
     else:
         effective, source = DEFAULT_MODE, "default"
+    history, dossier = _chat_state(owner, chat, extra.get("business_connection_id"))
     return {
         "owner": owner,
         "chat_id": chat,
@@ -794,7 +797,15 @@ def _mode_json(
         "updated_via": entry.updated_via if entry is not None else None,
         "updated_at": entry.updated_at if entry is not None else None,
         "label": (entry.label if entry is not None else None) or label,
+        "effective_history": "on" if history == "on" else "off",
+        "effective_dossier": "on" if dossier == "on" else "off",
     }
+
+
+def _chat_state(owner: str | None, chat: str, connection: str | None) -> tuple[str, str]:
+    from . import chat_settings  # lazy: chat_settings imports this module
+
+    return chat_settings.chat_state(owner, chat, connection=connection)
 
 
 def _transcription_enabled() -> bool:

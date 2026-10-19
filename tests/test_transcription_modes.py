@@ -1093,9 +1093,9 @@ async def test_corrupt_file_keeps_last_valid_modes_and_only_the_cli_repairs_it(p
         await _panel_tap(plugin, data, panel_bot)
     error = "Error: could not save transcription mode"
     assert [call["text"] for call in panel_bot.text_edit_calls] == [
-        f"Owner panel: chat 991\n{error}\nTranscription: off",
-        f"Owner panel: chat 991\n{error}\nTranscription: off",
-        "Owner panel: chat 991\nTranscription: off",
+        f"Owner panel: chat 991\n{error}\nTranscription: off\nHistory: off in Settings",
+        f"Owner panel: chat 991\n{error}\nTranscription: off\nHistory: off in Settings",
+        "Owner panel: chat 991\nTranscription: off\nHistory: off in Settings",
     ]
     assert path.read_bytes() == b"{not json SECRET-CONTENT"
     assert list(path.parent.glob("transcription-modes.json.corrupt-*")) == []
@@ -1356,6 +1356,7 @@ def test_cli_json_shows_stored_and_effective_modes(plugin, modes, monkeypatch):
     assert as_json("get", "991") == {
         "owner": None, "chat_id": "991", "business_connection_id": None, "mode": None, "effective_mode": "both",
         "source": "default", "updated_via": None, "updated_at": None, "label": None,
+        "effective_history": "off", "effective_dossier": "off",
     }
 
     modes.default_store().set_mode(OWNER, CHAT, "off", via="chat", label="Alice \u202e")
@@ -1579,7 +1580,7 @@ def test_cli_usage_and_routing(plugin, modes):
     assert excinfo.value.code == 2
 
     assert run_cli(plugin, "mode") == (1, modes.MODE_USAGE)
-    assert run_cli(plugin) == (1, "Usage: hermes telesec <settings|history|stats|dossier|mode> ...")
+    assert run_cli(plugin) == (1, "Usage: hermes telesec <settings|chat|history|stats|dossier|mode> ...")
     exit_code, output = run_cli(plugin, "history", "stats")
     assert exit_code == 0
     assert output.startswith("enabled=False")

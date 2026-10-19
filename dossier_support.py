@@ -49,6 +49,8 @@ LEGACY_ENABLE_ENV = "TELESEC_DOSSIER_ENABLE"
 LEGACY_ENABLE_SETTING = "dossier_enable"
 ENABLE_COMMAND = "hermes telesec dossier enable"
 DISABLE_COMMAND = "hermes telesec dossier disable"
+# A chat set to "No dossier" (or "Don't save") in its panel or with `hermes telesec chat set`.
+CHAT_OFF = "Dossier is off for this chat."
 INTERVAL_ENV = "TELESEC_DOSSIER_INTERVAL_MINUTES"
 QUIET_ENV = "TELESEC_DOSSIER_QUIET_MINUTES"
 BACKFILL_DAYS_ENV = "TELESEC_DOSSIER_BACKFILL_DAYS"
@@ -1760,11 +1762,15 @@ def _run_batches(cx: _Cycle, *, kind: str, path: Path, dossier: dict[str, Any] |
             return "stopped", expected_id
         if not load_config().enabled or not _history.capture_enabled():
             return "stopped", expected_id  # dossiers or history switched off while waiting for the rate limit
+        if entry is not None and kind == "contact" and _entry_paused(entry):
+            return "paused", expected_id  # switched off for this chat while waiting
         cx.rep.calls += 1
         cx.stats["calls"] = cx.stats.get("calls", 0) + 1
         output, model, provider = _call_model(cx.llm, kind=kind, payload_text=text, cfg=cx.cfg)
         if cx.stopped():
             return "stopped", expected_id  # shutting down: write nothing
+        if entry is not None and kind == "contact" and _entry_paused(entry):
+            return "paused", expected_id  # switched off for this chat during the call: write nothing
         with _data_lock():
             if _generation() != cx.generation:
                 return "discarded", None  # forget ran during the call
@@ -1790,7 +1796,27 @@ def _quiet_met(view: ChatView, now: datetime, cfg: DossierConfig) -> bool:
     return view.last_activity_at is None or now - view.last_activity_at >= timedelta(minutes=cfg.quiet_minutes)
 
 
+def chat_paused(business_connection_id: Any, chat_id: Any) -> bool:
+    """The owner set "No dossier" or "Don't save" for this chat; its dossier stays frozen (chat_settings)."""
+    from . import chat_settings  # lazy: chat_settings imports this module through global_settings
+
+    return chat_settings.paused(business_connection_id, chat_id, "dossier")
+
+
+def _entry_paused(entry: dict[str, Any]) -> bool:
+    return chat_paused(entry.get("business_connection_id"), entry.get("chat_id"))
+
+
+def _paused_chat_keys(entries: list[dict[str, Any]], persona: dict[str, Any] | None) -> frozenset[str]:
+    """Chat keys of paused chats among ``entries`` and the chats the persona cites."""
+    targets = [*entries, *((persona or {}).get("chat_aliases") or {}).values()]
+    return frozenset(chat_key(t.get("business_connection_id"), t.get("chat_id")) for t in targets
+                     if isinstance(t, dict) and _entry_paused(t))
+
+
 def process_contact(entry: dict[str, Any], cx: _Cycle, *, force: bool = False) -> str:
+    if _entry_paused(entry):
+        return "paused"  # switched off since the cycle started: nothing read, nothing written
     key = chat_key(entry["business_connection_id"], entry["chat_id"])
     path = dossier_path_for(entry)
     dossier = load_dossier(path)
@@ -1836,10 +1862,14 @@ def process_orphan(path: Path, dossier: dict[str, Any], cx: _Cycle) -> str:
     return "maintained"
 
 
-def _persona_targets(entries: list[dict[str, Any]], persona: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
-    targets = {chat_key(e["business_connection_id"], e["chat_id"]): e for e in entries}
+def _persona_targets(entries: list[dict[str, Any]], persona: dict[str, Any] | None,
+                     exclude: frozenset[str] = frozenset()) -> dict[str, dict[str, Any]]:
+    """Chats the persona reads; ``exclude`` holds the keys of paused chats."""
+    targets = {key: e for e in entries
+               if (key := chat_key(e["business_connection_id"], e["chat_id"])) not in exclude}
     for info in ((persona or {}).get("chat_aliases") or {}).values():
-        if info.get("chat_key") not in targets:  # orphan chats the persona still cites
+        if info.get("chat_key") not in targets and info.get("chat_key") not in exclude:
+            # orphan chats the persona still cites
             targets[info["chat_key"]] = {"business_connection_id": info["business_connection_id"],
                                          "chat_id": info["chat_id"]}
     return targets
@@ -1847,11 +1877,11 @@ def _persona_targets(entries: list[dict[str, Any]], persona: dict[str, Any] | No
 
 def _persona_views(entries: list[dict[str, Any]], persona: dict[str, Any] | None, *, now: datetime,
                    cfg: DossierConfig, gates: dict[str, Any] | None, cache: dict[str, ChatView] | None = None,
-                   ) -> dict[str, ChatView]:
+                   exclude: frozenset[str] = frozenset()) -> dict[str, ChatView]:
     pid = persona["dossier_id"] if persona else None
     since = fold_since(None, persona, now, cfg)
     views: dict[str, ChatView] = {}
-    for key, entry in _persona_targets(entries, persona).items():
+    for key, entry in _persona_targets(entries, persona, exclude).items():
         if gates is not None and _gate_ok(gates.get(key), _signature(_history._entry_chat_dir(entry)), pid,
                                           "persona_id"):
             continue
@@ -1860,13 +1890,14 @@ def _persona_views(entries: list[dict[str, Any]], persona: dict[str, Any] | None
     return views
 
 
-def process_persona(entries: list[dict[str, Any]], cx: _Cycle, *, force: bool = False) -> str:
+def process_persona(entries: list[dict[str, Any]], cx: _Cycle, *, force: bool = False,
+                    exclude: frozenset[str] = frozenset()) -> str:
     path = persona_path()
     persona = load_dossier(path)
     pid = persona["dossier_id"] if persona else None
     gates = cx.state["persona_gates"]
     views = _persona_views(entries, persona, now=cx.now, cfg=cx.cfg, gates=None if force else gates,
-                           cache=cx.views)
+                           cache=cx.views, exclude=exclude)
     plan = plan_persona(persona, views, now=cx.now, cfg=cx.cfg, force=force)
 
     def gate(keys: Any, ident: str | None) -> None:
@@ -1986,12 +2017,19 @@ def run_cycle(*, llm: Any, now: datetime | None = None, trigger: str = "worker",
 def _run_cycle_steps(cx: _Cycle, target: tuple[str, Any] | None) -> None:
     rep = cx.rep
     if target is not None and target[0] == "contact":
-        entries = [target[1]]
+        all_entries = [target[1]]
     else:
-        entries, problem = _private_entries_with_retry(cx.stop)
+        all_entries, problem = _private_entries_with_retry(cx.stop)
         if problem:
             rep.outcome = problem
             return
+    # A chat set to "No dossier" or "Don't save" is skipped and its dossier stays frozen. Orphan cleanup
+    # still sees every chat, so a paused chat's dossier is never treated as an orphan.
+    paused = _paused_chat_keys(all_entries, cx.persona)
+    entries = [e for e in all_entries if chat_key(e["business_connection_id"], e["chat_id"]) not in paused]
+    if target is not None and target[0] == "contact" and not entries:
+        rep.outcome = "chat_off"
+        return
     if target is None or target[0] == "contact":
         for entry in entries:
             if cx.stopped():
@@ -2005,7 +2043,7 @@ def _run_cycle_steps(cx: _Cycle, target: tuple[str, Any] | None) -> None:
                 break
             rep.count(out)
         if target is None and rep.outcome == "completed":
-            for path, dossier in orphan_dossiers(entries):
+            for path, dossier in orphan_dossiers(all_entries):
                 if cx.stopped():
                     rep.outcome = "stopped"
                     break
@@ -2019,7 +2057,7 @@ def _run_cycle_steps(cx: _Cycle, target: tuple[str, Any] | None) -> None:
                     rep.failed += 1
     if (target is None or target[0] == "persona") and rep.outcome == "completed":
         rep.persona = _guarded(cx, "persona", None, "persona",
-                               lambda: process_persona(entries, cx, force=target is not None))
+                               lambda: process_persona(entries, cx, force=target is not None, exclude=paused))
 
 
 # ---------------------------------------------------------------------------
@@ -2046,6 +2084,8 @@ def build_preview(target: tuple[str, Any], now: datetime | None = None) -> tuple
                             "backfill_days": cfg.backfill_days, "quiet_minutes": cfg.quiet_minutes,
                             "enabled": cfg.enabled}
     if kind == "contact":
+        if _entry_paused(entry):
+            raise ValueError(CHAT_OFF)
         dossier = load_dossier(dossier_path_for(entry))
         view = read_chat_view(entry, since=fold_since(dossier, persona, now, cfg))
         views = {view.chat_key: view}
@@ -2056,7 +2096,9 @@ def build_preview(target: tuple[str, Any], now: datetime | None = None) -> tuple
             return None, meta
     else:
         dossier = persona
-        views = _persona_views(private_entries(), persona, now=now, cfg=cfg, gates=None)
+        entries = private_entries()
+        views = _persona_views(entries, persona, now=now, cfg=cfg, gates=None,
+                               exclude=_paused_chat_keys(entries, persona))
         plan = plan_persona(persona, views, now=now, cfg=cfg, force=True)
     meta.update(mode="initial" if plan.first_pass else "refresh", new=len(plan.new_keys),
                 changed=len(plan.changed_keys))

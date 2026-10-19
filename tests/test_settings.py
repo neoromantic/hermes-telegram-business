@@ -258,7 +258,7 @@ def test_cli_shows_and_sets_every_switch(gs, plugin, monkeypatch):
         False, True, True)
     assert data["transcription"]["updated_via"] == "cli" and data["dossiers"]["paused"] is False
     assert data["ignored_env"] == ["TELESEC_DISABLE"] and data["settings_file_unreadable"] is False
-    assert data["chat_overrides"] == {"transcription": 0}
+    assert data["chat_overrides"] == {"transcription": 0, "history": 0, "dossier": 0}
     assert plugin._disabled() is True  # the stored switch, not TELESEC_DISABLE=0
 
 
@@ -481,7 +481,8 @@ async def test_settings_from_a_chat_panel_keeps_its_back_button(gs, plugin):
     bot = top.PanelBot(business_owner_id=OWNER)
 
     assert await top.dispatch(plugin, top.start_update(), bot) is True
-    assert top.keyboard(bot.calls[0]["reply_markup"])[-2] == [("⚙️ Settings", f"tb:s:{CHAT}:settings")]
+    assert top.keyboard(bot.calls[0]["reply_markup"])[-1] == [("⚙️ Settings", f"tb:s:{CHAT}:settings"),
+                                                            ("Refresh", f"tb:p:{CHAT}")]
 
     assert await top.dispatch(plugin, top.callback_update(f"tb:s:{CHAT}:settings/t.off"), bot) is True
     text, keyboard = top.last_edit(bot)
@@ -491,7 +492,7 @@ async def test_settings_from_a_chat_panel_keeps_its_back_button(gs, plugin):
     assert keyboard[-1] == [("« Back", f"tb:b:{CHAT}")]
 
     assert await top.dispatch(plugin, top.callback_update(f"tb:b:{CHAT}"), bot) is True
-    assert top.last_edit(bot)[0] == "Owner panel: chat 991\nTranscription: off in Settings"
+    assert top.last_edit(bot)[0] == "Owner panel: chat 991\nTranscription: off in Settings\nHistory: off in Settings"
 
 
 @pytest.mark.asyncio
