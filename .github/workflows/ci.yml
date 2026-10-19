@@ -1,4 +1,6 @@
-# managed by devkit v1: edit in https://github.com/neoromantic/devkit/blob/main/templates/ci.python.yml
+# Based on devkit's templates/ci.python.yml, with a Python version matrix:
+# Telesec runs inside whatever Python the Hermes gateway uses, 3.11 to 3.14.
+# Edited here on purpose, so devkit sync leaves this file alone.
 name: ci
 
 on:
@@ -18,6 +20,8 @@ jobs:
     uses: neoromantic/devkit/.github/workflows/ci-python.yml@v1
     permissions:
       contents: read
+    with:
+      python-version: '["3.11","3.12","3.13","3.14"]'
 
   hygiene:
     uses: neoromantic/devkit/.github/workflows/hygiene.yml@v1
