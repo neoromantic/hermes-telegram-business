@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
+import test_history
 import test_plugin
 from telegram import Update
 from telegram.ext import Application, ExtBot, TypeHandler
@@ -151,7 +152,7 @@ async def test_native_business_updates_stop_after_history(
 @pytest.mark.asyncio
 async def test_native_history_persists_real_ptb_updates_and_leaves_bot_chats_alone(plugin, telegram_app, monkeypatch):
     app, _request = telegram_app
-    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    test_history.set_switch(plugin, "history", True)
     adapter = SimpleNamespace(platform="telegram", _bot=app.bot)
     plugin._register_telegram_handlers(app, adapter)
     core = AsyncMock()
@@ -255,7 +256,7 @@ def _business_update(app, *, sender_id, update_id=42, **content):
 ])
 async def test_disabled_transcription_still_consumes_business_updates(plugin, telegram_app, monkeypatch, content):
     app, request = telegram_app
-    monkeypatch.setenv("TELESEC_DISABLE", "1")
+    test_history.set_switch(plugin, "transcription", False)
     core = _register_native(plugin, app)
 
     await app.process_update(_business_update(app, sender_id=2000, **content))

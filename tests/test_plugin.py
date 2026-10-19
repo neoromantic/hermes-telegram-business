@@ -70,6 +70,9 @@ def isolate_plugin_environment(monkeypatch: pytest.MonkeyPatch):
         "TELESEC_VOICE_BYPASS_AUTH",
         "TELESEC_AGENT_ENABLE",
         "TELEGRAM_BOT_TOKEN",
+        # Old switches: register() would move a developer's own value into the test's settings.json.
+        "TELESEC_DISABLE",
+        "TELESEC_HISTORY_ENABLE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -298,7 +301,7 @@ def test_readme_uses_public_name_and_canonical_install_source():
     assert f"{CANONICAL_REPOSITORY}/actions/workflows/test.yml" in readme
     assert "hermes plugins install neoromantic/telesec --enable" in readme
     assert "scripts/upgrade-telesec.sh" in readme
-    assert "TELESEC_HISTORY_ENABLE" in readme
+    assert "hermes telesec settings set history on" in readme
     assert "gemini-3.8-flash" in readme
     assert "PTB 22.8" in readme
     assert "ctx.register_telegram_handler" in readme
@@ -342,7 +345,7 @@ def test_ci_runs_on_main_and_version_tags():
 
 def test_runtime_identity_and_configuration_namespace_remain_legacy_stable(plugin):
     assert plugin._PLUGIN_NAME == PLUGIN_ID
-    assert plugin._DISABLE_ENV == "TELESEC_DISABLE"
+    assert plugin._global_settings.LEGACY_TRANSCRIPTION_ENV == "TELESEC_DISABLE"  # read once, by the migration
     assert plugin._SEND_ERRORS_ENV == "TELESEC_SEND_ERRORS"
 
 

@@ -11,7 +11,6 @@ kind: standalone
 provides_hooks:
   - pre_gateway_dispatch
 config_schema:
-  history_enable: {type: bool, default: false, description: "Capture Business text history."}
   cleanup_style: {type: str, default: conservative, choices: [conservative, enriched], description: "Voice transcript cleanup style."}
   timezone: {type: str, default: UTC, description: "IANA timezone for correspondence statistics."}
   agent_enable: {type: bool, default: false, description: "Pass unhandled Business updates to the Hermes agent."}

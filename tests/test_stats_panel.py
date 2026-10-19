@@ -33,7 +33,6 @@ plugin = th.plugin
 enabled_history = th.enabled_history
 modes = ttm.modes
 
-HISTORY_ENABLE_ENV = "TELESEC_HISTORY_ENABLE"
 ICON = "\U0001f4ca"
 BASIS = "by Telegram send time; text messages only"
 # (sub-argument, CLI --since, header label)
@@ -54,7 +53,6 @@ READ_ERROR = (
 @pytest.fixture(autouse=True)
 def _fixed_clock(plugin, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(TIMEZONE_ENV, raising=False)
-    monkeypatch.delenv(HISTORY_ENABLE_ENV, raising=False)
     monkeypatch.setattr(plugin._history_support, "_utcnow", lambda: NOW)
 
 
@@ -183,14 +181,14 @@ def test_history_off(plugin, sp):
     _alice_fixture(plugin)
     view = _view(sp)
     assert view.text == (
-        f"{ICON} Stats\nStats need history: set TELESEC_HISTORY_ENABLE=1 and restart the gateway."
+        f"{ICON} Stats\nStats need history. Turn it on in Settings (/telesec)."
     )
     assert view.buttons == ()
 
 
 def test_state_order(plugin, sp, monkeypatch: pytest.MonkeyPatch):
     history_off = (
-        f"{ICON} Stats\nStats need history: set TELESEC_HISTORY_ENABLE=1 and restart the gateway."
+        f"{ICON} Stats\nStats need history. Turn it on in Settings (/telesec)."
     )
     no_connection = f"{ICON} Stats\nStats unavailable: the Business connection for this chat is not known yet."
     bad_tz = {TIMEZONE_ENV: "Mars/Olympus"}
@@ -199,7 +197,7 @@ def test_state_order(plugin, sp, monkeypatch: pytest.MonkeyPatch):
     assert _view(sp, conn=None, environ=bad_tz).text == history_off
     assert _view(sp, environ=bad_tz).text == history_off
     # With history on, a missing connection wins over a bad time zone.
-    monkeypatch.setenv(HISTORY_ENABLE_ENV, "1")
+    th.set_switch(plugin, "history", True)
     view = _view(sp, conn=None, environ=bad_tz)
     assert view.text == no_connection and view.buttons == ()
 

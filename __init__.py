@@ -77,8 +77,10 @@ else:
 
 from . import dossier_panel as _dossier_panel
 from . import dossier_support as _dossier_support
+from . import global_settings as _global_settings
 from . import history_support as _history_support
 from . import owner_panel as _owner_panel
+from . import settings_panel as _settings_panel
 from . import stats_panel as _stats_panel
 from . import transcription_modes as _transcription_modes
 from .migration import migrate
@@ -88,8 +90,12 @@ logger = logging.getLogger(__name__)
 # Keep aligned with the manifest and the migration target.
 _PLUGIN_NAME = "telesec"
 _deprecated_env_warned = False
-_DISABLE_ENV = "TELESEC_DISABLE"
 _SEND_ERRORS_ENV = "TELESEC_SEND_ERRORS"
+_TELESEC_COMMAND_RE = re.compile(r"/telesec(?:@\w+)?(?:\s|\Z)", re.IGNORECASE)
+_SETTINGS_COMMAND_FALLBACK = (
+    "Telesec settings are for the Business account owner, in the private chat with this bot. "
+    "In a terminal: hermes telesec settings."
+)
 _CLEANUP_DISABLE_ENV = "TELESEC_CLEANUP_DISABLE"
 _CLEANUP_PROVIDER_ENV = "TELESEC_CLEANUP_PROVIDER"
 _CLEANUP_MODEL_ENV = "TELESEC_CLEANUP_MODEL"
@@ -528,7 +534,8 @@ def _is_business_message(message: Any) -> bool:
 
 
 def _disabled() -> bool:
-    return _truthy_env(_DISABLE_ENV)
+    """Transcription is off in Settings (or `hermes telesec settings`) for every chat."""
+    return not _global_settings.enabled("transcription")
 
 
 def _send_errors_enabled() -> bool:
@@ -2077,13 +2084,14 @@ def _is_owner_panel_callback(update: Any) -> bool:
 
 
 def _is_owner_panel_update(update: Any) -> bool:
-    """A `tb:` button press, or a private-chat `/start bizChat<id>` from "Manage Bot"."""
+    """A `tb:` button press, or a private-chat `/start bizChat<id>` from "Manage Bot" or exact `/telesec`."""
     if getattr(update, "callback_query", None) is not None:
         return _is_owner_panel_callback(update)
     message = getattr(update, "message", None)
     if message is None or _get(_get(message, "chat"), "type") != "private":
         return False
-    return _owner_panel.parse_start_payload(_get(message, "text")) is not None
+    text = _get(message, "text")
+    return _owner_panel.parse_start_payload(text) is not None or _owner_panel.parse_settings_command(text)
 
 
 @dataclass(frozen=True)
@@ -2101,7 +2109,7 @@ class _PanelState:
 
 
 def _panel_catalog() -> list[dict[str, Any]]:
-    """History catalog entries, read-only; none when history is off or unreadable."""
+    """History catalog entries, read-only, also while history is off; none when unreadable."""
     return _transcription_modes._history_entries()
 
 
@@ -2235,8 +2243,24 @@ def _panel_state(
         business_connection_id=connection,
         arg=arg,
         language_code=language_code,
+        owner_connections=owner.connections,
     )
     return _PanelState(ctx=ctx, entry=entry, store_label=store_label)
+
+
+def _settings_context(
+    owner: _PanelOwner, owner_id: str, arg: str | None, language_code: str | None
+) -> _owner_panel.PanelContext:
+    """Settings opened from `/telesec`: chat ``HOME_CHAT``, no Business chat or connection of its own."""
+    return _owner_panel.PanelContext(
+        owner_user_id=owner_id,
+        chat_id=str(_owner_panel.HOME_CHAT),
+        chat_label=None,
+        business_connection_id=None,
+        arg=arg,
+        language_code=language_code,
+        owner_connections=owner.connections,
+    )
 
 
 def _panel_markup(view: _owner_panel.PanelView) -> Any:
@@ -2276,12 +2300,17 @@ async def _handle_owner_panel_update(update: Any, *, bot: Any) -> bool:
     message = getattr(update, "message", None)
     if message is None or _get(_get(message, "chat"), "type") != "private":
         return False
-    chat_id = _owner_panel.parse_start_payload(_get(message, "text"))
+    text = _get(message, "text")
+    chat_id = _owner_panel.parse_start_payload(text)
     sender_id = _get(_get(message, "from_user"), "id")
     language_code = _get(_get(message, "from_user"), "language_code")
     private_chat_id = _get(_get(message, "chat"), "id")
-    if chat_id is None or sender_id is None or private_chat_id is None:
+    if sender_id is None or private_chat_id is None:
         return False
+    if chat_id is None:
+        if not _owner_panel.parse_settings_command(text):
+            return False
+        return await _open_settings(bot, str(sender_id), private_chat_id, language_code)
     catalog = await asyncio.to_thread(_panel_catalog)
     owner = await _verify_panel_owner(bot, str(sender_id), catalog, str(chat_id))
     if owner.status == "not_owner":
@@ -2309,6 +2338,36 @@ async def _handle_owner_panel_update(update: Any, *, bot: Any) -> bool:
     return True
 
 
+async def _open_settings(bot: Any, sender_id: str, private_chat_id: Any, language_code: str | None) -> bool:
+    """`/telesec` in the bot DM: Settings on chat ``HOME_CHAT`` with no Back row; True means claimed."""
+    catalog = await asyncio.to_thread(_panel_catalog)
+    owner = await _verify_panel_owner(bot, sender_id, catalog)
+    if owner.status == "not_owner":
+        # Not a verified Business owner: the command goes on to the agent as usual.
+        logger.debug("%s: settings command not from a Business owner", _PLUGIN_NAME)
+        return False
+    try:
+        if owner.status == "unknown":
+            # No Business connection known yet: hint once per sender per TTL, always claim.
+            if not owner.cached:
+                text = _owner_panel.tr("settings_unknown_connection", language_code)
+                await bot.send_message(chat_id=private_chat_id, text=text)
+            _log_panel("settings_unknown_connection", _owner_panel.HOME_CHAT)
+            return True
+        section = _owner_panel.get_section(_owner_panel.SETTINGS_SECTION)
+        ctx = _settings_context(owner, sender_id, None, language_code)
+        if section is None:
+            raise LookupError("settings section not registered")
+        view = await _render_panel_section(section, ctx, back=False)
+        await bot.send_message(
+            chat_id=private_chat_id, text=_owner_panel.clip_text(view.text), reply_markup=_panel_markup(view)
+        )
+        _log_panel(f"s:{_owner_panel.SETTINGS_SECTION}", _owner_panel.HOME_CHAT)
+    except Exception as exc:  # noqa: BLE001 - a verified owner's `/telesec` never reaches core
+        logger.warning("%s: settings open failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+    return True
+
+
 async def _answer_panel_callback(bot: Any, query: Any, text: str | None, *, alert: bool = False) -> None:
     query_id = _get(query, "id")
     answer = getattr(bot, "answer_callback_query", None)
@@ -2332,19 +2391,24 @@ async def _call_section_render(section: _owner_panel.Section, ctx: _owner_panel.
     return view
 
 
-async def _render_panel_section(section: _owner_panel.Section, state: _PanelState) -> _owner_panel.PanelView:
+async def _render_panel_section(
+    section: _owner_panel.Section, ctx: _owner_panel.PanelContext, *, back: bool = True
+) -> _owner_panel.PanelView:
+    """The section's view plus the Back row; ``back=False`` on ``HOME_CHAT``, which has no main panel."""
     try:
-        view = await asyncio.wait_for(_call_section_render(section, state.ctx), timeout=_PANEL_SECTION_TIMEOUT)
+        view = await asyncio.wait_for(_call_section_render(section, ctx), timeout=_PANEL_SECTION_TIMEOUT)
         if not isinstance(view, _owner_panel.PanelView):
             raise TypeError("section render did not return a PanelView")
         if not isinstance(view.text, str) or not view.text.strip():
             raise ValueError("section render returned empty text")
-        return _owner_panel.with_back(view, state.ctx.chat_id, state.ctx.language_code)
+        return _owner_panel.with_back(view, ctx.chat_id, ctx.language_code) if back else view
     except Exception as exc:  # noqa: BLE001 - one broken or slow section must not break the panel
         logger.warning(
             "%s: owner panel section %s failed (%s)", _PLUGIN_NAME, section.key, type(exc).__name__
         )
-        return _owner_panel.unavailable_view(state.ctx.chat_id, state.ctx.chat_label, state.ctx.language_code)
+        if not back:
+            return _owner_panel.PanelView(text=f"{_owner_panel.tr('section_unavailable', ctx.language_code)}.")
+        return _owner_panel.unavailable_view(ctx.chat_id, ctx.chat_label, ctx.language_code)
 
 
 async def _apply_panel_mode(action: _owner_panel.PanelCallback, state: _PanelState) -> tuple[Any, str]:
@@ -2430,6 +2494,9 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
         await _answer_panel_callback(bot, query, _owner_panel.tr("unknown_action", language_code))
         logger.info("%s: owner panel action=malformed", _PLUGIN_NAME)
         return
+    if parsed.chat_id == _owner_panel.HOME_CHAT:
+        await _handle_settings_home_callback(query, parsed, owner, str(sender_id), language_code, bot=bot)
+        return
     chat_id = str(parsed.chat_id)
     state = await asyncio.to_thread(_panel_state, owner, str(sender_id), chat_id, catalog, parsed.sub, language_code)
     entry = state.entry
@@ -2453,23 +2520,42 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
         # Answer before rendering, so a slow section never outlives the callback's answer window.
         section = _owner_panel.get_section(parsed.section) if parsed.action == "s" else None
         if parsed.action == "s":
-            toast = (
-                _owner_panel.section_label(section, language_code)
-                if section
-                else _owner_panel.tr("section_unavailable", language_code)
-            )
+            if section is None:
+                toast = _owner_panel.tr("section_unavailable", language_code)
+            else:
+                # A tap inside a section (a page, a switch) is no news; only opening one names it.
+                toast = _owner_panel.section_label(section, language_code) if parsed.sub is None else None
             await _answer_panel_callback(bot, query, toast)
         else:
             refreshed = _owner_panel.tr("refreshed", language_code) if parsed.action == "p" else None
             await _answer_panel_callback(bot, query, refreshed)
         if section is not None:
-            view = await _render_panel_section(section, state)
+            view = await _render_panel_section(section, state.ctx)
             fallback = _owner_panel.unavailable_view(chat_id, state.ctx.chat_label, language_code)
     if view is None:
         view = _owner_panel.render_main(state.ctx, entry, _owner_panel.sections(), enabled, notice=notice)
-    action_name = f"s:{parsed.section}" if parsed.action == "s" else parsed.action
+    action_name = f"s:{parsed.arg}" if parsed.action == "s" else parsed.action
     _log_panel(action_name, chat_id, entry.mode if entry is not None else None)
     await _edit_panel_message(bot, query, view, fallback)
+
+
+async def _handle_settings_home_callback(
+    query: Any, parsed: _owner_panel.PanelCallback, owner: _PanelOwner, sender_id: str, language_code: Any, *,
+    bot: Any,
+) -> None:
+    """A button on the `/telesec` message. ``HOME_CHAT`` is no Business chat: only Settings works there,
+    never a chat's mode, Reset, Back or another section, and nothing is stored for it."""
+    section = _owner_panel.get_section(parsed.section)
+    if parsed.action != "s" or parsed.section != _owner_panel.SETTINGS_SECTION or section is None:
+        await _answer_panel_callback(bot, query, _owner_panel.tr("unknown_action", language_code))
+        _log_panel("home_refused", parsed.chat_id)
+        return
+    toast = _owner_panel.section_label(section, language_code) if parsed.sub is None else None
+    await _answer_panel_callback(bot, query, toast)
+    view = await _render_panel_section(section, _settings_context(owner, sender_id, parsed.sub, language_code),
+                                       back=False)
+    _log_panel(f"s:{parsed.arg}", parsed.chat_id)
+    await _edit_panel_message(bot, query, view)
 
 
 def _setup_cli(subparser: Any) -> None:
@@ -2477,6 +2563,7 @@ def _setup_cli(subparser: Any) -> None:
     subs = subparser.add_subparsers(dest="telesec_command")
     _history_support.add_history_parser(subs)
     _transcription_modes.add_mode_parser(subs)
+    _global_settings.add_settings_parser(subs)
 
 
 def _handle_cli(args: Any) -> int:
@@ -2485,8 +2572,10 @@ def _handle_cli(args: Any) -> int:
     command = getattr(args, "telesec_command", None)
     if getattr(args, "_mode_action", None) or command == "mode":
         return _transcription_modes.handle_mode_cli(args)
+    if command == "settings":
+        return _global_settings.handle_settings_cli(args)
     if command is None:
-        print("Usage: hermes telesec <history|stats|dossier|mode> ...")
+        print("Usage: hermes telesec <settings|history|stats|dossier|mode> ...")
         return 1
     return _history_support.handle_cli(args)
 
@@ -2606,6 +2695,10 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
     normalized_event = _normalize_business_event(event)
     if normalized_event is None:
         return None
+    text = _get(normalized_event.raw_message, "text")
+    if isinstance(text, str) and _TELESEC_COMMAND_RE.match(text):
+        # Core would answer the `/telesec` fallback in the contact's chat; Settings live only in the bot DM.
+        return {"action": "skip", "reason": "telesec_command_in_business_chat"}
 
     result = _route_modules(normalized_event=normalized_event, gateway=gateway)
     if result.behavior is ModuleBehavior.PASS_THROUGH:
@@ -2641,6 +2734,9 @@ next voice note gets; `source` is stored, default, or disabled. Change a mode on
 - Owner panel: a bot message that starts with "Owner panel:" or "Панель владельца:" controls one \
 Business chat and names it as `chat <id>`. When the user replies to a panel message, the question is \
 about that chat; use that id as <chat_id> above.
+- Switches for all chats (transcription, history, dossiers): `hermes telesec settings --format json`; \
+change one only when the user asks: `hermes telesec settings set <feature> on|off`. A bot message that \
+starts with "Telesec settings" or "Настройки Telesec" is about all chats, not one chat.
 """
 
 
@@ -2652,6 +2748,11 @@ def _register_agent_reference(ctx: Any) -> None:
         register_section(AGENT_REFERENCE_SECTION_ID, AGENT_REFERENCE, max_chars=2000)
     except Exception as exc:  # noqa: BLE001 - plugin load must stay available
         logger.warning("%s: system prompt section not registered (%s)", _PLUGIN_NAME, type(exc).__name__)
+
+
+def _settings_command_fallback(raw_args: str = "") -> str:
+    """`/telesec` that the panel did not claim: non-owners, groups, the CLI chat."""
+    return _SETTINGS_COMMAND_FALLBACK
 
 
 def register(ctx: Any) -> None:
@@ -2678,11 +2779,20 @@ def register(ctx: Any) -> None:
         _dossier_support.migrate_legacy_switch()
     except Exception as exc:  # noqa: BLE001 - plugin load must stay available
         logger.warning("%s: dossier switch migration failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+    try:
+        moved = _global_settings.migrate_legacy(get_config=ctx.get_config)
+        _global_settings.warn_ignored_env(skip=moved)
+    except Exception as exc:  # noqa: BLE001 - plugin load must stay available
+        logger.warning("%s: settings migration failed (%s)", _PLUGIN_NAME, type(exc).__name__)
     _llm_facade = getattr(ctx, "llm", None)
     _dossier_support.bind_llm(_llm_facade)
     ctx.register_telegram_handler(_register_telegram_handlers)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
     _stats_panel.register_section()
+    _settings_panel.register_section()
+    register_command = getattr(ctx, "register_command", None)
+    if callable(register_command):  # the owner's exact `/telesec` never gets here: the panel claims it
+        register_command("telesec", _settings_command_fallback, description="Telesec settings")
     for name in ("telesec", "telegram-business"):
         ctx.register_cli_command(
             name=name,

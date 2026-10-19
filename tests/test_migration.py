@@ -84,10 +84,11 @@ def test_migration_never_overwrites_conflicting_destinations(plugin, tmp_path, c
 
 
 def test_settings_form_and_environment_overrides(plugin, monkeypatch):
-    settings = {"history_enable": True, "cleanup_style": "enriched", "timezone": "Asia/Tbilisi", "agent_enable": True}
+    settings = {"cleanup_style": "enriched", "timezone": "Asia/Tbilisi", "agent_enable": True}
     schema = yaml.safe_load((Path(__file__).parents[1] / "plugin.yaml").read_text())["config_schema"]
     assert set(schema) == set(settings)
-    legacy = {**settings, "dossier_enable": True}  # removed in 0.11.0; moved into the stored switch once
+    # Removed in 0.11.0 (dossier_enable) and after it (history_enable); each moves into its stored switch once.
+    legacy = {**settings, "history_enable": True, "dossier_enable": True}
     ctx = SimpleNamespace(llm=None, get_config=legacy.get, register_telegram_handler=Mock(), register_hook=Mock(),
                           register_cli_command=Mock(), register_skill=Mock())
     plugin.register(ctx)
@@ -101,14 +102,14 @@ def test_settings_form_and_environment_overrides(plugin, monkeypatch):
     for key in ("HISTORY_ENABLE", "DOSSIER_ENABLE", "AGENT_ENABLE"):
         monkeypatch.setenv(f"TELESEC_{key}", "0")
     monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "conservative")
-    assert not plugin._history_support.history_config_from_env().enabled
-    assert plugin._dossier_support.load_config().enabled  # the stored switch, not the variable
+    assert plugin._history_support.history_config_from_env().enabled  # the stored switches, not the variables
+    assert plugin._dossier_support.load_config().enabled
     assert not plugin._truthy_env("TELESEC_AGENT_ENABLE", settings["agent_enable"])
     assert plugin._cleanup_style() == "conservative"
     assert stats.resolve_timezone(None, {"TELESEC_TIMEZONE": "UTC"})[1] == "UTC"
     legacy["history_enable"] = False
-    monkeypatch.delenv("TELESEC_HISTORY_ENABLE")
-    assert not plugin._history_support.history_config_from_env().enabled
+    plugin.register(ctx)
+    assert plugin._history_support.history_config_from_env().enabled  # moved once, never read again
 
 
 def test_old_environment_and_cli_aliases_warn_and_new_environment_wins(plugin, monkeypatch, caplog):

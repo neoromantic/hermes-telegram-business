@@ -49,7 +49,6 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "telesec"
 get_config = {}.get
-HISTORY_ENABLE_ENV = "TELESEC_HISTORY_ENABLE"
 HISTORY_CONNECTIONS_ENV = "TELESEC_HISTORY_CONNECTIONS"
 HISTORY_CHATS_ENV = "TELESEC_HISTORY_CHATS"
 HISTORY_CHAT_TYPES_ENV = "TELESEC_HISTORY_CHAT_TYPES"
@@ -691,13 +690,20 @@ def _parse_chat_types(raw: str | None) -> frozenset[str]:
     return allowed
 
 
+def capture_enabled() -> bool:
+    """The global history switch (Settings or `hermes telesec settings`); scope and tuning stay env."""
+    from . import global_settings  # lazy: global_settings imports this module
+
+    return global_settings.enabled("history")
+
+
 def history_config_from_env() -> HistoryConfig:
     correction_window = max(1, _env_int(HISTORY_CORRECTION_WINDOW_ENV, DEFAULT_CORRECTION_WINDOW_SECONDS))
     nearby_before_seconds = max(0, _env_int(HISTORY_NEARBY_BEFORE_SECONDS_ENV, DEFAULT_NEARBY_BEFORE_SECONDS))
     retention_days = max(0, _env_int(HISTORY_RETENTION_DAYS_ENV, DEFAULT_RETENTION_DAYS))
     max_bytes = max(1, _env_int(HISTORY_MAX_BYTES_ENV, DEFAULT_MAX_BYTES))
     return HistoryConfig(
-        enabled=_truthy_env(HISTORY_ENABLE_ENV, get_config("history_enable", False)),
+        enabled=capture_enabled(),
         connections=_parse_scope(os.environ.get(HISTORY_CONNECTIONS_ENV)),
         chats=_parse_scope(os.environ.get(HISTORY_CHATS_ENV)),
         chat_types=_parse_chat_types(os.environ.get(HISTORY_CHAT_TYPES_ENV)),
@@ -2720,9 +2726,6 @@ async def _resolve_direction(message: Any, *, bot: Any = None) -> str:
     return _HISTORY_DIRECTIONS[(await resolve_business_direction(message, bot=bot)).direction]
 
 
-# Mirrors the voice module's disable switch.
-TRANSCRIBER_DISABLE_ENV = "TELESEC_DISABLE"
-
 # Transcription-mode vocabulary shared with transcription_modes and the owner panel.
 TRANSCRIBE_MODES = ("both", "own", "peer", "off")
 TRANSCRIBE_DEFAULT_MODE = "both"
@@ -2787,12 +2790,36 @@ def _extract_history_text(message: Any) -> str | None:
 
 async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | None = None,
                              direction: str | None = None) -> bool:
-    """Capture one Business update. ``direction`` skips the owner lookup when the caller already resolved it."""
+    """Capture one Business update. ``direction`` skips the owner lookup when the caller already resolved it.
+
+    The hourly retention and size-cap maintenance runs whatever the capture gates decide, so stored
+    history is still pruned while capture is off. Without a history directory there is nothing to prune.
+    """
+    current = now or _utcnow()
+    wrote = await _capture_update(update, bot=bot, current=current, direction=direction)
+    await _maintain_if_due(current)
+    return wrote
+
+
+async def _maintain_if_due(current: datetime) -> None:
+    if not history_root().exists() or not _should_run_throttled_maintenance(current):
+        return
+    maintenance = await asyncio.to_thread(maintain_history, now=current)
+    if maintenance.cap_exceeded:
+        logger.warning(
+            "%s: history size cap exceeded by %d bytes; non-prunable history files were preserved",
+            PLUGIN_NAME,
+            maintenance.cap_shortfall_bytes,
+        )
+    for warning in maintenance.warnings:
+        logger.warning("%s: %s", PLUGIN_NAME, warning)
+
+
+async def _capture_update(update: Any, *, bot: Any, current: datetime, direction: str | None) -> bool:
     config = history_config_from_env()
     if not config.active:
         return False
 
-    current = now or _utcnow()
     payload = None
     event_type = None
     source = None
@@ -2937,17 +2964,6 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
             detail,
             exc_info=(type(refresh_exc), refresh_exc, refresh_exc.__traceback__),
         )
-
-    if _should_run_throttled_maintenance(current):
-        maintenance = await asyncio.to_thread(maintain_history, now=current)
-        if maintenance.cap_exceeded:
-            logger.warning(
-                "%s: history size cap exceeded by %d bytes; non-prunable history files were preserved",
-                PLUGIN_NAME,
-                maintenance.cap_shortfall_bytes,
-            )
-        for warning in maintenance.warnings:
-            logger.warning("%s: %s", PLUGIN_NAME, warning)
     return wrote
 
 

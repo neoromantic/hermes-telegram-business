@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Dossiers follow only the stored switch (owner panel or `dossier enable|disable`). Before 0.11.0 this variable
+# Dossiers follow only the stored switch (Settings or `dossier enable|disable`). Before 0.11.0 this variable
 # or the Desktop setting turned them on; migrate_legacy_switch() carries an "on" into the switch once.
 LEGACY_ENABLE_ENV = "TELESEC_DOSSIER_ENABLE"
 LEGACY_ENABLE_SETTING = "dossier_enable"
@@ -423,8 +423,8 @@ def migrate_legacy_switch(now: datetime | None = None) -> bool:
         _history._write_json_atomic(settings_path(), {
             "schema_version": SCHEMA_VERSION, "enabled": True,
             "updated_at": _iso(now or _history._utcnow()), "updated_via": "migration"})
-    logger.warning("%s: dossiers stay on: %s was moved to the stored switch and is no longer read; use the owner "
-                "panel or '%s' to change it", _history.PLUGIN_NAME, source, DISABLE_COMMAND)
+    logger.warning("%s: dossiers stay on: %s was moved to the stored switch and is no longer read; use Settings "
+                   "(/telesec) or '%s' to change it", _history.PLUGIN_NAME, source, DISABLE_COMMAND)
     return True
 
 
@@ -1758,8 +1758,8 @@ def _run_batches(cx: _Cycle, *, kind: str, path: Path, dossier: dict[str, Any] |
                                  alias_map=plan.alias_map)
         if not cx.limiter.acquire():
             return "stopped", expected_id
-        if not load_config().enabled:
-            return "stopped", expected_id  # disabled while waiting for the rate limit
+        if not load_config().enabled or not _history.capture_enabled():
+            return "stopped", expected_id  # dossiers or history switched off while waiting for the rate limit
         cx.rep.calls += 1
         cx.stats["calls"] = cx.stats.get("calls", 0) + 1
         output, model, provider = _call_model(cx.llm, kind=kind, payload_text=text, cfg=cx.cfg)
@@ -1952,6 +1952,8 @@ def run_cycle(*, llm: Any, now: datetime | None = None, trigger: str = "worker",
     cfg = load_config()
     if not cfg.enabled:
         return CycleReport(outcome="disabled", trigger=trigger)
+    if not _history.capture_enabled():
+        return CycleReport(outcome="history_off", trigger=trigger)  # dossiers need history
     now = now or _history._utcnow()
     started = time.monotonic()
     with _cycle_lock() as acquired:
@@ -2125,8 +2127,8 @@ def ensure_worker_started() -> bool:
                     cfg.enabled, INITIAL_DELAY_SECONDS, cfg.interval_minutes)
         settings = load_settings()
         if settings.get("error"):
-            logger.warning("%s: dossier switch %s is unreadable or corrupt, so dossiers stay off until '%s' or the "
-                           "owner panel rewrites it", _history.PLUGIN_NAME, SETTINGS_FILE, ENABLE_COMMAND)
+            logger.warning("%s: dossier switch %s is unreadable or corrupt, so dossiers stay off until '%s' or "
+                           "Settings (/telesec) rewrites it", _history.PLUGIN_NAME, SETTINGS_FILE, ENABLE_COMMAND)
         return True
     except Exception as exc:  # noqa: BLE001 - dossier start must never break adapter connect
         logger.warning("%s: dossier worker start failed error=%s", _history.PLUGIN_NAME, type(exc).__name__)
@@ -2165,13 +2167,14 @@ def stop_workers(timeout: float = 0.0) -> None:
 
 
 def _config_if_on() -> DossierConfig | None:
-    """The config while dossiers are on, else None; a failing read counts as off."""
+    """The config while dossiers and history are on, else None; a failing read counts as off."""
     try:
         cfg = load_config()
+        history = cfg.enabled and _history.capture_enabled()
     except Exception as exc:  # noqa: BLE001 - keep the worker alive
         logger.warning("%s: dossier switch check failed error=%s", _history.PLUGIN_NAME, type(exc).__name__)
         return None
-    return cfg if cfg.enabled else None
+    return cfg if history else None
 
 
 def _worker_idle(worker: _Worker, due: float | None) -> bool:

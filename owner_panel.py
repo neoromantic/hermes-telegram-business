@@ -44,6 +44,12 @@ ELLIPSIS = "\u2026"
 
 # `/start bizChat<id>`, optionally `/start@BotName`. "bizChat" is exact, as Telegram sends it.
 _START_RE = re.compile(r"^/start(?:@[A-Za-z0-9_]{1,64})?[ \t]+bizChat(-?\d{1,20})[ \t]*\Z")
+# An exact `/telesec`, optionally `/telesec@BotName`, opens Settings; any argument leaves it to the agent.
+_SETTINGS_RE = re.compile(r"^/telesec(?:@[A-Za-z0-9_]{1,64})?[ \t]*\Z")
+# Chat id of a screen opened by `/telesec` rather than from a chat's panel. The router accepts
+# only the settings section on it, so no mode or section ever applies to a chat "0".
+HOME_CHAT = 0
+SETTINGS_SECTION = "settings"
 _CHAT_ID_RE = r"-?\d{1,20}"
 _SECTION_KEY_RE = rf"[a-z][a-z0-9_]{{0,{SECTION_KEY_MAX - 1}}}"
 SECTION_KEY_RE = re.compile(rf"^{_SECTION_KEY_RE}\Z")
@@ -64,7 +70,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "title": "Owner panel",
         "transcription": "Transcription: {mode}",
         "transcription_default": "Transcription: {mode} (default)",
-        "transcription_disabled": "Transcription is disabled on this gateway.",
+        "transcription_disabled": "Transcription: off in Settings",
         "mode.both": "both",
         "mode.own": "own",
         "mode.peer": "peer",
@@ -81,6 +87,9 @@ _STRINGS: dict[str, dict[str, str]] = {
             "I can't confirm you own this Business connection yet. "
             "Send any message in that chat, then tap Manage Bot again."
         ),
+        "settings_unknown_connection": (
+            "I don't see your Business connection yet. Send any message in a Business chat, then send /telesec again."
+        ),
         "unknown_connection_modes_unreadable": (
             f"{_history.TRANSCRIBE_SAVE_ERROR}\n"
             "The transcription modes file is unreadable, so I can't confirm you own this Business connection. "
@@ -91,7 +100,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "title": "Панель владельца",
         "transcription": "Расшифровка: {mode}",
         "transcription_default": "Расшифровка: {mode} (по умолчанию)",
-        "transcription_disabled": "Расшифровка выключена на этом шлюзе.",
+        "transcription_disabled": "Расшифровка: выключена в настройках",
         "mode.both": "все",
         "mode.own": "мои",
         "mode.peer": "собеседника",
@@ -107,6 +116,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "unknown_connection": (
             "Пока не могу подтвердить, что это ваше Business-подключение. "
             "Отправьте любое сообщение в том чате и снова нажмите кнопку управления ботом."
+        ),
+        "settings_unknown_connection": (
+            "Пока не вижу вашего Business-подключения. Отправьте любое сообщение в Business-чате и снова пришлите /telesec."
         ),
         "unknown_connection_modes_unreadable": (
             "Ошибка: не удалось сохранить режим расшифровки\n"
@@ -156,6 +168,11 @@ def mode_status(mode: str, *, default: bool, language_code: str | None = None) -
     """ "Transcription: off", or "Transcription: both (default)" for a chat without a stored mode."""
     key = "transcription_default" if default else "transcription"
     return tr(key, language_code, mode=tr(f"mode.{mode}", language_code))
+
+
+def parse_settings_command(text: Any) -> bool:
+    """True for an exact `/telesec` (or `/telesec@BotName`), which opens Settings."""
+    return isinstance(text, str) and _SETTINGS_RE.match(text) is not None
 
 
 def parse_start_payload(text: Any) -> int | None:
@@ -237,6 +254,7 @@ class PanelContext:
     business_connection_id: str | None
     arg: str | None = None
     language_code: str | None = None  # the tapping owner's Telegram client language; see ``tr``
+    owner_connections: tuple[str, ...] = ()  # every Business connection the owner was verified for
 
 
 @dataclass

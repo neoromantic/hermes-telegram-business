@@ -42,7 +42,7 @@ MAX_NAME_CHARS = 100
 MAX_TEXT_UTF16 = 4096  # Telegram's message text limit, in UTF-16 code units.
 _PERIODS = {period[0]: period for period in PERIODS}
 
-HISTORY_DISABLED = f"{SECTION_LABEL}\nStats need history: set {_history.HISTORY_ENABLE_ENV}=1 and restart the gateway."
+HISTORY_DISABLED = f"{SECTION_LABEL}\nStats need history. Turn it on in Settings (/telesec)."
 CONNECTION_UNKNOWN = f"{SECTION_LABEL}\nStats unavailable: the Business connection for this chat is not known yet."
 BAD_TIMEZONE = (
     f"{SECTION_LABEL}\nStats unavailable: {_stats.TIMEZONE_ENV} is not a known time zone; "

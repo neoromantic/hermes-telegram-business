@@ -689,17 +689,15 @@ def _resolve_owner(owners: list[str], owner_arg: str | None, *, action: str) -> 
 
 
 def _history_entries() -> list[dict[str, Any]]:
-    """History catalog entries (none when history is off or the catalog cannot be read)."""
+    """History catalog entries, read-only, whether or not capture is on (none when it cannot be read)."""
     try:
-        if not _history.history_config_from_env().active:
-            return []
         return _history._catalog_entries_for_cli()
     except Exception:  # noqa: BLE001 - the catalog only refines owner inference
         return []
 
 
 def _history_connections() -> set[str]:
-    """Distinct Business connections in the history catalog (none when history is off)."""
+    """Distinct Business connections in the history catalog."""
     return {
         str(entry["business_connection_id"]) for entry in _history_entries() if entry.get("business_connection_id")
     }
@@ -778,10 +776,9 @@ def _mode_json(
     """One chat for ``--format json``: the stored mode and the mode the next voice note gets.
 
     ``source`` is ``stored`` (an owner set it), ``default`` (no stored mode), or
-    ``disabled`` (transcription is off on this gateway, so nothing is transcribed).
+    ``disabled`` (transcription is off in Settings, so nothing is transcribed).
     """
-    disabled = _history._truthy_env(_history.TRANSCRIBER_DISABLE_ENV)
-    if disabled:
+    if not _transcription_enabled():
         effective, source = "off", "disabled"
     elif entry is not None:
         effective, source = entry.mode, "stored"
@@ -798,6 +795,12 @@ def _mode_json(
         "updated_at": entry.updated_at if entry is not None else None,
         "label": (entry.label if entry is not None else None) or label,
     }
+
+
+def _transcription_enabled() -> bool:
+    from . import global_settings  # lazy: global_settings imports this module
+
+    return global_settings.enabled("transcription")
 
 
 def _print_json(document: Any) -> None:
@@ -844,7 +847,7 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
                 _print_json(
                     {
                         "default_mode": DEFAULT_MODE,
-                        "transcription_enabled": not _history._truthy_env(_history.TRANSCRIBER_DISABLE_ENV),
+                        "transcription_enabled": _transcription_enabled(),
                         "chats": [_mode_json(owner_key, chat_key, entry) for owner_key, chat_key, entry in chats],
                     }
                 )

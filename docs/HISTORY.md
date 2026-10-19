@@ -8,11 +8,13 @@ The image uses synthetic data captured through the real history module and queri
 
 ## Enable capture
 
-Add this to the active Hermes profile's `.env`, then run `hermes gateway restart`:
+History is off by default. Turn it on in [Settings](../README.md#settings): send `/telesec` in your private chat with the bot (or tap **⚙️ Settings** on any chat's panel) and tap **Save history**. Or from the terminal:
 
-```dotenv
-TELESEC_HISTORY_ENABLE=1
+```bash
+hermes telesec settings set history on
 ```
+
+No gateway restart is needed: capture starts with the next update. **Don't save** or `hermes telesec settings set history off` stops capture and keeps what was stored; retention and delayed deletion classification keep running. Up to 0.11.0, `TELESEC_HISTORY_ENABLE=1` or the Desktop `history_enable` setting turned history on. On the first start after upgrading, an "on" there is stored in Settings once and the gateway log says so; after that they are ignored, and you can remove them.
 
 By default, capture includes private chats Telegram delivers through the bot's Business connections. Connection and chat filters are optional. Your own chat with the bot (where the owner panel and your agent chat live) is never captured: Telegram also delivers it as Business updates, but it is not a Business chat. The plugin knows it by the bot's id (from the running bot, or from the digits before `:` in `TELEGRAM_BOT_TOKEN`), and readers (history, stats, dossiers, the panel) also skip such a chat if an older version captured it. Groups, supergroups, and channels require explicit configuration. The plugin does not retrieve conversations from before capture started.
 
@@ -55,7 +57,6 @@ These are observable text-similarity categories, not judgments about a person's 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TELESEC_HISTORY_ENABLE` | false | Enable capture. |
 | `TELESEC_HISTORY_CONNECTIONS` | unset | Optional comma-separated connection filter or `*`. |
 | `TELESEC_HISTORY_CHATS` | unset | Optional exact chat filter or `*`; exact IDs can opt in a chat outside the default types. |
 | `TELESEC_HISTORY_CHAT_TYPES` | `private` | Eligible chat types; explicitly add `group`, `supergroup`, or `channel`. |
@@ -96,11 +97,11 @@ Telegram-side deletion does **not** erase the archive. The archive deliberately 
 
 Automatic retention and size pruning remove whole closed monthly partitions. The current month and partitions needed for pending deletion classification are preserved, so a configured target is not a hard storage ceiling. The contact catalog is rebuilt from retained evidence after pruning.
 
-No record-level erasure command ships in this version. To remove an entire local archive, disable capture, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history does not remove dossiers; use `hermes telesec dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
+No record-level erasure command ships in this version. To remove an entire local archive, turn history off in Settings, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history does not remove dossiers; use `hermes telesec dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
 
 ## Runtime boundary
 
-The native Telegram observer records eligible Business text before ordinary Hermes handlers. It also receives deleted-message updates, which have no effective message. Capture does not change the ordinary Hermes authorization or agent routing of text messages. Disable history to stop capturing new messages; use Hermes's normal configuration to control agent replies.
+The native Telegram observer records eligible Business text before ordinary Hermes handlers. It also receives deleted-message updates, which have no effective message. Capture does not change the ordinary Hermes authorization or agent routing of text messages. Turn history off in Settings to stop capturing new messages; use Hermes's normal configuration to control agent replies.
 
 The owner's `/dossier` command (once the bot confirms the sender as the connection's owner) and the dossier the bot posts are never recorded. A `/dossier` whose owner cannot be confirmed is stored as ordinary text, and an owner's edit of a stored message into `/dossier` is recorded as an edit. Dossiers read history only through its read locks and never modify it. `dossier forget` deletes dossier data only and never touches history. When retention or size pruning removes a message a dossier cites, the dossier drops that source. A fact with no sources left becomes unsupported, or `source gone` if the owner pinned or corrected it ([source changes](DOSSIERS.md#source-changes)).
 

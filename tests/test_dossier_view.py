@@ -463,8 +463,7 @@ def test_owner_overview_en(dv: ModuleType, contact: SimpleNamespace) -> None:
     assert "<footer>✎ owner edit · 📌 pinned · ~ model guess · ⚠ source changed<br>" \
            "Corrections, notes, history and export: hermes telesec dossier</footer>" in html
     assert "Processing is off" not in html and "failed" not in html
-    assert view.buttons == (
-        (("Manage facts", "m.c.0"), ("Refresh", "rf.c")), (("My persona", "o.p"), ("Disable", "ds")))
+    assert view.buttons == ((("Manage facts", "m.c.0"), ("Refresh", "rf.c")), (("My persona", "o.p"),))
     assert view.text.startswith("Ivan Petrov\nDossier updated 2 h ago · 19 Oct 2026 · revision 5\n")
     assert "\nCommitments · 2\n• 📌 ~low source gone f10 The owner will call on Monday.\n• f1 The owner promised" \
            in view.text
@@ -485,7 +484,7 @@ def test_owner_overview_ru(dv: ModuleType, contact: SimpleNamespace) -> None:
     assert "<i>~средняя</i>" in html and "<i>нет источника</i>" in html
     assert "Изменено, сейчас:</i> My budget is 7k now." in html
     assert "Больше нет в истории" in html and "Старше окна отслеживания" in html
-    assert labels_of(view) == ["Управлять фактами", "Обновить", "Моя персона", "Выключить"]
+    assert labels_of(view) == ["Управлять фактами", "Обновить", "Моя персона"]
     assert "The contact knows Maria." in html  # fact texts stay as stored
 
 
@@ -542,7 +541,7 @@ def test_disabled_with_stored_dossier(dv: ModuleType, contact: SimpleNamespace) 
     check_view(dv, view)
     assert "<p><i>Processing is off: this dossier is not updated.</i></p>" in view.html
     assert "<b>f1</b>" in view.html
-    assert view.buttons == ((("Manage facts", "m.c.0"),), (("My persona", "o.p"), ("Enable", "ea")))
+    assert view.buttons == ((("Manage facts", "m.c.0"),), (("My persona", "o.p"),))  # the switch is in Settings
 
 
 def test_enabled_without_llm_has_no_refresh(dv: ModuleType, contact: SimpleNamespace) -> None:
@@ -758,11 +757,12 @@ def test_disabled_and_nothing_stored(dv: ModuleType, mods: SimpleNamespace) -> N
     snap = snap_of(mods, None, status="missing", enabled=False)
     view = dv.render_overview(snap, "en")
     check_view(dv, view)
-    assert "<p><b>Dossiers are off.</b></p>" in view.html
+    assert "<p><b>Dossiers are off. Turn them on in Settings.</b></p>" in view.html
     assert "sends the text of all private chats to <b>gemini / gemini-3.8-flash</b>." in view.html
-    assert view.buttons == ((("My persona", "o.p"), ("Enable", "ea")),)
+    assert view.buttons == ((("My persona", "o.p"),),)
     ru = dv.render_overview(snap, "ru")
-    assert "Досье выключены." in ru.html and "текст всех личных чатов отправляется в <b>gemini" in ru.html
+    assert "Досье выключены. Включить можно в настройках." in ru.html
+    assert "текст всех личных чатов отправляется в <b>gemini" in ru.html
     assert "Only the owner" not in view.html
 
     other = replace(snap, manage_global=False)  # no Enable button: say who can turn them on, and how
@@ -813,7 +813,7 @@ def test_persona_missing(dv: ModuleType, mods: SimpleNamespace) -> None:
     assert view.buttons == ((("‹ Dossier", "o.c"),),)
 
 
-@pytest.mark.parametrize("key", ["changed", "busy", "refresh_started", "unavailable", "enabled", "disabled",
+@pytest.mark.parametrize("key", ["changed", "busy", "refresh_started", "unavailable",
                                  "pinned", "unpinned", "removed", "failed"])
 def test_states_and_notices(dv: ModuleType, key: str) -> None:
     for lang in ("en", "ru"):
@@ -933,17 +933,15 @@ def test_remove_confirm(dv: ModuleType, contact: SimpleNamespace) -> None:
 
 
 def test_enable_confirm(dv: ModuleType) -> None:
-    view = dv.render_enable_confirm("en", "gemini", "gemini-3.8-flash")
-    check_view(dv, view)
-    assert view.html == (
-        "<h3>Turn on dossiers?</h3><p>The text of ALL private chats will be sent to <b>gemini / gemini-3.8-flash</b>"
-        " to build a dossier for each contact and your persona.</p><p>Dossiers are stored locally. You can turn "
-        "them off at any time; stored dossiers are kept.</p>")
-    assert view.buttons == ((("Enable", "ed"), ("Cancel", "o.c")),)
-    ru = dv.render_enable_confirm("ru", "openrouter", "<evil> & \u202emodel")
-    check_view(dv, ru)
-    assert "Текст ВСЕХ личных чатов будет отправляться в <b>openrouter / &lt;evil&gt; &amp; model</b>" in ru.html
-    assert labels_of(ru) == ["Включить", "Отмена"]
+    # Plain text for the Settings screen, which adds its own callbacks.
+    text, yes, cancel = dv.enable_confirm("en", "gemini", "gemini-3.8-flash")
+    assert text == ("Turn on dossiers?\n\nThe text of ALL private chats will be sent to gemini / gemini-3.8-flash"
+                    " to build a dossier for each contact and your persona.\n\nDossiers are stored locally. You can "
+                    "turn them off at any time; stored dossiers are kept.")
+    assert (yes, cancel) == ("Enable", "Cancel")
+    text, yes, cancel = dv.enable_confirm("ru", "openrouter", "<evil> & \u202emodel")
+    assert "Текст ВСЕХ личных чатов будет отправляться в openrouter / <evil> & model" in text
+    assert "\u202e" not in text and (yes, cancel) == ("Включить", "Отмена")
 
 
 # ---------------------------------------------------------------------------

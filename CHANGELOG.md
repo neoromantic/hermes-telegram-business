@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add Settings: one screen in the owner's private chat with the bot that turns transcription, history, and dossiers on or off for all chats. Open it with `/telesec` or the new ⚙️ Settings button on every chat's panel. Turning dossiers on asks first and names the model; while history is off, dossiers are paused and Settings says so. Only an owner of every Business connection the bot knows about can change the switches; another verified owner sees them read-only. Nothing is posted into a Business chat, and a `/telesec` typed in a Business chat is never answered there.
+- Add `hermes telesec settings [--format json]` and `hermes telesec settings set <transcription|history|dossiers> on|off`. Changes apply to the next update with no restart. `hermes telesec dossier enable|disable` still works.
+- Store transcription and history in `data/telesec/settings.json` (private, atomic writes). A corrupt file keeps the last valid switches; only `settings set` backs it up and replaces it.
+- Remove `TELESEC_DISABLE`, `TELESEC_HISTORY_ENABLE`, and the Desktop `history_enable` setting. On first start, a value that differs from the default is stored once (`via migration`) and logged, so a gateway with history on keeps it on with no manual step; after that the old names are ignored with one warning per start. A CLI run without the gateway's environment stores nothing.
+- Move the dossier on/off switch from the Dossier section to Settings. Old Enable and Disable buttons now just show the dossier.
+- Dossiers pause while history is off: the worker runs no cycle and `hermes telesec dossier run` and `status` say why.
+- History maintenance (retention and delayed deletion classification) keeps running while capture is off.
+- The panel finds the owner's connections in the history catalog also while history is off.
+- Register a Hermes `/telesec` command for everyone else (non-owners, groups, the CLI chat): it says that Telesec settings are for the Business account owner. Set `platforms.telegram.extra.command_menu.priority: [telesec]` to show it in Telegram's "/" menu.
+- A tap inside a panel section (a page or a switch) no longer shows the section name as a toast.
 - The `/dossier` post no longer shows the model name, and shows the mark legend only when a fact carries a mark.
 - Deleting the `/dossier` command (the bot does it) or the posted dossier no longer adds a "deleted, not in history" event, so stats do not count it.
 - The one-time move of the old dossier variable or setting into the stored switch is now logged as a warning, so it shows in the gateway log.

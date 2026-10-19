@@ -44,7 +44,6 @@ LONG_TRANSCRIPT = "x" * 1100
 @pytest.fixture(autouse=True)
 def isolate_modes_environment(monkeypatch: pytest.MonkeyPatch):
     for name in (
-        "TELESEC_HISTORY_ENABLE",
         "TELESEC_HISTORY_CONNECTIONS",
         "TELESEC_HISTORY_CHATS",
         "TELESEC_HISTORY_CHAT_TYPES",
@@ -64,7 +63,7 @@ def modes(plugin):
 
 @pytest.fixture
 def history_enabled(monkeypatch: pytest.MonkeyPatch, plugin):
-    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    test_history.set_switch(plugin, "history", True)
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     plugin._history_support.reset_in_memory_caches()
     yield plugin
@@ -1370,7 +1369,7 @@ def test_cli_json_shows_stored_and_effective_modes(plugin, modes, monkeypatch):
     assert (got["owner"], got["mode"], got["source"], got["business_connection_id"]) == ("1000", "off", "stored", "business-123")
     assert got["updated_at"] == row["updated_at"]
 
-    monkeypatch.setenv("TELESEC_DISABLE", "1")
+    test_history.set_switch(plugin, "transcription", False)
     assert as_json("list")["transcription_enabled"] is False
     assert (as_json("get", "991")["mode"], as_json("get", "991")["effective_mode"]) == ("off", "off")
     assert as_json("get", "992")["source"] == "disabled"
@@ -1568,7 +1567,7 @@ async def test_cli_chat_selector_uses_history_contacts(history_enabled, modes, m
     assert exit_code == 1
     assert "no matching contact" in output
 
-    monkeypatch.delenv("TELESEC_HISTORY_ENABLE")
+    test_history.set_switch(plugin, "history", False)
     exit_code, output = run_cli(plugin, "mode", "set", "@customer991", "off", "--owner", "1000")
     assert exit_code == 1
     assert "pass the chat_id or enable history to resolve names" in output
@@ -1580,7 +1579,7 @@ def test_cli_usage_and_routing(plugin, modes):
     assert excinfo.value.code == 2
 
     assert run_cli(plugin, "mode") == (1, modes.MODE_USAGE)
-    assert run_cli(plugin) == (1, "Usage: hermes telesec <history|stats|dossier|mode> ...")
+    assert run_cli(plugin) == (1, "Usage: hermes telesec <settings|history|stats|dossier|mode> ...")
     exit_code, output = run_cli(plugin, "history", "stats")
     assert exit_code == 0
     assert output.startswith("enabled=False")
