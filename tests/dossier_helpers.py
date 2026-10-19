@@ -390,15 +390,16 @@ class FakeLlm:
     ``{"changes": []}``. A response is a dict (returned as ``parsed``), a str (returned as
     raw ``text`` with ``parsed=None``), a callable ``(payload, kwargs) -> dict | str``, or an
     exception instance or class, which is raised. ``on_call(payload)`` runs before the
-    response is chosen, for owner edits or ``forget`` during a call. ``model`` overrides
-    the answering model name, like a host fallback.
+    response is chosen, for owner edits or ``forget`` during a call. ``model`` and
+    ``provider`` override the answering model and provider, like a host fallback.
     """
 
-    def __init__(self, *responses: Any, model: str | None = None) -> None:
+    def __init__(self, *responses: Any, model: str | None = None, provider: str | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
         self.responses: list[Any] = list(responses)
         self.on_call: Callable[[dict[str, Any]], None] | None = None
         self.model = model
+        self.provider = provider
 
     def complete_structured(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
@@ -413,9 +414,10 @@ class FakeLlm:
         if callable(response):
             response = response(payload, kwargs)
         model = self.model or kwargs.get("model")
+        provider = self.provider or kwargs.get("provider")
         if isinstance(response, str):
-            return SimpleNamespace(parsed=None, text=response, provider=kwargs.get("provider"), model=model)
-        return SimpleNamespace(parsed=response, text="", provider=kwargs.get("provider"), model=model)
+            return SimpleNamespace(parsed=None, text=response, provider=provider, model=model)
+        return SimpleNamespace(parsed=response, text="", provider=provider, model=model)
 
     async def acomplete_structured(self, **kwargs: Any) -> Any:
         raise AssertionError("dossiers must use the sync facade")

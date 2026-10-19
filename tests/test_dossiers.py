@@ -1063,7 +1063,8 @@ async def test_logs_have_no_message_text_facts_or_quotes(
     assert "SECRET" not in logged.upper()
     assert "RuntimeError" in logged
     assert "PluginLlmTrustError" in logged
-    assert "5545" in logged  # ids are fine
+    assert "5545" not in logged and BUSINESS_ID not in logged  # raw ids stay out of logs
+    assert f"chat_ref={ds._log_ref({'business_connection_id': BUSINESS_ID, 'chat_id': 5545})}" in logged
     dossier_records = [r for r in caplog.records if r.name == ds.__name__]
     assert dossier_records, "expected dossier log lines"
     assert all(r.exc_info is None for r in dossier_records)
@@ -1094,6 +1095,46 @@ async def test_storage_permissions_atomic_and_outside_history(plug: ModuleType, 
     assert code == 0, out
     code, out, _err = cli(plug, "history", "catalog", "--rebuild")
     assert code == 0, out
+
+
+@pytest.mark.asyncio
+async def test_capture_is_llm_free_with_dossier_enabled_and_history_separate(
+    plug: ModuleType, dossiers: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = dossiers
+    fake = FakeLlm(quote_first)
+    ds.bind_llm(fake)
+    connect_gateway(plug)  # the worker exists, but its first cycle is an hour away
+    monkeypatch.delenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE")
+    assert await seed(plug, 5552, "capture", [(1, "in", "CAPTURE off", 10)], check=False) == [False]
+    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    await two_sided(plug, 5552, "CAPTURE", minutes=8, first_id=2)
+    assert fake.calls == []
+    assert ds.list_dossiers() == [] and not (ds.dossier_root() / "chats").exists()
+    assert any(key.endswith(".jsonl") for key in snapshot_history_tree(plug))
+    assert all("dossier" not in key for key in snapshot_history_tree(plug))
+
+
+@pytest.mark.asyncio
+async def test_cli_text_escapes_terminal_controls_from_contact_text(plug: ModuleType, dossiers: ModuleType) -> None:
+    ds = dossiers
+    chat = 5553
+    await seed(plug, chat, None, [
+        (1, "in", "Call me \x1b[31mtomorrow\x07", 60),
+        (2, "out", "Sure", 55),
+    ], first_name="Eve\x1b]0;pwned\x07", last_name="\x9bX")
+    fact = change(text="The contact asks for a call.", sources=(("m1", "Call me"),))
+    assert cycle(ds, llm(output(fact))).refreshed == 1
+
+    outputs = {}
+    for argv in (("show", *chat_args(chat)), ("show", *chat_args(chat), "--fact", "f1"), ("list",)):
+        code, out, err = cli(plug, "dossier", *argv)
+        assert code == 0, (argv, out, err)
+        assert "\x1b" not in out and "\x07" not in out and "\x9b" not in out, argv
+        outputs[argv[-1]] = out
+    for name in (str(chat), "list"):
+        assert "Eve\\x1b]0;pwned\\x07" in outputs[name], name  # the contact name, escaped but readable
+    assert "Call me \\x1b[31mtomorrow\\x07" in outputs["f1"]  # the history text behind the source
 
 
 @pytest.mark.asyncio

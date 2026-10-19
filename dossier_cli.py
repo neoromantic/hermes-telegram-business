@@ -40,7 +40,6 @@ OWNER_EDIT_DONE = {
     "note": "Added note {fid} to {section} for {label} (revision {rev}).",
 }
 _C1_RE = re.compile(r"[\x7f-\x9f]")
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +129,7 @@ def _json_text(obj: Any) -> str:
 
 def _plain(text: Any) -> str:
     """Single-line text with control and bidi characters stripped (markdown export)."""
-    return " ".join(_CONTROL_RE.sub(" ", str(text or "")).split())
+    return _dossier.clip(text, sys.maxsize)
 
 
 def _plural(count: int, word: str, plural: str | None = None) -> str:

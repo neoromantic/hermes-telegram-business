@@ -177,7 +177,7 @@ Owner edits always win:
 3. Each batch is merged into the dossier as it is on disk after the call, so an edit made while the model was answering is kept.
 4. Source cleanup never deletes an owner or pinned fact. It only marks it `source gone`.
 
-`forget` deletes the dossier, its owner edits, and its revision log. It never touches canonical history. While dossiers stay enabled, the worker rebuilds a forgotten dossier from history on its next cycle, so `forget` works as a reset. [Storage and privacy](#storage-and-privacy) explains how to stop processing. `forget --connection <id> --chat <id>` also removes a dossier whose chat is no longer in the contact catalog.
+`forget` deletes the dossier, its owner edits, and its revision log. It never touches canonical history. While dossiers stay enabled, the worker rebuilds a forgotten dossier from history on its next cycle, so `forget` works as a reset. A model answer still in flight when `forget` runs is discarded, never written. [Storage and privacy](#storage-and-privacy) explains how to stop processing. `forget --connection <id> --chat <id>` also removes a dossier whose chat is no longer in the contact catalog.
 
 ## Source changes
 
@@ -206,9 +206,9 @@ When pruning removes a whole chat, its dossier stays as an orphan. The worker on
 - Rate limit: at most 20 model calls per minute, over a sliding 60-second window that `dossier run` shares. It counts the plugin's `complete_structured` calls; retries and fallbacks inside the host are not counted. There is no per-cycle cap, so a cycle works through every due contact at that rate.
 - Only one cycle runs at a time, across processes. `dossier run` reports "another dossier cycle is running" while the worker is busy.
 - A failed contact is retried on the next cycle, with no backoff. `status` and `list` show failures with their error type.
-- Settings are read at the start of every cycle, so new intervals, limits, and models apply without a restart. Turning dossiers on needs a gateway restart. Turning them off makes the following cycles do nothing.
+- Settings are read at the start of every cycle, so new intervals, limits, and models apply without a restart. Turning dossiers on needs a gateway restart. Turning them off makes the following cycles do nothing, and a running cycle stops before its next model call.
 
-Logs contain counts, IDs, timings, and error type names only: an INFO line when the worker starts and after each cycle, a DEBUG line per contact, and WARNING lines for failures. They never contain message text, facts, quotes, names, payloads, or model output.
+Logs contain counts, timings, error type names, and a short hash of the chat key instead of connection and chat IDs: an INFO line when the worker starts and after each cycle, a DEBUG line per contact, and WARNING lines for failures. They never contain message text, facts, quotes, names, payloads, or model output.
 
 If Hermes reloads the plugin, a host with `on_unload` stops the old worker, and a new one starts on the next adapter connect. Without `on_unload`, the old thread keeps running the old code until the gateway restarts; the cycle lock still prevents overlapping cycles.
 
@@ -221,11 +221,12 @@ $HERMES_HOME/data/telegram-business/dossiers/
   persona/dossier.json
   persona/changes.jsonl
   state.json
+  generation.json
   .lock
   .cycle.lock
 ```
 
-Dossiers live next to history, never inside it. Directories are `0700` and files `0600`. Writes are atomic and locked, and `changes.jsonl` is an append-only revision log. `state.json` is a worker cache (change checks, failures, recent call times, last cycle); deleting it costs at most one extra history read per chat. Do not edit these files by hand. A corrupt file is never overwritten automatically; the CLI points to `forget`.
+Dossiers live next to history, never inside it. Directories are `0700` and files `0600`. Writes are atomic and locked, and `changes.jsonl` is an append-only revision log. `state.json` is a worker cache (change checks, failures, recent call times, last cycle); deleting it costs at most one extra history read per chat. `generation.json` counts `forget` runs so a cycle that started earlier discards its results. Do not edit these files by hand. A corrupt file is never overwritten automatically; the CLI points to `forget`.
 
 There is no second message archive. A dossier keeps its facts, quotes of at most 200 characters, and 64-bit fingerprints of the messages it has processed, used to notice edits. The fingerprints are short hashes and are not reversible in practice, but they are not a cryptographic guarantee.
 

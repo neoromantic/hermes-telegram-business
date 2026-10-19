@@ -232,6 +232,14 @@ def state_path() -> Path:
     return dossier_root() / "state.json"
 
 
+def _generation() -> int:
+    """Forget counter, kept outside state.json (forget --all deletes that); 0 when absent."""
+    try:
+        return int(json.loads((dossier_root() / "generation.json").read_text(encoding="utf-8"))["generation"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+
+
 def target_dir(target: tuple[str, Any]) -> Path:
     kind, entry = target
     return persona_path() if kind == "persona" else dossier_path_for(entry)
@@ -969,7 +977,7 @@ def _parse_output(result: Any) -> dict[str, Any]:
     return parsed
 
 
-def _call_model(llm: Any, *, kind: str, payload_text: str, cfg: DossierConfig) -> tuple[dict[str, Any], str]:
+def _call_model(llm: Any, *, kind: str, payload_text: str, cfg: DossierConfig) -> tuple[dict[str, Any], str, str]:
     # Synchronous on purpose: runs on the worker thread or the CLI main thread, never on an event loop.
     try:
         result = llm.complete_structured(input=[{"type": "text", "text": payload_text}], **call_spec(kind, cfg))
@@ -977,7 +985,8 @@ def _call_model(llm: Any, *, kind: str, payload_text: str, cfg: DossierConfig) -
         if _is_trust_error(exc):
             raise _TrustGateDenied(type(exc).__name__, str(exc)) from exc
         raise
-    return _parse_output(result), str(getattr(result, "model", "") or cfg.model)
+    return (_parse_output(result), str(getattr(result, "model", "") or cfg.model),
+            str(getattr(result, "provider", "") or cfg.provider))
 
 
 # ---------------------------------------------------------------------------
@@ -1166,12 +1175,12 @@ _SUMMARY_KEYS = {"add": "added", "update": "updated", "retire": "retired", "inva
 
 
 def change_line(rev: int, now: datetime, *, actor: str, trigger: str, ops: list[dict[str, Any]],
-                model: str | None = None, drops: Counter | None = None, batch: tuple[int, int] | None = None,
-                input_counts: dict[str, int] | None = None) -> dict[str, Any]:
+                model: str | None = None, provider: str | None = None, drops: Counter | None = None,
+                batch: tuple[int, int] | None = None, input_counts: dict[str, int] | None = None) -> dict[str, Any]:
     line: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "revision": rev, "at": _iso(now),
                             "actor": actor, "trigger": trigger}
     if model is not None:
-        line["model"] = model
+        line["provider"], line["model"] = provider, model
     if batch is not None:
         line["batch"] = {"index": batch[0], "total": batch[1]}
     if input_counts is not None:
@@ -1203,7 +1212,7 @@ def _max_facts(kind: str) -> int:
 
 def merge_batch(d: dict[str, Any], output: dict[str, Any], *, kind: str, resolver: Resolver, batch: list[Msg],
                 plan: Plan, views: dict[str, ChatView], now: datetime, cycle_id: str, cfg: DossierConfig,
-                model: str, trigger: str, index: int = 1, total: int = 1,
+                model: str, provider: str, trigger: str, index: int = 1, total: int = 1,
                 entry: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Merge one validated model batch onto the freshly reloaded dossier (pure; caller holds the data lock)."""
     d = deepcopy(d)
@@ -1312,7 +1321,7 @@ def merge_batch(d: dict[str, Any], output: dict[str, Any], *, kind: str, resolve
     if kind == "persona":
         d["coverage"]["chats"] = len(d.get("chat_aliases") or {})
     d["refreshed_at"] = _iso(now)
-    d["last_refresh"] = {"at": _iso(now), "trigger": trigger, "provider": cfg.provider, "model": model,
+    d["last_refresh"] = {"at": _iso(now), "trigger": trigger, "provider": provider, "model": model,
                          "calls": index}
     if entry is not None:
         d["contact"] = catalog_snapshot(entry)
@@ -1321,8 +1330,8 @@ def merge_batch(d: dict[str, Any], output: dict[str, Any], *, kind: str, resolve
     _mark_revision(d, ops, rev)
     d["revision"], d["last_revision_at"] = rev, _iso(now)
     changed = sum(1 for m in batch if m.key in plan.changed_keys)
-    return d, change_line(rev, now, actor="model", trigger=trigger, ops=ops, model=model, drops=drops,
-                          batch=(index, total),
+    return d, change_line(rev, now, actor="model", trigger=trigger, ops=ops, model=model, provider=provider,
+                          drops=drops, batch=(index, total),
                           input_counts={"new": len(batch) - changed, "changed": changed, "messages_sent": len(batch)})
 
 
@@ -1475,6 +1484,8 @@ def forget(target: tuple[str, Any]) -> dict[str, Any]:
     ``target`` is ("contact", entry_or_stub) | ("persona", None) | ("all", None).
     """
     with _data_lock():
+        # Bumped first: a cycle that started before this forget discards its in-flight results.
+        _history._write_json_atomic(dossier_root() / "generation.json", {"generation": _generation() + 1})
         if target[0] == "all":
             chats = dossier_root() / "chats"
             contacts = len(list(chats.glob(f"*/*/{DOSSIER_FILE}"))) if chats.is_dir() else 0
@@ -1576,6 +1587,7 @@ class _Cycle:
     trigger: str
     stop: threading.Event | None
     persona: dict[str, Any] | None  # persona at cycle start (for fold windows only)
+    generation: int = 0  # forget counter at cycle start
     views: dict[str, ChatView] = field(default_factory=dict)
     stats: dict[str, int] = field(default_factory=dict)
     dirty: bool = False  # state changed since the last save
@@ -1637,15 +1649,23 @@ def _run_batches(cx: _Cycle, *, kind: str, path: Path, dossier: dict[str, Any] |
     for index, batch in enumerate(plan_batches, 1):
         if cx.stopped():
             return "stopped", expected_id
+        if _generation() != cx.generation:
+            return "discarded", None  # forgotten since the cycle started: send nothing more
         text = payload_text(_build_payload(kind, snapshot, batch, plan, index=index, total=len(plan_batches)))
         resolver = make_resolver(kind, (snapshot or {}).get("facts") or [], batch, views, chat_key=key,
                                  alias_map=plan.alias_map)
         if not cx.limiter.acquire():
             return "stopped", expected_id
+        if not load_config().enabled:
+            return "stopped", expected_id  # disabled while waiting for the rate limit
         cx.rep.calls += 1
         cx.stats["calls"] = cx.stats.get("calls", 0) + 1
-        output, model = _call_model(cx.llm, kind=kind, payload_text=text, cfg=cx.cfg)
+        output, model, provider = _call_model(cx.llm, kind=kind, payload_text=text, cfg=cx.cfg)
+        if cx.stopped():
+            return "stopped", expected_id  # shutting down: write nothing
         with _data_lock():
+            if _generation() != cx.generation:
+                return "discarded", None  # forget ran during the call
             fresh = load_dossier(path)
             if expected_id is not None and (fresh is None or fresh["dossier_id"] != expected_id):
                 return "discarded", None  # forgotten or recreated during the call
@@ -1654,7 +1674,8 @@ def _run_batches(cx: _Cycle, *, kind: str, path: Path, dossier: dict[str, Any] |
             base = fresh or (new_contact_dossier(entry, cx.now) if kind == "contact" else new_persona_dossier(cx.now))
             updated, line = merge_batch(base, output, kind=kind, resolver=resolver, batch=batch, plan=plan,
                                         views=views, now=cx.now, cycle_id=cx.cycle_id, cfg=cx.cfg, model=model,
-                                        trigger=cx.trigger, index=index, total=len(plan_batches), entry=entry)
+                                        provider=provider, trigger=cx.trigger, index=index,
+                                        total=len(plan_batches), entry=entry)
             write_dossier(path, updated)
             if line:
                 _append_jsonl(path / CHANGES_FILE, line)
@@ -1784,6 +1805,12 @@ def _entry_label(entry: dict[str, Any]) -> str:
     return f"{entry.get('business_connection_id')}:{entry.get('chat_id')}"
 
 
+def _log_ref(entry: dict[str, Any]) -> str:
+    """Short stable hash of the chat for logs: never the raw connection or chat id."""
+    key = chat_key(entry.get("business_connection_id"), entry.get("chat_id"))
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
 def _guarded(cx: _Cycle, key: str, entry: dict[str, Any] | None, label: str, step: Callable[[], str]) -> str:
     """Run one contact/orphan/persona step; any failure except a trust denial stays local."""
     started = time.monotonic()
@@ -1802,11 +1829,11 @@ def _guarded(cx: _Cycle, key: str, entry: dict[str, Any] | None, label: str, ste
         if entry is None:
             logger.warning("%s: dossier persona refresh failed error=%s", _history.PLUGIN_NAME, type(exc).__name__)
         else:
-            logger.warning("%s: dossier refresh failed connection=%s chat=%s error=%s", _history.PLUGIN_NAME,
-                           entry.get("business_connection_id"), entry.get("chat_id"), type(exc).__name__)
+            logger.warning("%s: dossier refresh failed chat_ref=%s error=%s", _history.PLUGIN_NAME,
+                           _log_ref(entry), type(exc).__name__)
     s = cx.stats
     logger.debug("%s: dossier target=%s outcome=%s calls=%d batches=%d new=%d changed=%d dropped=%d duration_ms=%d",
-                 _history.PLUGIN_NAME, "persona" if entry is None else _entry_label(entry), outcome,
+                 _history.PLUGIN_NAME, "persona" if entry is None else _log_ref(entry), outcome,
                  s.get("calls", 0), s.get("batches", 0), s.get("new", 0), s.get("changed", 0), s.get("dropped", 0),
                  int((time.monotonic() - started) * 1000))
     if cx.dirty or s.get("calls"):  # an idle target (gate hit) writes nothing; the cycle end saves anyway
@@ -1828,6 +1855,7 @@ def run_cycle(*, llm: Any, now: datetime | None = None, trigger: str = "worker",
     with _cycle_lock() as acquired:
         if not acquired:
             return CycleReport(outcome="busy", trigger=trigger)
+        generation = _generation()
         state = load_state()
         rep = CycleReport(trigger=trigger, started_at=_iso(now))
         limiter = limiter or RateLimiter(cfg.max_calls_per_minute, recent=state.get("recent_calls") or (),
@@ -1836,7 +1864,8 @@ def run_cycle(*, llm: Any, now: datetime | None = None, trigger: str = "worker",
             persona = load_dossier(persona_path())
         except (OSError, ValueError):
             persona = None
-        cx = _Cycle(llm, cfg, now, _history._isoformat_utc(now) or "", state, limiter, rep, trigger, stop, persona)
+        cx = _Cycle(llm, cfg, now, _history._isoformat_utc(now) or "", state, limiter, rep, trigger, stop, persona,
+                    generation)
         try:
             _run_cycle_steps(cx, target)
         except _TrustGateDenied as exc:

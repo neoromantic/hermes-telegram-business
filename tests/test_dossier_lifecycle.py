@@ -1,9 +1,8 @@
 """Dossier lifecycle tests: owner controls, source changes, incremental refresh and the persona.
 
-design.md section 10, rows 30-55. Every time is relative to ``NOW`` and every cycle gets
-an explicit ``now``, so the tests are deterministic. Model doubles answer per task
-(contact or persona), so the order of contact and persona calls inside a cycle never
-shifts which scripted answer a call gets.
+Every time is relative to ``NOW`` and every cycle gets an explicit ``now``, so the tests
+are deterministic. Model doubles answer per task (contact or persona), so the order of
+contact and persona calls inside a cycle never shifts which scripted answer a call gets.
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ import contextlib
 import json
 import re
 import shlex
+import threading
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
@@ -69,7 +69,8 @@ def harbour_fact(**kw: Any) -> dict[str, Any]:
     return change(section="shared_facts", text=HARBOUR_TEXT, **kw)
 
 
-def scripted(*, contact: Any = (), persona: Any = (), model: str | None = None) -> FakeLlm:
+def scripted(*, contact: Any = (), persona: Any = (), model: str | None = None,
+             provider: str | None = None) -> FakeLlm:
     """A FakeLlm whose answers are queued per task; an empty queue answers ``{"changes": []}``.
 
     An item is a dict, a callable ``(payload, kwargs)`` or an exception (class or instance).
@@ -85,7 +86,7 @@ def scripted(*, contact: Any = (), persona: Any = (), model: str | None = None) 
             raise item
         return item(payload, kwargs) if callable(item) else item
 
-    return FakeLlm(*([respond] * 500), model=model)
+    return FakeLlm(*([respond] * 500), model=model, provider=provider)
 
 
 def payloads(fake: FakeLlm, task: str) -> list[dict[str, Any]]:
@@ -438,6 +439,53 @@ async def test_forget_during_call_discards_result(dossier_plugin, dossiers, via)
 
 
 @pytest.mark.asyncio
+async def test_forget_all_during_first_pass_call_discards_result(dossier_plugin, dossiers):
+    ds = dossiers
+    await seed_alice(dossier_plugin)
+    fake = scripted(contact=[output(email_fact())])
+    fake.on_call = lambda _payload: ds.forget(("all", None))  # also deletes state.json
+    rep = cycle(ds, fake)
+    fake.on_call = None
+    assert len(fake.calls) == 1  # the persona step sends nothing after the forget
+    assert (rep.refreshed, rep.waiting, rep.persona) == (0, 1, "discarded")
+    assert ds.list_dossiers() == []
+    assert read_persona(ds) is None
+
+    assert cycle(ds, scripted(contact=[output(email_fact())]), now=ago(-5)).refreshed == 1  # the next cycle rebuilds
+    assert [f["text"] for f in read_dossier(ds, ALICE)["facts"]] == [EMAIL_TEXT]
+
+
+@pytest.mark.asyncio
+async def test_disable_while_waiting_for_rate_limit_sends_nothing(dossier_plugin, dossiers, dossier_env):
+    ds = dossiers
+    await seed_alice(dossier_plugin)
+
+    class DisablingLimiter(ds.RateLimiter):
+        def acquire(self) -> bool:
+            dossier_env(ENABLE=None)  # the owner disabled dossiers while the cycle waited
+            return super().acquire()
+
+    fake = scripted(contact=[output(email_fact())])
+    rep = cycle(ds, fake, limiter=DisablingLimiter(20))
+    assert fake.calls == []
+    assert (rep.outcome, rep.calls) == ("stopped", 0)
+    assert ds.list_dossiers() == []
+
+
+@pytest.mark.asyncio
+async def test_stop_during_model_call_writes_nothing(dossier_plugin, dossiers):
+    ds = dossiers
+    await seed_alice(dossier_plugin)
+    stop = threading.Event()
+    fake = scripted(contact=[output(email_fact())])
+    fake.on_call = lambda _payload: stop.set()  # the gateway shuts down while the model answers
+    rep = cycle(ds, fake, stop=stop)
+    assert len(fake.calls) == 1
+    assert rep.outcome == "stopped"
+    assert ds.list_dossiers() == []
+
+
+@pytest.mark.asyncio
 async def test_show_fact_follows_source_to_canonical_history(dossier_plugin, dossiers):
     ds = dossiers
     rows = [(10, "in", "Hi, I prefer email for invoices please", 120),
@@ -609,6 +657,28 @@ async def test_forget_cli_reports_and_keeps_history(dossier_plugin, dossiers):
     assert code == 0, (out, err)
     assert "To stop processing" in out
     assert snapshot_history_tree(dossier_plugin) == history_before
+
+
+@pytest.mark.asyncio
+async def test_forget_preserves_real_canonical_archive_bytes(dossier_plugin, dossiers):
+    ds = dossiers
+    entry = await seed_alice(dossier_plugin)
+    await seed(dossier_plugin, BOB, "bob", [(20, "in", "BRAVO question", 50), (21, "out", "BRAVO answer", 45)])
+    history_before = snapshot_history_tree(dossier_plugin)
+    assert any(key.endswith(".jsonl") for key in history_before)  # a real canonical archive
+    rep = cycle(ds, scripted(contact=[quote_first] * 2, persona=[quote_first]))
+    assert (rep.refreshed, rep.persona) == (2, "refreshed")
+    assert snapshot_history_tree(dossier_plugin) == history_before  # a cycle only reads history
+    (dossier_dir(ds, ALICE) / ".residue").write_text("private residue", encoding="utf-8")
+
+    assert ds.forget(("contact", entry))["existed"] is True
+    assert not dossier_dir(ds, ALICE).exists()
+    assert snapshot_history_tree(dossier_plugin) == history_before
+
+    code, out, err = cli(dossier_plugin, "dossier", "forget", "--all")
+    assert code == 0, (out, err)
+    assert ds.list_dossiers() == [] and read_persona(ds) is None
+    assert snapshot_history_tree(dossier_plugin) == history_before  # byte for byte
 
 
 # ---------------------------------------------------------------------------
@@ -1140,7 +1210,8 @@ async def test_provider_model_defaults_overrides_and_call_kwargs(dossier_plugin,
     assert (cfg.provider, cfg.model) == ("dossier-provider", "dossier-model")
 
     await seed_alice(dossier_plugin)
-    fake = scripted(contact=[quote_first], model="fallback-model")  # the host answered with another model
+    # The host answered with another provider and model.
+    fake = scripted(contact=[quote_first], model="fallback-model", provider="fallback-provider")
     rep = cycle(ds, fake)
     assert (rep.refreshed, rep.persona) == (1, "refreshed")
     by_purpose = {kw["purpose"]: kw for kw in fake.calls}
@@ -1158,7 +1229,10 @@ async def test_provider_model_defaults_overrides_and_call_kwargs(dossier_plugin,
     assert section_enum == list(ds.CONTACT_SECTIONS)
     assert by_purpose["telegram_business_persona"]["schema_name"] == "telegram_business_owner_persona"
     last_refresh = read_dossier(ds, ALICE)["last_refresh"]
-    assert (last_refresh["provider"], last_refresh["model"]) == ("dossier-provider", "fallback-model")
+    assert (last_refresh["provider"], last_refresh["model"]) == ("fallback-provider", "fallback-model")
+    line = read_changes(dossier_dir(ds, ALICE))[-1]
+    assert (line["provider"], line["model"]) == ("fallback-provider", "fallback-model")
+    assert read_persona(ds)["last_refresh"]["provider"] == "fallback-provider"
 
 
 # ---------------------------------------------------------------------------
