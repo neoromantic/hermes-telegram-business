@@ -238,6 +238,56 @@ Each contact object has:
 
 Timestamps are ISO 8601 in `--tz`, with the offset. The output is ASCII; other characters are escaped. Errors are a plain `error: ...` line with exit code 1, also with `--format json`.
 
+## In Telegram (owner panel)
+
+The one-contact report is also in Telegram, in your private chat with the bot. Open a Business chat and tap **Manage Bot**. Telegram opens your private chat with the bot, and the bot shows the owner panel for that chat. Tap **📊 Stats**.
+
+The buttons under the report pick the period:
+
+| Button | Period | Same as the CLI with |
+|---|---|---|
+| `7d` | The last 7 days, counted back from now. | `--since 7d` |
+| `30d` | The last 30 days. The default. | `--since 30d` |
+| `90d` | The last 90 days. | `--since 90d` |
+| `All` | All retained history. | no `--since` |
+
+The current period is marked `•`. Tap it again to refresh. The report runs to now. It uses `HERMES_TELEGRAM_BUSINESS_TIMEZONE` (otherwise UTC) and the default 6-hour session gap. So the numbers are the same as `hermes telegram-business stats --chat <id> --connection <id>` with that `--since`, run at the same moment.
+
+The first line shows the contact and the period. The second shows the time zone and, except for All, where the period starts. The counting lines follow, exactly as in the CLI. The last line shows when the report was made. The `deletion details` line is CLI-only and is left out.
+
+Example (synthetic): Alice from the [example above](#example-synthetic), period `30d`, `HERMES_TELEGRAM_BUSINESS_TIMEZONE=Europe/Moscow`, clock at 2026-10-19 11:32 UTC. The last line shows the period buttons; the panel adds a Back button below them. A test checks that this block still matches the real view.
+
+```text
+📊 Alice Example (@alice) · last 30 days
+since 2026-09-19 14:32 Europe/Moscow, by Telegram send time; text messages only
+messages 10: received 6, sent 3, unknown direction 1
+active days 5 (received 4, sent 3)
+latest 2026-10-19 00:00 received; last sent 2026-10-17 19:30
+last message: received 2026-10-19 00:00, no observed reply after it
+sessions 5 (gap 6h): started by contact 3, by owner 2; ended on received 3
+deletions 4: unexplained 1 (received 1, sent 0), likely correction 1, likely duplicate 1, pending 1
+missing history: retained from 2026-10-03 (range is partial); 1 deletion of a message not in history; 1 message known only from an edit
+as of 2026-10-19 14:32
+
+[7d] [• 30d] [90d] [All]
+```
+
+Other states:
+
+- **History is off.** `Stats need history: set HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1 and restart the gateway.`
+- **Connection not known yet.** The bot has not seen the Business connection for this chat yet.
+- **Bad time zone.** `HERMES_TELEGRAM_BUSINESS_TIMEZONE` is not a known IANA name.
+- **No history for this chat.** History records new text messages only, so a chat with no message since capture started has no report yet. It also shows when the chat is outside the history scope settings (see [HISTORY.md](HISTORY.md)); widen the scope to include it.
+- **No activity in the period.** The report shows zeros. It is not an error, and the period buttons stay.
+- **History could not be read.** For example, a stale or damaged catalog, a torn final line, or a missing lock. The panel shows the `stats` command to run on the gateway host for details, and keeps the period buttons so you can retry. The gateway log gets a warning with only the error type: no names, paths, or error text.
+
+Privacy:
+
+- The report is shown only in your private chat with the bot. Nothing is ever posted into the Business chat, and the contact sees nothing.
+- It shows only the chat under the Business connection you were verified for. The same chat ID under another connection is never shown.
+- Like the CLI, it first checks that the whole history catalog is current. So damaged history anywhere on the gateway, even in another connection, shows the "could not be read" state.
+- It is read-only, uses no LLM, and stores nothing. It never shows message text. Contact names are escaped as in the CLI and cut to 100 characters.
+
 ## Storage stats
 
 `hermes telegram-business history stats` is a different command and is unchanged. It shows storage stats: records, bytes, and settings. `hermes telegram-business stats` shows correspondence stats per contact.
@@ -252,7 +302,7 @@ Timestamps are ISO 8601 in `--tz`, with the offset. The output is ASCII; other c
 
 ## Not in this version
 
-- Response-time and turn metrics.
-- Opt-in owner notifications for unexplained deletions and overdue incoming turns.
+- An overview of all contacts in the owner panel ([#29](https://github.com/neoromantic/hermes-telegram-business/issues/29)).
+- Response-time and turn metrics ([#28](https://github.com/neoromantic/hermes-telegram-business/issues/28)).
+- Opt-in owner notifications for unexplained deletions and overdue incoming turns ([#27](https://github.com/neoromantic/hermes-telegram-business/issues/27)).
 - Counting voice notes, video notes, and media. This needs a metadata-only capture change in history.
-- An in-chat `/stats` command.

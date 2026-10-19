@@ -108,6 +108,8 @@ hermes telegram-business stats --contact @alice --format json
 
 Messages are placed by Telegram send time. Only text messages are counted. The report needs no LLM, stores nothing new, and never prints message text. [Counting rules, options, and a synthetic example](docs/STATS.md).
 
+The same report for one chat is in Telegram: tap **Manage Bot** in a Business chat, then **📊 Stats** in your private chat with the bot. It is never posted into the Business chat. [Owner panel stats](docs/STATS.md#in-telegram-owner-panel).
+
 ## Contact dossiers (opt-in)
 
 With history enabled, add `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1` to the profile's `.env` and restart the gateway. A gateway-only background worker then builds an evidence-backed dossier for every private Business contact, plus one owner writing persona, and refreshes them incrementally through the host `ctx.llm` facade. Every fact cites its source messages. You can trace, correct, pin, or remove facts, and owner edits survive refreshes.
