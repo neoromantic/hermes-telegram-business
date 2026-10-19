@@ -203,7 +203,7 @@ hermes telesec stats --contact @alice --format json
 
 Messages are placed by Telegram send time, in the Hermes time zone or UTC. Only text messages are counted. The report needs no LLM, stores nothing new, and never prints message text; it reads text only to count its characters. [Counting rules, options, and a synthetic example](docs/STATS.md).
 
-A compact view of the same stats for one chat is in Telegram, in Russian or English: tap **Manage Bot** in a Business chat, then **📊 Stats** in your private chat with the bot. It is never posted into the Business chat. It is a Telegram rich message: one balance bar (the contact 🟦, you 🟩), a table per side, emoji heat maps of when you talk, a few tiles, and a short footer. [Owner panel stats](docs/STATS.md#in-telegram-owner-panel).
+A compact view of the same stats for one chat is in Telegram, in Russian or English: tap **Manage Bot** in a Business chat, then **📊 Stats** in your private chat with the bot. It is never posted into the Business chat. It is a Telegram rich message: one balance bar (the contact 🟦, you 🟩), one table with a column for each side, emoji heat maps of when you talk, a few tiles, and a short footer. [Owner panel stats](docs/STATS.md#in-telegram-owner-panel).
 
 ![Screenshot of the 📊 Stats view in the owner panel for a fictional contact, Alex Rivera, over 30 days, with 7d, 30d, 90d, All, and Back buttons.](docs/images/stats-panel-en.png)
 

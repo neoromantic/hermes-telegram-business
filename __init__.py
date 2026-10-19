@@ -2903,7 +2903,7 @@ async def _send_stats_rich_card(*, bot: Any, adapter: Any, message: Any, rich_ht
 async def _post_stats_card(*, bot: Any, adapter: Any, message: Any, card: _stats_panel.StatsCard) -> str:
     """Edit the command into the rich card, else send the card and delete the command; returns the log outcome.
 
-    The new card is a rich message, else the plain-text fallback.
+    The new card is a rich message, else the plain-text fallback after a definite rejection.
     """
     edit = await _edit_stats_command(bot, message, rich_html=card.html or "")
     if edit == "applied":
@@ -2914,10 +2914,17 @@ async def _post_stats_card(*, bot: Any, adapter: Any, message: Any, card: _stats
     # An uncertain edit may still have landed: a new card plus deleting the
     # command leaves exactly one card either way.
     outcome = "sent"
-    try:
-        await _send_stats_rich_card(bot=bot, adapter=adapter, message=message, rich_html=card.html or "")
-    except Exception as exc:  # noqa: BLE001 - the plain-text card below is the fallback
-        logger.info("%s: stats rich card could not be sent (%s)", _PLUGIN_NAME, type(exc).__name__)
+    rich_rejected = not callable(getattr(bot, "do_api_request", None))  # an older client: plain text only
+    if not rich_rejected:
+        try:
+            await _send_stats_rich_card(bot=bot, adapter=adapter, message=message, rich_html=card.html or "")
+        except Exception as exc:  # noqa: BLE001 - only a definite rejection gets the plain-text card
+            logger.info("%s: stats rich card could not be sent (%s)", _PLUGIN_NAME, type(exc).__name__)
+            # A timeout may come after Telegram delivered the card: a plain card too would be a second one.
+            rich_rejected = _definite_caption_edit_rejection(exc)
+            if not rich_rejected:
+                outcome = "sent_uncertain"
+    if rich_rejected:
         try:
             await _send_stats_message(
                 bot=bot,

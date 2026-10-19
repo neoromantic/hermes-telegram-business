@@ -2748,7 +2748,7 @@ def is_dossier_command_text(text: Any) -> bool:
 
 
 def is_dossier_post(message: Any) -> bool:
-    """A rich message the Business bot sent: only an owner `/dossier` posts one into a Business chat.
+    """A rich message the Business bot sent (the `/dossier` post or the `/stats` card): control traffic, never history.
 
     PTB 22.8 has no ``rich_message`` field, so it lands in the read-only ``api_kwargs`` mapping.
     """

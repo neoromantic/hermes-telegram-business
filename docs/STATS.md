@@ -430,7 +430,7 @@ Example (synthetic): Alice from the [example above](#example-synthetic), period 
 
 There is no `📈` line here because history starts inside the period.
 
-Other states are short plain-text messages:
+Other states. History off, connection not known, no history, and the read error are short plain-text messages; the paused and empty states are still the rich report:
 
 - **History is off.** `History is off. Turn it on in Settings (/telesec).`
 - **History paused for this chat.** The chat is set to Don't save in its panel ([per-chat history](../README.md#per-chat-history-and-dossier)). The report still shows what was saved, with `History is paused for this chat.` (Russian: `История этого чата сейчас не сохраняется.`) as its last line before the footer.
@@ -516,12 +516,12 @@ Who can use it:
 
 When something goes wrong:
 
-- **The edit fails.** If Telegram does not let the bot edit your message, the bot sends the card as a new rich message and deletes your command. If Telegram does not take the rich message, the bot sends a short plain-text card instead: both names, the dates and totals, each side's messages and median reply time, the peak, and `counted by Telesec`. If that send fails too, your command stays.
+- **The edit fails.** If Telegram does not let the bot edit your message, the bot sends the card as a new rich message and deletes your command. If Telegram rejects the rich message, the bot sends a short plain-text card instead: both names, the dates and totals, each side's messages and median reply time, the peak, and `counted by Telesec`. If that send fails too, your command stays. If the rich send times out, Telegram may have delivered it, so the bot sends no plain-text card and still deletes your command.
 - **You deleted the command.** If you delete `/stats` before the card is ready, the bot posts nothing.
 - **No card to show.** The bot edits your command into a short notice instead, then deletes it about 5 seconds later. The notices are `📊 Stats are unavailable: history is off.`, `📊 No history for this chat yet.`, and `📊 Stats are unavailable: history could not be read.` The contact may see them, so they hold no details. For details, open **📊 Stats** in the owner panel. If the edit fails here too, the bot replies with the notice and deletes both.
 - **Deleting needs a permission.** Give the bot the right to delete messages in Telegram Business > Chatbots. Without it, the command or notice stays, and the gateway log gets a hint.
 
-Never in history: the command, the card, a fallback card or notice, Telegram's copies of their edits, and their deletion are never recorded, so they are never counted in stats. The bot remembers these message IDs in memory for 24 hours. A send can time out after Telegram already delivered the message, so the bot learns its ID only from Telegram's copy. A rich card from the bot is never history anyway. For a plain-text card or notice, the bot expects a copy with exactly that text for 10 minutes, keeps it out of history, and still deletes such a notice. If you edit or delete the card more than 24 hours later, or after a gateway restart, history records an edit or deletion of a message it never had, and stats count it as an edit without original or a deletion not in history.
+Never in history: the command, the card, a fallback card or notice, Telegram's copies of their edits, and their deletion are never recorded, so they are never counted in stats. The bot remembers these message IDs in memory for 24 hours. A send can time out after Telegram already delivered the message, so the bot learns its ID only from Telegram's copy. A rich card from the bot is never history anyway, and the bot remembers its ID from that copy. For a plain-text card or notice, the bot expects a copy with exactly that text for 10 minutes, keeps it out of history, and still deletes such a notice. If you edit or delete the card more than 24 hours later, or after a gateway restart, history records an edit or deletion of a message it never had, and stats count it as an edit without original or a deletion not in history.
 
 Like the panel, the command is read-only, uses no LLM, and stores nothing. The gateway log gets one line per command with the chat ID, message ID, period, and outcome: no names and no text.
 

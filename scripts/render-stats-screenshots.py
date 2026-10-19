@@ -9,7 +9,7 @@ the public in-chat card (``stats_panel.build_stats_card``, all time), in
 English and Russian. Each view's exact Bot API rich message HTML goes to
 ``docs/images/src/stats-{panel,card}-{en,ru}.html``. Send one with
 sendRichMessage to take a real Telegram screenshot; the PNGs in
-``docs/images/`` are such screenshots, not made here.
+``docs/images/`` are to be replaced by such screenshots. This script does not make them.
 
 Run from the repository root:
 

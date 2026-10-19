@@ -13,7 +13,7 @@ import importlib
 import logging
 import sys
 from datetime import timedelta
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -631,7 +631,7 @@ async def test_message_not_modified_counts_as_edited(alice):
 async def test_failed_fallback_keeps_the_command_and_logs_only_the_error_type(alice, caplog):
     bot = StatsBot()
     bot.rich_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
-    bot.rich_send_error = RuntimeError("rich send failed with private detail")
+    bot.rich_send_error = ttm.BadRequest("Bad Request: rich send failed with private detail")
     bot.send_error = RuntimeError("send failed with private detail")
 
     with caplog.at_level(logging.INFO):
@@ -680,6 +680,32 @@ async def test_command_deleted_before_the_card_is_ready_posts_nothing(alice, cap
     assert len(rich_edits(bot)) == 1 and rich_sends(bot) == [] and bot.calls == [] and bot.delete_calls == []
     assert "outcome=gone" in caplog.text
     assert COMMAND_ID not in record_ids(alice)
+
+
+@pytest.mark.asyncio
+async def test_rich_send_timeout_sends_no_second_card(alice, caplog):
+    bot = StatsBot()
+    bot.rich_edit_error = ttm.BadRequest("Bad Request: message can't be edited")
+    bot.rich_send_error = ttm.TimedOut("timed out")
+    before, _ = contact_stats(alice)
+    card_id = COMMAND_ID + 1
+
+    with caplog.at_level(logging.INFO):
+        assert await dispatch(alice, stats_update(), bot)
+    # Telegram may have delivered the rich card: no plain card follows, and the command goes.
+    assert len(rich_sends(bot)) == 1 and bot.calls == []
+    assert bot.delete_calls == [{"business_connection_id": BCID, "message_ids": [COMMAND_ID]}]
+    assert "outcome=sent_uncertain" in caplog.text
+    # Its echo is a bot-sent rich message, so it and its deletion stay out of history.
+    echo = stats_update(None, message_id=card_id, sender_business_bot=555, update_id=501)  # type: ignore[arg-type]
+    echo.business_message.api_kwargs = MappingProxyType({"rich_message": {"blocks": [{"type": "paragraph"}]}})
+    await dispatch(alice, echo, bot)
+    await dispatch(alice, deleted_update(card_id), bot)
+
+    assert card_id not in record_ids(alice)
+    after, _ = contact_stats(alice)
+    assert after.missing.deletions_not_in_history == before.missing.deletions_not_in_history
+    assert after.messages == before.messages
 
 
 @pytest.mark.asyncio
