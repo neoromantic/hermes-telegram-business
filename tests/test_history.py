@@ -4882,3 +4882,47 @@ async def test_erase_cancels_pending_deletion_timers_and_a_late_one_never_recrea
     assert [str(entry["chat_id"]) for entry in history._catalog_entries_for_cli()] == ["992"]
     assert history.has_saved_history("business-123", 991) is False
     assert history.has_saved_history("business-123", 992) is True
+
+
+@pytest.mark.asyncio
+async def test_forget_erases_every_record_of_the_chat_whatever_its_source(enabled_history):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
+    for chat_id, message_id in ((991, 77), (992, 78)):
+        await history.observe_ptb_update(
+            make_business_text_update(text="captured", chat_id=chat_id, message_id=message_id, update_id=message_id,
+                                      date=base),
+            bot=FakeBot(), now=base,
+        )
+    (captured,) = load_records(plugin)
+    # Records another writer (such as an importer) adds, with fields and event types capture never writes.
+    append_raw_history_records(
+        plugin,
+        {**captured, "event_id": "import-1", "source": "import", "import_batch": "batch-1", "message_id": 5,
+         "text": "imported", "observed_at": "2025-01-15T10:00:00Z"},
+        {**captured, "event_id": "import-2", "source": "import", "event_type": "import.note",
+         "observed_at": "2025-02-15T10:00:00Z"},
+    )
+    history.rebuild_contact_catalog()
+    chat_dir = history._history_chat_dir_path("business-123", 991)
+    assert sorted(path.name for path in chat_dir.glob("*.jsonl")) == ["2025-01.jsonl", "2025-02.jsonl", "2026-07.jsonl"]
+
+    code, output = _run_history_cli(plugin, "history", "forget", "--chat", "991")
+    assert code == 1 and "Would erase 2 saved messages (3 records, 3 files, " in output
+
+    code, output = _run_history_cli(plugin, "history", "forget", "--chat", "991", "--yes")
+
+    assert code == 0 and "Erased 2 saved messages (3 records, 3 files, " in output
+    assert not chat_dir.exists()
+    assert history.has_saved_history("business-123", 991) is False
+    assert [record["text"] for record in load_records(plugin, chat_id=992)] == ["captured"]
+    assert [str(entry["chat_id"]) for entry in history._catalog_entries_for_cli()] == ["992"]
+
+    other = load_records(plugin, chat_id=992)[0]
+    append_raw_history_records(plugin, {**other, "event_id": "import-3", "source": "import",
+                                        "observed_at": "2025-03-15T10:00:00Z"})
+    code, output = _run_history_cli(plugin, "history", "forget", "--all", "--yes")
+
+    assert code == 0 and "Erased all saved history: 1 chat, 2 saved messages (2 records, 2 files, " in output
+    assert list(history._iter_chat_dirs()) == []

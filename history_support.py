@@ -2472,8 +2472,8 @@ def _drop_catalog_entries_locked(keys: set[tuple[str, str]], base_source_signatu
 
 
 def erase_chat_history(business_connection_id: Any, chat_id: Any) -> SavedHistory | None:
-    """Delete one chat's canonical history: every month file of that connection and chat, its catalog entry,
-    and its pending deletion timers. Returns what was deleted, None when nothing was stored.
+    """Delete one chat's canonical history: the whole chat directory of that connection, so every record
+    whatever its source or event type, its catalog entry, and its pending deletion timers. Returns what was deleted, None when nothing was stored.
 
     Blocking. Holds the root, then the chat writer lock, like every history writer. Dossiers are separate:
     see ``forget_chat``.

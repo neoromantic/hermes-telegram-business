@@ -38,7 +38,7 @@ Up to 0.12, `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC
 
 While a chat is set to Don't save and history still holds messages from it, its panel shows **🗑 Erase saved history**. It asks first (`Erase 12 saved messages from this chat? Its dossier is deleted too. This cannot be undone.`), then deletes:
 
-- every month file of that chat on your Business connection,
+- every record of that chat on your Business connection, whatever wrote it (the whole chat directory),
 - the chat's entry in the contact catalog (`contacts.json`),
 - pending deletion classification for the chat,
 - the chat's dossier, after stopping a running dossier refresh.
