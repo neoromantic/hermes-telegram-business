@@ -2440,8 +2440,8 @@ def test_docs_stats_screenshots_exist():
             assert (doc.parent / image).is_file(), image
     assert (ROOT / "scripts" / "render-stats-screenshots.py").is_file()
     for view in ("panel-en", "card-en", "panel-ru", "card-ru"):
-        # The page embeds the view's Telegram HTML, which starts with the bold 📊 title.
-        assert '<template id="message"><b>📊 ' in (images / "src" / f"stats-{view}.html").read_text(encoding="utf-8")
+        # The source is the view's rich message HTML, which starts with the 📊 title.
+        assert "\n-->\n<h3>📊 " in (images / "src" / f"stats-{view}.html").read_text(encoding="utf-8")
         for suffix in ("", "@2x"):
             assert (images / f"stats-{view}{suffix}.png").is_file(), view
 

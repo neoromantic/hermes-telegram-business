@@ -1,20 +1,25 @@
-"""Telegram HTML views of one chat's correspondence stats.
+"""Telegram rich-message views of one chat's correspondence stats.
 
 ``panel`` is the owner panel's report, shown only in the owner's private chat
 with the bot. ``card`` is the public card for the in-chat ``/stats`` command:
 it is posted into the Business chat, so the contact sees it too, and it never
-shows deletions, edits, who is waiting, missing history, or p90 reply times.
+shows deletions, edits, who is waiting, missing history, the previous period,
+or p90 reply times.
 
 Both are pure and deterministic: they format a ``ContactStats`` that never held
-message text. The output is Telegram HTML (``PARSE_MODE``). Every untrusted
-value (names, the time zone label) goes through ``correspondence_stats._safe``
-and then ``html.escape``. ``<pre>`` lines are at most ``PRE_WIDTH`` columns
-(``display_width``: wide characters such as CJK and emoji count 2) so they fit
-a phone screen, names there are clipped to ``PRE_NAME_CHARS`` columns, and a
-view stays within Telegram's 4096 UTF-16 units. A name with right-to-left
-letters sits between two LRM marks, so it cannot reorder or flip the line
-around it. Voice metadata can become one more table row later; nothing here
-assumes text only except the footer.
+message text. Each returns a ``RichView``: ``html`` is Bot API rich message HTML
+(``sendRichMessage``, or ``editMessageText`` with ``rich_message``, entity
+detection off), and ``text`` is a short plain-text fallback without a parse mode.
+
+Layout: a title, a balance bar of ``BAR_CELLS`` squares (the contact is always
+``CONTACT``, the owner ``OWNER``), a table per side, emoji heat maps
+(``HEAT``) inside tables so their columns line up in any font, a few tiles,
+and a footer. Every untrusted value (only the names) goes through
+``correspondence_stats._safe``, is clipped, and is HTML-escaped. A name with
+right-to-left letters sits between two LRM marks, so it cannot reorder the
+line around it. A view stays within ``MAX_HTML_UNITS`` (and its fallback within
+Telegram's 4096): past that, the heat maps go first, then the tiles; the title,
+the panel's note, and the footer always stay.
 """
 
 from __future__ import annotations
@@ -23,132 +28,122 @@ import html
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, tzinfo
+from datetime import date, datetime, timedelta, tzinfo
 
 from . import correspondence_stats as _stats
 from . import owner_panel as _owner_panel
 
-PARSE_MODE = "HTML"
 PERIODS = ("7d", "30d", "90d", "all")
 SITE_URL = "https://telesec.sergeybaus.com"
+MAX_HTML_UNITS = 8000  # far below the rich message limit (about 32768 characters, 500 blocks)
 MAX_TEXT_UNITS = 4096  # Telegram's message text limit, in UTF-16 code units.
-PRE_WIDTH = 31  # columns of a <pre> line, counted with display_width
-PRE_NAME_CHARS = 8  # columns of a name in a <pre> block
 TITLE_NAME_CHARS = 64
-BAR_CELLS = 16
-BAR_FULL = "█"
-BAR_EMPTY = "░"
-SPARK = "▁▂▃▄▅▆▇█"
-SPARK_ZERO = "·"
+COLUMN_NAME_CHARS = 16
+BAR_CELLS = 10
+CONTACT = "🟦"
+OWNER = "🟩"
+HEAT = ("·", "🟨", "🟧", "🟥")  # zero, then thirds of the largest value in one table
+YEARS_PER_TABLE = 8
 NONE = "–"  # a value that is not known, e.g. a reply time without replies
 ELLIPSIS = "…"
-LRM = "\u200e"  # left-to-right mark: zero width, a strong left-to-right character
-_ZWJ = "\u200d"
+LRM = "‎"  # left-to-right mark: zero width, a strong left-to-right character
+_ZWJ = "‍"
 # Bidi classes that lay text out right to left in a left-to-right line.
 _RTL_CLASSES = frozenset({"R", "AL", "AN"})
-HOURS_AXIS = "0     6     12    18  23"
-_LABEL_WIDTH = 9  # label column of the summary block
-_MIN_COLUMN = 7  # value column of the table
-_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_EMPTY_CELL = "<td></td>"
 
 # English defines every key; Russian falls back to English key by key. Values are
-# plain text: the renderer escapes whole lines, so a template never holds HTML.
+# plain text without "<", ">" or "&": placeholders take ready HTML (or plain text
+# in the fallback), so a template never needs escaping.
 _STRINGS: dict[str, dict[str, str]] = {
     "en": {
-        "period.7d": "7 d",
-        "period.30d": "30 d",
-        "period.90d": "90 d",
+        "period.7d": "7 days",
+        "period.30d": "30 days",
+        "period.90d": "90 days",
         "period.all": "all time",
+        "previous.7d": "vs the previous 7 days",
+        "previous.30d": "vs the previous 30 days",
+        "previous.90d": "vs the previous 90 days",
         "you": "You",
-        "active_days": "active days {days}/{span}",
-        "days_in_touch": "days in touch {days}",
-        "row.messages": "msgs",
-        "row.messages_card": "messages",
-        "row.reply": "reply",
+        "row.messages": "messages",
+        "row.reply": "⚡ reply",
         "row.p90": "p90",
         "row.per_turn": "per turn",
         "row.length": "length",
         "row.edits": "edits",
-        "waiting": "⏳ no reply: {name}, since {since} ({duration})",
-        "peak": "🕘 peak",
+        "waiting.received": "{name} is waiting for your reply",
+        "waiting.sent": "You are waiting for a reply",
+        "when": "🗓 When",
+        "weekdays": "Mo Tu We Th Fr Sa Su",
         "weekday_names": "Mon Tue Wed Thu Fri Sat Sun",
-        "weekday_axis": "Mo Tu We Th Fr Sa Su",
-        "bucket.day": "by day",
-        "bucket.week": "by week",
-        "bucket.month": "by month",
-        "bucket.quarter": "by quarter",
-        "bucket.year": "by year",
-        "streak": "streak",
-        "streak_days": "{days} d",
-        "streak_max": "max {days}",
-        "pause": "pause",
-        "sessions": "sessions",
-        "starts": "{name} starts {percent}%",
-        "deleted": "deleted",
-        "unexplained": "unexplained {count}",
-        "record": "record",
-        "record_days": "{days} days in a row",
-        "record_day": "{days} day in a row",
-        "previous": "📈 vs prev. {period}:",
-        "previous_messages": "msgs {change}",
-        "previous_reply": "{name} reply {before}→{after}",
+        "months": "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",
+        "months_of": "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",
+        "month_initials": "J F M A M J J A S O N D",
+        "peak": "🎯 Peak —",
+        "peak_card": "🎯 Most often —",
+        "tile.streak": "🔥 streak",
+        "tile.record": "🏆 record",
+        "tile.pause": "💤 pause",
+        "tile.sessions": "🗣 sessions",
+        "tile.first": "👋 first",
+        "tile.deleted": "🗑 deleted",
+        "first": "first",
+        "previous.messages": "messages",
+        "previous.reply": "reply",
         "history_since": "history since {date}",
-        "period_partial": "{text} (period partial)",
         "text_only": "text only",
-        "not_in_history": "deletions not in history {count}",
-        "edit_only": "edits without original {count}",
         "empty": "no messages in this period",
         "counted_by": "counted by {link}",
-        "units": "s m h d",
+        "units": "s min h d",
     },
     "ru": {
-        "period.7d": "7 дн.",
-        "period.30d": "30 дн.",
-        "period.90d": "90 дн.",
+        "period.7d": "7 дней",
+        "period.30d": "30 дней",
+        "period.90d": "90 дней",
         "period.all": "всё время",
+        "previous.7d": "К прошлым 7 дням",
+        "previous.30d": "К прошлым 30 дням",
+        "previous.90d": "К прошлым 90 дням",
         "you": "Вы",
-        "active_days": "активных дней {days}/{span}",
-        "days_in_touch": "дней общения {days}",
-        "row.messages": "сообщ.",
-        "row.messages_card": "сообщ.",
-        "row.reply": "ответ",
-        "row.p90": "p90",
+        "row.messages": "сообщений",
+        "row.reply": "⚡ ответ",
         "row.per_turn": "подряд",
         "row.length": "длина",
         "row.edits": "правки",
-        "waiting": "⏳ без ответа: {name}, с {since} ({duration})",
-        "peak": "🕘 пик",
+        "waiting.received": "{name} ждёт ответа",
+        "waiting.sent": "Вы ждёте ответа",
+        "when": "🗓 Когда",
+        "weekdays": "пн вт ср чт пт сб вс",
         "weekday_names": "пн вт ср чт пт сб вс",
-        "weekday_axis": "пн вт ср чт пт сб вс",
-        "bucket.day": "по дням",
-        "bucket.week": "по неделям",
-        "bucket.month": "по месяцам",
-        "bucket.quarter": "по кварталам",
-        "bucket.year": "по годам",
-        "streak": "серия",
-        "streak_days": "{days} дн.",
-        "streak_max": "макс {days}",
-        "pause": "пауза",
-        "sessions": "беседы",
-        "starts": "старт {name} {percent}%",
-        "deleted": "удалено",
-        "unexplained": "неясн. {count}",
-        "record": "рекорд",
-        "record_days": "{days} дн. подряд",
-        "record_day": "{days} дн. подряд",
-        "previous": "📈 к пред. {period}:",
-        "previous_messages": "сообщ. {change}",
-        "previous_reply": "ответ {name} {before}→{after}",
+        "months": "янв фев мар апр май июн июл авг сен окт ноя дек",
+        "months_of": "янв фев мар апр мая июн июл авг сен окт ноя дек",
+        "month_initials": "Я Ф М А М И И А С О Н Д",
+        "peak": "🎯 Пик —",
+        "peak_card": "🎯 Чаще всего —",
+        "tile.streak": "🔥 серия",
+        "tile.record": "🏆 рекорд",
+        "tile.pause": "💤 пауза",
+        "tile.sessions": "🗣 бесед",
+        "tile.first": "👋 первым",
+        "tile.deleted": "🗑 удалено",
+        "first": "первым",
+        "previous.messages": "сообщений",
+        "previous.reply": "ответ",
         "history_since": "история с {date}",
-        "period_partial": "{text} (период неполный)",
         "text_only": "только текст",
-        "not_in_history": "удалений вне истории {count}",
-        "edit_only": "правок без оригинала {count}",
         "empty": "нет сообщений за период",
         "counted_by": "посчитал {link}",
-        "units": "с м ч д",
+        "units": "с мин ч дн",
     },
 }
+_QUARTERS = ("I", "II", "III", "IV")
+_HOUR_BUCKETS = 8  # three hours each
+
+
+@dataclass(frozen=True, slots=True)
+class RichView:
+    html: str  # Bot API rich message HTML
+    text: str  # the plain-text fallback, no parse mode
 
 
 def utf16_units(text: str) -> int:
@@ -156,11 +151,7 @@ def utf16_units(text: str) -> int:
 
 
 def _esc(text: str) -> str:
-    return html.escape(text, quote=False)
-
-
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + ELLIPSIS
+    return html.escape(text, quote=True)
 
 
 def _extends(char: str) -> bool:
@@ -176,7 +167,7 @@ def _regional(char: str) -> bool:
 def graphemes(text: str) -> list[str]:
     """``text`` as characters a reader sees: a base with its marks, emoji ZWJ sequences, and flag pairs.
 
-    An approximation of Unicode grapheme clusters, good enough to clip and pad names.
+    An approximation of Unicode grapheme clusters, good enough to clip names.
     """
     clusters: list[str] = []
     joined = flag_open = False
@@ -191,49 +182,17 @@ def graphemes(text: str) -> list[str]:
     return clusters
 
 
-def _cluster_width(cluster: str) -> int:
-    if all(_extends(char) for char in cluster):
-        return 0
-    wide = (
-        "\ufe0f" in cluster  # emoji presentation
-        or _regional(cluster[0])
-        or any(unicodedata.east_asian_width(char) in "WF" for char in cluster)
-    )
-    return 2 if wide else 1
-
-
-def display_width(text: str) -> int:
-    """Monospace columns: wide (CJK, emoji) characters take 2, marks and format characters 0."""
-    return sum(_cluster_width(cluster) for cluster in graphemes(text))
-
-
-def _clip_columns(text: str, limit: int) -> str:
-    """``text`` in at most ``limit`` columns, cut between characters with "…" when it is longer."""
-    if display_width(text) <= limit:
-        return text
-    kept: list[str] = []
-    width = 0
-    for cluster in graphemes(text):
-        width += _cluster_width(cluster)
-        if width > limit - 1:  # the ellipsis takes the last column
-            break
-        kept.append(cluster)
-    return "".join(kept) + ELLIPSIS
-
-
-def _ljust(text: str, width: int) -> str:
-    return text + " " * (width - display_width(text))
-
-
-def _rjust(text: str, width: int) -> str:
-    return " " * (width - display_width(text)) + text
+def _clip(text: str, limit: int) -> str:
+    """At most ``limit`` characters a reader sees, cut between them with "…"."""
+    clusters = graphemes(text)
+    return text if len(clusters) <= limit else "".join(clusters[: limit - 1]) + ELLIPSIS
 
 
 def _isolate(name: str) -> str:
     """A name with right-to-left letters between LRMs, so the line around it stays left to right.
 
-    Telegram picks each line's direction from its first strong character, and an
-    unisolated Arabic or Hebrew name would flip the line and pull numbers past it.
+    Telegram picks a paragraph's direction from its first strong character, and an
+    unisolated Arabic or Hebrew name would flip it and pull numbers past it.
     ``_safe`` escaped every bidi control the name had, so it cannot undo the marks.
     """
     if any(unicodedata.bidirectional(char) in _RTL_CLASSES for char in name):
@@ -242,18 +201,21 @@ def _isolate(name: str) -> str:
 
 
 def safe_name(text: str, limit: int) -> str:
-    """An untrusted name, escaped like the CLI does and clipped to ``limit`` code points; not yet HTML-escaped."""
+    """An untrusted name, escaped like the CLI does and clipped to ``limit`` characters; not yet HTML-escaped."""
     return _isolate(_clip(_stats._safe(text), limit))
-
-
-def pre_name(text: str) -> str:
-    """An untrusted name for a ``<pre>`` block: like ``safe_name``, clipped to ``PRE_NAME_CHARS`` columns."""
-    return _isolate(_clip_columns(_stats._safe(text), PRE_NAME_CHARS))
 
 
 def _round_percent(part: int, whole: int) -> int:
     # Half up in integers, like the stats themselves.
     return (200 * part + whole) // (2 * whole)
+
+
+def _ru_plural(count: int, one: str, few: str, many: str) -> str:
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,45 +232,50 @@ class _Format:
         text = f"{value:,}"
         return text.replace(",", " ") if self.lang == "ru" else text
 
+    def decimal(self, value: float | None) -> str:
+        if value is None:
+            return NONE
+        text = f"{value:,.1f}"
+        return text.replace(",", " ").replace(".", ",") if self.lang == "ru" else text
+
     def dur(self, seconds: int | None) -> str:
-        """Compact and rounded down: 40s, 12m, 1h40m, 2h, 3d5h, 12d; a zero minor unit is dropped."""
+        """Rounded down: 40 s, 12 min, 1 h 40 min, 2 h, 3 d 5 h, 12 d; a zero minor unit is dropped."""
         if seconds is None:
             return NONE
         s, m, h, d = self.t("units").split()
         seconds = max(0, seconds)
         if seconds < 60:
-            return f"{seconds}{s}"
+            return f"{seconds} {s}"
         if seconds < 3600:
-            return f"{seconds // 60}{m}"
+            return f"{seconds // 60} {m}"
         if seconds < 86400:
             minutes = seconds % 3600 // 60
-            return f"{seconds // 3600}{h}" + (f"{minutes}{m}" if minutes else "")
+            return f"{seconds // 3600} {h}" + (f" {minutes} {m}" if minutes else "")
         days, hours = seconds // 86400, seconds % 86400 // 3600
-        # Hours only while they still matter: 3d5h, but 12d.
-        return f"{days}{d}" + (f"{hours}{h}" if hours and days < 10 else "")
+        # Hours only while they still matter: 3 d 5 h, but 12 d.
+        return f"{days} {d}" + (f" {hours} {h}" if hours and days < 10 else "")
+
+    def days(self, count: int) -> str:
+        """A whole number of days, the word in full: 1 day, 9 days; 1 день, 3 дня, 9 дней."""
+        if self.lang == "ru":
+            return f"<b>{self.num(count)}</b> {_ru_plural(count, 'день', 'дня', 'дней')}"
+        return f"<b>{self.num(count)}</b> {'day' if count == 1 else 'days'}"
 
     def day(self, day: date, *, with_year: bool | None = None) -> str:
         if with_year is None:
             with_year = day.year != self.year
-        if self.lang == "ru":
-            return f"{day.day:02d}.{day.month:02d}" + (f".{day.year}" if with_year else "")
-        return f"{day.day} {_MONTHS[day.month - 1]}" + (f" {day.year}" if with_year else "")
+        month = self.t("months_of").split()[day.month - 1]
+        return f"{day.day} {month}" + (f" {day.year}" if with_year else "")
 
-    def span(self, first: date, last: date, separator: str = "–") -> str:
+    def span(self, first: date, last: date) -> str:
         # Both ends show the year when either is outside the current year.
         if first == last:
             return self.day(first)
         with_year = first.year != self.year or last.year != self.year
-        return f"{self.day(first, with_year=with_year)}{separator}{self.day(last, with_year=with_year)}"
+        return f"{self.day(first, with_year=with_year)} – {self.day(last, with_year=with_year)}"
 
     def local(self, at: datetime) -> datetime:
         return at.astimezone(self.tz)
-
-    def clock(self, at: datetime, now: datetime) -> str:
-        """HH:MM today, else the date and HH:MM."""
-        local = self.local(at)
-        time = local.strftime("%H:%M")
-        return time if local.date() == self.local(now).date() else f"{self.day(local.date())} {time}"
 
 
 def _format(window: _stats.StatsWindow, language_code: str | None) -> _Format:
@@ -320,7 +287,7 @@ def _format(window: _stats.StatsWindow, language_code: str | None) -> _Format:
 
 
 def period_label(period: str, language_code: str | None = None) -> str:
-    """The period in a title, such as "30 d" or "всё время"."""
+    """The period in a title, such as "30 days" or "всё время"."""
     if period not in PERIODS:
         raise ValueError(f"period must be one of {', '.join(PERIODS)}")
     lang = _owner_panel.language(language_code)
@@ -330,124 +297,226 @@ def period_label(period: str, language_code: str | None = None) -> str:
 # --- Building blocks -----------------------------------------------------------------------------
 
 
-def spark(counts: Sequence[int]) -> str:
-    """One glyph per value, scaled to the largest: 0 is "·", the largest is "█"."""
-    top = max(counts, default=0)
-    return "".join(SPARK_ZERO if value <= 0 else SPARK[-(-value * len(SPARK) // top) - 1] for value in counts)
+def heat(value: int, top: int) -> str:
+    """One heat square: "·" for zero, else level ceil(3 * value / top) as 🟨, 🟧, or 🟥."""
+    if value <= 0 or top <= 0:
+        return HEAT[0]
+    return HEAT[min(3, -(-3 * value // top))]
 
 
-def bar(share: int) -> str:
-    filled = min(BAR_CELLS, max(0, (2 * share * BAR_CELLS + 100) // 200))
-    return BAR_FULL * filled + BAR_EMPTY * (BAR_CELLS - filled)
+def balance_cells(received: int, sent: int, *, has_received: bool, has_sent: bool) -> int:
+    """The contact's squares of ``BAR_CELLS`` for the shares in percent; a side with messages gets one at least."""
+    cells = (2 * received * BAR_CELLS + 100) // 200
+    if has_received:
+        cells = max(1, cells)
+    if has_sent:
+        cells = min(BAR_CELLS - 1, cells)
+    return max(0, min(BAR_CELLS, cells))
 
 
-def _cut(line: str) -> str:
-    # Defensive only: every block is sized to fit.
-    return _clip_columns(line, PRE_WIDTH)
-
-
-def _pre(*parts: Sequence[str]) -> str:
-    """One monospace block: the parts that have lines, with one empty line between them.
-
-    Telegram gives every ``<pre>`` its own copy bar, so a view merges its lines into
-    two blocks instead of one per part.
-    """
-    lines: list[str] = []
-    for part in parts:
-        if part:
-            lines.extend([*([""] if lines else []), *part])
-    return "<pre>" + _esc("\n".join(_cut(line) for line in lines)) + "</pre>"
-
-
-def _bars(rows: Sequence[tuple[str, int]]) -> list[str]:
-    width = max(display_width(name) for name, _ in rows)
-    return [f"{_ljust(name, width)} {bar(share)} {share}%" for name, share in rows]
-
-
-def _table(names: tuple[str, str], rows: Sequence[tuple[str, str, str]]) -> list[str]:
-    label_width = max(display_width(label) for label, _, _ in rows) + 1
-    widest = max(display_width(cell) for cell in (*names, *(value for _, *values in rows for value in values)))
-    column = max(_MIN_COLUMN, widest + 1)
-    if label_width + 2 * column > PRE_WIDTH:
-        column = widest + 1
-    lines = [" " * label_width + "".join(_rjust(name, column) for name in names)]
-    lines.extend(
-        _ljust(label, label_width) + _rjust(first, column) + _rjust(second, column) for label, first, second in rows
+def _balance(stats: _stats.ContactStats) -> str | None:
+    """"58% 🟦…🟩 42%", or None when a side's share is not known."""
+    share = stats.share
+    if share.received is None or share.sent is None:
+        return None
+    cells = balance_cells(
+        share.received,
+        share.sent,
+        has_received=share.received > 0 or stats.messages.received > 0,
+        has_sent=share.sent > 0 or stats.messages.sent > 0,
     )
-    return lines
+    return f"{share.received}% {CONTACT * cells}{OWNER * (BAR_CELLS - cells)} {share.sent}%"
 
 
-def _row(label: str, parts: Sequence[str]) -> list[str]:
-    """A summary row: the label column, then the parts joined by " · ", wrapped when too wide."""
-    head = _ljust(label, _LABEL_WIDTH) + parts[0]
-    line = " · ".join([head, *parts[1:]])
-    if display_width(line) <= PRE_WIDTH:
-        return [line]
-    # Each further part gets its own line under the values, or as far left as it needs.
-    return [head, *(" " * min(_LABEL_WIDTH, max(0, PRE_WIDTH - display_width(part))) + part for part in parts[1:])]
+def _td(content: str, *, right: bool = False) -> str:
+    return f'<td align="right">{content}</td>' if right else f"<td>{content}</td>"
 
 
-def _rhythm(stats: _stats.ContactStats, fmt: _Format) -> list[str]:
-    lines = [
-        spark(stats.hours),
-        HOURS_AXIS,
-        " ".join(glyph * 2 for glyph in spark(stats.weekdays)),
-        fmt.t("weekday_axis"),
+def _th(content: str, *, right: bool = False) -> str:
+    return f'<th align="right">{content}</th>' if right else f"<th>{content}</th>"
+
+
+def _table(rows: Sequence[Sequence[str]], *, attrs: str = "compact", header: Sequence[str] | None = None) -> str:
+    """A table of ready cells (``_td``/``_th``); ``header`` is one row of ``<th>`` cells."""
+    lines = [f"<table {attrs}>"]
+    if header is not None:
+        lines.append("<tr>" + "".join(header) + "</tr>")
+    lines.extend("<tr>" + "".join(row) + "</tr>" for row in rows)
+    lines.append("</table>")
+    return "\n".join(lines)
+
+
+def _heat_row(counts: Sequence[int]) -> list[str]:
+    top = max(counts, default=0)
+    return [_td(heat(value, top)) for value in counts]
+
+
+def _weekday_header(fmt: _Format) -> list[str]:
+    return [_th(name) for name in fmt.t("weekdays").split()]
+
+
+def _calendar(activity: _stats.Activity, fmt: _Format) -> list[str]:
+    """Day buckets: one row per Monday-started week, empty cells outside the period."""
+    top = max(activity.counts, default=0)
+    rows = []
+    monday = activity.first_day - timedelta(days=activity.first_day.weekday())
+    while monday <= activity.last_day:
+        row = []
+        for offset in range(7):
+            day = monday + timedelta(days=offset)
+            index = (day - activity.start).days
+            inside = activity.first_day <= day <= activity.last_day and 0 <= index < len(activity.counts)
+            row.append(_td(heat(activity.counts[index], top)) if inside else _EMPTY_CELL)
+        rows.append(row)
+        monday += timedelta(days=7)
+    return [_table(rows, header=_weekday_header(fmt))]
+
+
+def _weeks(activity: _stats.Activity, fmt: _Format) -> list[str]:
+    """Week buckets: one row per month (by each week's Monday), that month's weeks in order."""
+    top = max(activity.counts, default=0)
+    months = fmt.t("months").split()
+    groups: list[tuple[tuple[int, int], list[str]]] = []
+    for index, value in enumerate(activity.counts):
+        monday = activity.start + timedelta(days=7 * index)
+        key = (monday.year, monday.month)
+        if not groups or groups[-1][0] != key:
+            groups.append((key, []))
+        groups[-1][1].append(_td(heat(value, top)))
+    width = max((len(cells) for _, cells in groups), default=0)
+    rows = [
+        [_td(months[month - 1]), *cells, *[_EMPTY_CELL] * (width - len(cells))] for (_, month), cells in groups
     ]
+    return [_table(rows)]
+
+
+def _by_year(activity: _stats.Activity, per_year: int, header: Sequence[str]) -> list[str]:
+    """Month or quarter buckets: one row per year, empty cells outside the period."""
+    top = max(activity.counts, default=0)
+    first = activity.start.year * per_year + (activity.start.month - 1) * per_year // 12
+    rows = []
+    for year in range(activity.start.year, activity.last_day.year + 1):
+        row = [_td(str(year))]
+        for slot in range(per_year):
+            index = year * per_year + slot - first
+            row.append(_td(heat(activity.counts[index], top)) if 0 <= index < len(activity.counts) else _EMPTY_CELL)
+        rows.append(row)
+    return [_table(rows, header=[_th(""), *(_th(label) for label in header)])]
+
+
+def _years(activity: _stats.Activity) -> list[str]:
+    """Year buckets: the years as the header, one row of cells, at most ``YEARS_PER_TABLE`` per table."""
+    top = max(activity.counts, default=0)
+    tables = []
+    for offset in range(0, len(activity.counts), YEARS_PER_TABLE):
+        chunk = activity.counts[offset : offset + YEARS_PER_TABLE]
+        header = [_th(str(activity.start.year + offset + index)) for index in range(len(chunk))]
+        tables.append(_table([[_td(heat(value, top)) for value in chunk]], header=header))
+    return tables
+
+
+def _hours(stats: _stats.ContactStats) -> list[int]:
+    size = len(stats.hours) // _HOUR_BUCKETS
+    return [sum(stats.hours[index * size : (index + 1) * size]) for index in range(_HOUR_BUCKETS)]
+
+
+def _when(stats: _stats.ContactStats, fmt: _Format) -> str:
+    """The "When" heading and its heat maps: the period, weekdays (unless the period is a calendar), hours."""
     activity = stats.activity
+    tables: list[str] = []
     if activity is not None:
-        bucket = fmt.t(f"bucket.{activity.bucket}")
-        dates = fmt.span(activity.first_day, activity.last_day, " → ")
-        label = f"{bucket} {dates}"
-        lines.extend([spark(activity.counts), *([label] if display_width(label) <= PRE_WIDTH else [bucket, dates])])
-    return lines
+        if activity.bucket == "day":
+            tables = _calendar(activity, fmt)
+        elif activity.bucket == "week":
+            tables = _weeks(activity, fmt)
+        elif activity.bucket == "month":
+            tables = _by_year(activity, 12, fmt.t("month_initials").split())
+        elif activity.bucket == "quarter":
+            tables = _by_year(activity, 4, _QUARTERS)
+        else:
+            tables = _years(activity)
+    if activity is None or activity.bucket != "day":
+        tables.append(_table([_heat_row(stats.weekdays)], header=_weekday_header(fmt)))
+    size = 24 // _HOUR_BUCKETS
+    tables.append(_table([_heat_row(_hours(stats))], header=[_th(str(i * size)) for i in range(_HOUR_BUCKETS)]))
+    return "\n".join([f"<h4>{fmt.t('when')}</h4>", *tables])
 
 
-def _peak(stats: _stats.ContactStats, fmt: _Format) -> str | None:
+def _peak_text(stats: _stats.ContactStats, fmt: _Format) -> str | None:
     hour, weekday = stats.peak_hour, stats.peak_weekday
     if hour is None or weekday is None:
         return None
-    day = fmt.t("weekday_names").split()[weekday]
-    return f"<b>{_esc(fmt.t('peak'))}</b> {_esc(day)} {hour}–{hour + 1}"
+    return f"{fmt.t('weekday_names').split()[weekday]}, {hour}–{hour + 1}"
 
 
-def _per_turn(value: float | None) -> str:
-    return NONE if value is None else f"{value:.1f}"
-
-
-def _optional(fmt: _Format, value: int | None) -> str:
-    return NONE if value is None else fmt.num(value)
-
-
-def _sessions_row(stats: _stats.ContactStats, fmt: _Format, contact: str) -> list[str]:
-    sessions = stats.sessions
-    parts = [fmt.num(sessions.total)]
-    if sessions.total:
-        parts.append(fmt.t("starts", name=contact, percent=_round_percent(sessions.started_by_contact, sessions.total)))
-    return _row(fmt.t("sessions"), parts)
-
-
-def _shares(stats: _stats.ContactStats, contact: str, owner: str) -> list[str]:
-    """The share bars, or no lines when a side's share is not known."""
-    share = stats.share
-    if share.received is None or share.sent is None:
-        return []
-    return _bars([(contact, share.received), (owner, share.sent)])
-
-
-def _range_dates(stats: _stats.ContactStats, fmt: _Format) -> str | None:
+def _span(stats: _stats.ContactStats, fmt: _Format) -> str | None:
     activity = stats.activity
     return None if activity is None else fmt.span(activity.first_day, activity.last_day)
 
 
-def _finish(blocks: Sequence[str], tail: Sequence[str] = ()) -> str:
-    # Each block is whole lines with balanced tags, so dropping trailing blocks keeps
-    # the HTML valid. Names are clipped, so this only guards against surprises.
-    # ``tail`` always stays at the end; the report's own blocks go first.
+def _messages_cell(fmt: _Format, count: int, share: int | None) -> str:
+    return f"<b>{fmt.num(count)}</b>" + ("" if share is None else f" · {share}%")
+
+
+def _length(fmt: _Format, value: int | None) -> str:
+    return NONE if value is None else fmt.num(value)
+
+
+def _bold_dur(fmt: _Format, seconds: int | None) -> str:
+    return NONE if seconds is None else f"<b>{fmt.dur(seconds)}</b>"
+
+
+def _sides_table(names: tuple[str, str], rows: Sequence[tuple[str, str, str]]) -> str:
+    """The per-side table: ``names`` and the row values are ready HTML."""
+    header = [_th(""), _th(f"{CONTACT} {names[0]}", right=True), _th(f"{OWNER} {names[1]}", right=True)]
+    body = [[_td(label), _td(first, right=True), _td(second, right=True)] for label, first, second in rows]
+    return _table(body, attrs="striped compact", header=header)
+
+
+def _first_tile(stats: _stats.ContactStats) -> str | None:
+    """Who starts sessions more often, with their square and share; None without sessions."""
+    sessions = stats.sessions
+    if not sessions.total:
+        return None
+    contact_first = sessions.started_by_contact >= sessions.started_by_owner
+    starts = sessions.started_by_contact if contact_first else sessions.started_by_owner
+    return f"{CONTACT if contact_first else OWNER} <b>{_round_percent(starts, sessions.total)}%</b>"
+
+
+def _tiles(pairs: Sequence[tuple[str, str]]) -> str:
+    """Label and value pairs, two per row; an odd last pair leaves two empty cells."""
+    rows = []
+    for index in range(0, len(pairs), 2):
+        row: list[str] = []
+        for label, value in pairs[index : index + 2]:
+            row.extend([_td(label), _td(value, right=True)])
+        row.extend([_EMPTY_CELL] * (4 - len(row)))
+        rows.append(row)
+    return _table(rows)
+
+
+def _fit(blocks: Sequence[tuple[int, str]], limit: int) -> str:
+    """Blocks joined by newlines within ``limit`` UTF-16 units.
+
+    Each block is balanced HTML (or whole lines of text) with a drop rank: past the
+    limit, every block of the lowest rank above 0 goes, then the next. Rank 0 always stays.
+    """
     kept = list(blocks)
-    while len(kept) > 1 and utf16_units("\n".join([*kept, *tail])) > MAX_TEXT_UNITS:
-        kept.pop()
-    return "\n".join([*kept, *tail])
+    while utf16_units("\n".join(block for _, block in kept)) > limit:
+        ranks = [rank for rank, _ in kept if rank > 0]
+        if not ranks:
+            break
+        lowest = min(ranks)
+        kept = [(rank, block) for rank, block in kept if rank != lowest]
+    return "\n".join(block for _, block in kept)
+
+
+def _view(html_blocks: Sequence[tuple[int, str]], text_blocks: Sequence[tuple[int, str]]) -> RichView:
+    return RichView(_fit(html_blocks, MAX_HTML_UNITS), _fit(text_blocks, MAX_TEXT_UNITS))
+
+
+# Drop ranks, lowest first: the heat maps, then the tiles, then the rest; 0 never goes.
+_KEEP, _GRID, _TILES, _EXTRA, _WAITING, _TABLE, _BAR, _SUBTITLE = range(8)
 
 
 # --- Owner panel ---------------------------------------------------------------------------------
@@ -461,123 +530,165 @@ def panel(
     language_code: str | None = None,
     contact_name: str | None = None,
     note: str | None = None,
-) -> str:
+) -> RichView:
     """The owner panel's report: everything the stats know, compact.
 
     ``contact_name`` is the short name for the columns (the contact's first name);
     the title shows the full name. Owner-only: it includes deletions, edits,
-    who is waiting, p90 reply times, and missing history. ``note`` is a fixed
-    line of Telegram HTML (a catalog string) kept as the last line, even when
-    the report must be cut to fit.
+    who is waiting, p90 reply times, the previous period, and missing history.
+    ``note`` is a fixed plain-text line (a catalog string) kept as the last
+    paragraph before the footer, even when the report must be cut to fit.
     """
-    tail = () if note is None else (note,)
     fmt = _format(window, language_code)
-    title_name = safe_name(stats.name or stats.display_name, TITLE_NAME_CHARS)
-    contact = pre_name(contact_name or stats.name or stats.display_name)
-    owner = fmt.t("you")
-    dates = _range_dates(stats, fmt)
-    tz_label = _stats._safe(window.tz_label)
-    blocks = [
-        f"<b>{_esc(f'📊 {title_name} · {period_label(period, fmt.lang)}')}</b>",
-        f"<i>{_esc(tz_label if dates is None else f'{dates} · {tz_label}')}</i>",
-        "",
-    ]
+    full_name = safe_name(stats.name or stats.display_name, TITLE_NAME_CHARS)
+    contact = safe_name(contact_name or stats.name or stats.display_name, COLUMN_NAME_CHARS)
+    you = fmt.t("you")
+    title = f"📊 {full_name} · {period_label(period, fmt.lang)}"
+    footer = " · ".join(_footer(stats, fmt))
+    html_blocks: list[tuple[int, str]] = [(_KEEP, f"<h3>{_esc(title)}</h3>")]
+    text_blocks: list[tuple[int, str]] = [(_KEEP, title)]
+    note_html = [] if note is None else [(_KEEP, f"<p>{_esc(note)}</p>")]
+    note_text = [] if note is None else [(_KEEP, note)]
+    tail_html = [*note_html, (_KEEP, f"<footer>{_esc(footer)}</footer>")]
+    tail_text = [*note_text, (_KEEP, footer)]
+
     if not stats.messages.total:
-        blocks.append(_esc(fmt.t("empty")))
-        return _finish(blocks, tail)
+        html_blocks.append((_SUBTITLE, f"<p>{fmt.t('empty')}</p>"))
+        text_blocks.append((_SUBTITLE, fmt.t("empty")))
+        return _view([*html_blocks, *tail_html], [*text_blocks, *tail_text])
 
+    span = _span(stats, fmt)
+    total = fmt.num(stats.messages.total)
+    active = fmt.num(stats.active_days.total)
+    subtitle_html = [*([] if span is None else [span]), f"💬 <b>{total}</b>"]
+    subtitle_text = [*([] if span is None else [span]), f"💬 {total}"]
     activity = stats.activity
-    days = (
-        fmt.num(stats.active_days.total)
-        if activity is None
-        else fmt.t(
-            "active_days",
-            days=fmt.num(stats.active_days.total),
-            span=fmt.num((activity.last_day - activity.first_day).days + 1),
-        )
-    )
-    blocks.append(f"<b>{_esc(f'💬 {fmt.num(stats.messages.total)}')}</b> · {_esc(days)}")
+    if activity is not None:
+        days = (activity.last_day - activity.first_day).days + 1
+        of_days = _of_days(fmt, days)
+        subtitle_html.append(f"<b>{active}</b> {of_days}")
+        subtitle_text.append(f"{active} {of_days}")
+    html_blocks.append((_SUBTITLE, f"<p>{' · '.join(subtitle_html)}</p>"))
+    text_blocks.append((_SUBTITLE, " · ".join(subtitle_text)))
 
-    replies, turns, length, edited = stats.replies, stats.turns, stats.text_length, stats.edited
+    balance = _balance(stats)
+    if balance is not None:
+        html_blocks.append((_BAR, f"<p>{balance}</p>"))
+
+    replies, turns, length, edited, share = stats.replies, stats.turns, stats.text_length, stats.edited, stats.share
     rows = [
-        (fmt.t("row.messages"), fmt.num(stats.messages.received), fmt.num(stats.messages.sent)),
-        (fmt.t("row.reply"), fmt.dur(replies.received.median_seconds), fmt.dur(replies.sent.median_seconds)),
+        (
+            fmt.t("row.messages"),
+            _messages_cell(fmt, stats.messages.received, share.received),
+            _messages_cell(fmt, stats.messages.sent, share.sent),
+        ),
+        (
+            fmt.t("row.reply"),
+            _bold_dur(fmt, replies.received.median_seconds),
+            _bold_dur(fmt, replies.sent.median_seconds),
+        ),
         (fmt.t("row.p90"), fmt.dur(replies.received.p90_seconds), fmt.dur(replies.sent.p90_seconds)),
-        (fmt.t("row.per_turn"), _per_turn(turns.per_turn_received), _per_turn(turns.per_turn_sent)),
-        (fmt.t("row.length"), _optional(fmt, length.received), _optional(fmt, length.sent)),
+        (fmt.t("row.per_turn"), fmt.decimal(turns.per_turn_received), fmt.decimal(turns.per_turn_sent)),
+        (fmt.t("row.length"), _length(fmt, length.received), _length(fmt, length.sent)),
     ]
     if edited.received or edited.sent:
         rows.append((fmt.t("row.edits"), fmt.num(edited.received), fmt.num(edited.sent)))
-    blocks.append(_pre(_shares(stats, contact, owner), _table((contact, owner), rows)))
+    html_blocks.append((_TABLE, _sides_table((_esc(contact), you), rows)))
+    text_blocks.append((_TABLE, _side_lines(stats, fmt, contact, you)))
 
     waiting = stats.waiting
     if waiting is not None:
-        line = fmt.t(
-            "waiting",
-            name=contact if waiting.side == "received" else owner,
-            since=fmt.clock(waiting.since, window.now),
-            duration=fmt.dur(waiting.seconds),
+        key = f"waiting.{'received' if waiting.side == 'received' else 'sent'}"
+        duration = fmt.dur(waiting.seconds)
+        html_blocks.append(
+            (_WAITING, f"<blockquote>⏳ {fmt.t(key, name=_esc(contact))} <b>{duration}</b></blockquote>")
         )
-        blocks.append(_esc(line))
+        text_blocks.append((_WAITING, f"⏳ {fmt.t(key, name=contact)} {duration}"))
 
-    peak = _peak(stats, fmt)
+    html_blocks.append((_GRID, _when(stats, fmt)))
+    peak = _peak_text(stats, fmt)
     if peak is not None:
-        blocks.append(peak)
+        html_blocks.append((_EXTRA, f"<p>{fmt.t('peak')} <mark>{peak}</mark></p>"))
+        text_blocks.append((_EXTRA, f"{fmt.t('peak')} {peak}"))
 
+    html_blocks.append((_TILES, _tiles(_panel_tiles(stats, fmt))))
+
+    previous = _previous(stats, fmt, period)
+    if previous is not None:
+        html_blocks.append((_EXTRA, f"<p>{previous}</p>"))
+
+    return _view([*html_blocks, *tail_html], [*text_blocks, *tail_text])
+
+
+def _of_days(fmt: _Format, days: int) -> str:
+    """ "из 30 дней" / "of 30 days" after the active days."""
+    if fmt.lang == "ru":
+        return f"из {fmt.num(days)} {_ru_plural(days, 'дня', 'дней', 'дней')}"
+    return f"of {fmt.num(days)} {'day' if days == 1 else 'days'}"
+
+
+def _side_lines(stats: _stats.ContactStats, fmt: _Format, contact: str, owner: str) -> str:
+    """The fallback's two side lines: count, share, and reply median."""
+    lines = []
+    for square, name, count, share, median in (
+        (CONTACT, contact, stats.messages.received, stats.share.received, stats.replies.received.median_seconds),
+        (OWNER, owner, stats.messages.sent, stats.share.sent, stats.replies.sent.median_seconds),
+    ):
+        percent = "" if share is None else f" ({share}%)"
+        lines.append(f"{square} {name}: {fmt.num(count)}{percent} · ⚡ {fmt.dur(median)}")
+    return "\n".join(lines)
+
+
+def _panel_tiles(stats: _stats.ContactStats, fmt: _Format) -> list[tuple[str, str]]:
     streaks = stats.streaks
-    summary = _row(
-        fmt.t("streak"),
-        [
-            fmt.t("streak_days", days=fmt.num(streaks.current_days)),
-            fmt.t("streak_max", days=fmt.num(streaks.longest_days)),
-        ],
-    )
+    pairs = [
+        (fmt.t("tile.streak"), fmt.days(streaks.current_days)),
+        (fmt.t("tile.record"), fmt.days(streaks.longest_days)),
+    ]
     silence = stats.silence
     if silence is not None:
-        pause = fmt.span(fmt.local(silence.start).date(), fmt.local(silence.end).date())
-        summary.extend(_row(fmt.t("pause"), [fmt.dur(silence.seconds), pause]))
-    summary.extend(_sessions_row(stats, fmt, contact))
+        seconds = silence.seconds
+        pause = fmt.days(seconds // 86400) if seconds >= 86400 else f"<b>{fmt.dur(seconds)}</b>"
+        pairs.append((fmt.t("tile.pause"), pause))
+    pairs.append((fmt.t("tile.sessions"), f"<b>{fmt.num(stats.sessions.total)}</b>"))
+    first = _first_tile(stats)
+    if first is not None:
+        pairs.append((fmt.t("tile.first"), first))
     deletions = stats.deletions
     if deletions.total:
-        parts = [fmt.num(deletions.total)]
+        deleted = f"<b>{fmt.num(deletions.total)}</b>"
         if deletions.unexplained.total:
-            parts.append(fmt.t("unexplained", count=fmt.num(deletions.unexplained.total)))
-        summary.extend(_row(fmt.t("deleted"), parts))
-    blocks.append(_pre(_rhythm(stats, fmt), summary))
+            deleted += f" · ❓{fmt.num(deletions.unexplained.total)}"
+        pairs.append((fmt.t("tile.deleted"), deleted))
+    return pairs
 
+
+def _previous(stats: _stats.ContactStats, fmt: _Format, period: str) -> str | None:
+    """The change against the previous period, as HTML; None without one."""
     previous = stats.previous
-    if previous is not None:
-        change = _stats.change_percent(stats.messages.total, previous.messages.total)
-        changed = (
-            f"{fmt.num(previous.messages.total)}→{fmt.num(stats.messages.total)}" if change is None else f"{change:+d}%"
-        )
-        parts = [fmt.t("previous_messages", change=changed)]
-        for name, before, after in (
-            (contact, previous.replies.received.median_seconds, replies.received.median_seconds),
-            (owner, previous.replies.sent.median_seconds, replies.sent.median_seconds),
-        ):
-            # A reply time is compared only when both periods have one.
-            if before is not None and after is not None:
-                parts.append(fmt.t("previous_reply", name=name, before=fmt.dur(before), after=fmt.dur(after)))
-        heading = fmt.t("previous", period=period_label(period, fmt.lang))
-        blocks.append(f"<b>{_esc(heading)}</b> {_esc(' · '.join(parts))}")
-
-    blocks.append(f"<i>{_esc(' · '.join(_footer(stats, fmt, window)))}</i>")
-    return _finish(blocks, tail)
+    if previous is None or period == "all":
+        return None
+    change = _stats.change_percent(stats.messages.total, previous.messages.total)
+    changed = (
+        f"{fmt.num(previous.messages.total)} → {fmt.num(stats.messages.total)}" if change is None else f"{change:+d}%"
+    )
+    parts = [f"{fmt.t('previous.messages')} <b>{changed}</b>"]
+    for square, before, after in (
+        (CONTACT, previous.replies.received.median_seconds, stats.replies.received.median_seconds),
+        (OWNER, previous.replies.sent.median_seconds, stats.replies.sent.median_seconds),
+    ):
+        # A reply time is compared only when both periods have one.
+        if before is not None and after is not None:
+            parts.append(f"{fmt.t('previous.reply')} {square} {fmt.dur(before)} → {fmt.dur(after)}")
+    return f"📈 {fmt.t(f'previous.{period}')}: {' · '.join(parts)}"
 
 
-def _footer(stats: _stats.ContactStats, fmt: _Format, window: _stats.StatsWindow) -> list[str]:
-    missing = stats.missing
+def _footer(stats: _stats.ContactStats, fmt: _Format) -> list[str]:
     parts: list[str] = []
-    if missing.retained_from is not None:
-        since = fmt.t("history_since", date=fmt.day(fmt.local(missing.retained_from).date(), with_year=True))
-        parts.append(fmt.t("period_partial", text=since) if missing.range_partial else since)
-    if missing.deletions_not_in_history:
-        parts.append(fmt.t("not_in_history", count=fmt.num(missing.deletions_not_in_history)))
-    if missing.edit_only_messages:
-        parts.append(fmt.t("edit_only", count=fmt.num(missing.edit_only_messages)))
+    retained = stats.missing.retained_from
+    if retained is not None:
+        parts.append(fmt.t("history_since", date=fmt.day(fmt.local(retained).date(), with_year=True)))
     parts.append(fmt.t("text_only"))
-    parts.append(fmt.local(window.now).strftime("%H:%M"))
     return parts
 
 
@@ -592,43 +703,89 @@ def card(
     owner_name: str,
     contact_name: str,
     language_code: str | None = None,
-) -> str:
+) -> RichView:
     """The public card: both people see it, so it holds only the friendly numbers.
 
-    Never deletions, edits, who is waiting, missing history, p90, or message
-    text. Names are the owner's and the contact's first names, never "You".
-    Send it with link previews disabled: the footer links to the Telesec site.
+    Never deletions, edits, who is waiting, missing history, p90, the previous
+    period, or message text. Names are the owner's and the contact's first
+    names, never "You". The footer links to the Telesec site.
     """
     fmt = _format(window, language_code)
-    owner_title = safe_name(owner_name, TITLE_NAME_CHARS // 2)
-    contact_title = safe_name(contact_name, TITLE_NAME_CHARS // 2)
-    owner = pre_name(owner_name)
-    contact = pre_name(contact_name)
-    dates = _range_dates(stats, fmt)
-    blocks = [f"<b>{_esc(f'📊 {owner_title} × {contact_title} · {period_label(period, fmt.lang)}')}</b>"]
-    if dates is not None:
-        blocks.append(f"<i>{_esc(dates)}</i>")
-    blocks.append("")
-    if not stats.messages.total:
-        blocks.append(_esc(fmt.t("empty")))
-    else:
-        days = fmt.t("days_in_touch", days=fmt.num(stats.active_days.total))
-        blocks.append(f"<b>{_esc(f'💬 {fmt.num(stats.messages.total)}')}</b> · {_esc(days)}")
-        replies, turns, length = stats.replies, stats.turns, stats.text_length
-        rows = [
-            (fmt.t("row.messages_card"), fmt.num(stats.messages.received), fmt.num(stats.messages.sent)),
-            (fmt.t("row.reply"), fmt.dur(replies.received.median_seconds), fmt.dur(replies.sent.median_seconds)),
-            (fmt.t("row.per_turn"), _per_turn(turns.per_turn_received), _per_turn(turns.per_turn_sent)),
-            (fmt.t("row.length"), _optional(fmt, length.received), _optional(fmt, length.sent)),
-        ]
-        blocks.append(_pre(_shares(stats, contact, owner), _table((contact, owner), rows)))
-        peak = _peak(stats, fmt)
-        if peak is not None:
-            blocks.append(peak)
-        longest = stats.streaks.longest_days
-        record = fmt.t("record_day" if longest == 1 else "record_days", days=fmt.num(longest))
-        summary = [*_row(fmt.t("record"), [record]), *_sessions_row(stats, fmt, contact)]
-        blocks.append(_pre(_rhythm(stats, fmt), summary))
+    owner = safe_name(owner_name, TITLE_NAME_CHARS // 2)
+    contact = safe_name(contact_name, TITLE_NAME_CHARS // 2)
+    owner_column = safe_name(owner_name, COLUMN_NAME_CHARS)
+    contact_column = safe_name(contact_name, COLUMN_NAME_CHARS)
+    title = f"📊 {owner} × {contact}"
+    label = period_label(period, fmt.lang)
     before, _, after = fmt.t("counted_by", link="\0").partition("\0")
-    blocks.append(f'<i>{_esc(before)}<a href="{SITE_URL}">Telesec</a>{_esc(after)}</i>')
-    return _finish(blocks)
+    footer_html = f'<footer>{before}<a href="{SITE_URL}">Telesec</a>{after}</footer>'
+    footer_text = f"{before}Telesec{after} · {SITE_URL.removeprefix('https://')}"
+    html_blocks: list[tuple[int, str]] = [(_KEEP, f"<h3>{_esc(title)}</h3>")]
+    text_blocks: list[tuple[int, str]] = [(_KEEP, title)]
+
+    if not stats.messages.total:
+        html_blocks.append((_SUBTITLE, f"<p>{label} · {fmt.t('empty')}</p>"))
+        text_blocks.append((_SUBTITLE, f"{label} · {fmt.t('empty')}"))
+    else:
+        span = _span(stats, fmt)
+        total = fmt.num(stats.messages.total)
+        days = stats.active_days.total
+        in_touch = _days_in_touch(fmt, days)
+        dates = [label, *([] if span is None else [span])]
+        subtitle = [*dates, f"💬 <b>{total}</b>", f"<b>{fmt.num(days)}</b> {in_touch}"]
+        html_blocks.append((_SUBTITLE, f"<p>{' · '.join(subtitle)}</p>"))
+        text_blocks.append((_SUBTITLE, " · ".join([*dates, f"💬 {total}", f"{fmt.num(days)} {in_touch}"])))
+
+        balance = _balance(stats)
+        if balance is not None:
+            html_blocks.append((_BAR, f"<p>{balance}</p>"))
+        replies, turns, length, share = stats.replies, stats.turns, stats.text_length, stats.share
+        rows = [
+            (
+                fmt.t("row.messages"),
+                _messages_cell(fmt, stats.messages.received, share.received),
+                _messages_cell(fmt, stats.messages.sent, share.sent),
+            ),
+            (
+                fmt.t("row.reply"),
+                _bold_dur(fmt, replies.received.median_seconds),
+                _bold_dur(fmt, replies.sent.median_seconds),
+            ),
+            (fmt.t("row.per_turn"), fmt.decimal(turns.per_turn_received), fmt.decimal(turns.per_turn_sent)),
+            (fmt.t("row.length"), _length(fmt, length.received), _length(fmt, length.sent)),
+        ]
+        html_blocks.append((_TABLE, _sides_table((_esc(contact_column), _esc(owner_column)), rows)))
+        text_blocks.append((_TABLE, _side_lines(stats, fmt, contact_column, owner_column)))
+
+        html_blocks.append((_GRID, _when(stats, fmt)))
+        peak = _peak_text(stats, fmt)
+        if peak is not None:
+            html_blocks.append((_EXTRA, f"<p>{fmt.t('peak_card')} <mark>{peak}</mark></p>"))
+            text_blocks.append((_EXTRA, f"{fmt.t('peak_card')} {peak}"))
+
+        longest = stats.streaks.longest_days
+        sessions = f"<b>{fmt.num(stats.sessions.total)}</b>"
+        first = _first_tile(stats)
+        if first is not None:
+            sessions += f" · {fmt.t('first')} {first}"
+        tiles = [
+            [_td(fmt.t("tile.record")), _td(f"<b>{fmt.num(longest)}</b> {_in_a_row(fmt, longest)}", right=True)],
+            [_td(fmt.t("tile.sessions")), _td(sessions, right=True)],
+        ]
+        html_blocks.append((_TILES, _table(tiles)))
+
+    html_blocks.append((_KEEP, footer_html))
+    text_blocks.append((_KEEP, footer_text))
+    return _view(html_blocks, text_blocks)
+
+
+def _days_in_touch(fmt: _Format, days: int) -> str:
+    if fmt.lang == "ru":
+        return f"{_ru_plural(days, 'день', 'дня', 'дней')} общения"
+    return "day in touch" if days == 1 else "days in touch"
+
+
+def _in_a_row(fmt: _Format, days: int) -> str:
+    if fmt.lang == "ru":
+        return f"{_ru_plural(days, 'день', 'дня', 'дней')} подряд"
+    return "day in a row" if days == 1 else "days in a row"

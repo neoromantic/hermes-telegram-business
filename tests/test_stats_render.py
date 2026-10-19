@@ -1,17 +1,15 @@
 """stats_render: the owner panel report and the public card, over synthetic stats.
 
-Goldens pin the exact Telegram HTML. Property tests check the limits for every
-view: <pre> lines of at most 31 columns, balanced tags with every untrusted
-value escaped, right-to-left names that cannot flip a line, and Telegram's 4096
-UTF-16 units.
+Goldens pin the exact rich message HTML and plain fallbacks. ``_check`` checks
+every view against the rich message rules: allowed tags and attributes only,
+balanced, every untrusted value escaped, right-to-left names that cannot flip a
+line, and the size budgets.
 """
 
 from __future__ import annotations
 
 import argparse
-import html
 import importlib
-import itertools
 import re
 import sys
 import unicodedata
@@ -28,7 +26,6 @@ plugin = th.plugin
 
 NOW = datetime(2026, 10, 19, 11, 32, tzinfo=UTC)  # 13:32 in Berlin
 TZ = "Europe/Berlin"
-_PRE_RE = re.compile(r"<pre>(.*?)</pre>", flags=re.DOTALL)
 
 
 @pytest.fixture(autouse=True)
@@ -42,24 +39,8 @@ def cs(plugin):
 
 
 @pytest.fixture
-def render(plugin, monkeypatch: pytest.MonkeyPatch):
-    module = importlib.import_module(f"{plugin.__name__}.stats_render")
-
-    # The renderer clips a too-wide <pre> line and drops trailing blocks past 4096
-    # units only as a last resort. Here both must never fire, so the limit checks
-    # test the layout itself, not the guards.
-    def cut(line: str) -> str:
-        assert module.display_width(line) <= module.PRE_WIDTH, line
-        return line
-
-    def finish(blocks, tail=()):
-        text = "\n".join([*blocks, *tail])
-        assert module.utf16_units(text) <= module.MAX_TEXT_UNITS
-        return text
-
-    monkeypatch.setattr(module, "_cut", cut)
-    monkeypatch.setattr(module, "_finish", finish)
-    return module
+def render(plugin):
+    return importlib.import_module(f"{plugin.__name__}.stats_render")
 
 
 def _utc(*parts: int) -> datetime:
@@ -251,432 +232,16 @@ def _empty(cs, window):
     return _base(cs, activity=activity)
 
 
-# --- Goldens ---------------------------------------------------------------------
-# Russian names for a Russian owner, English ones otherwise; Berlin time, clock at 13:32.
-
-PANEL_MONTH_RU = """
-<b>📊 Денис Петров · 30 дн.</b>
-<i>20.09–19.10 · Europe/Berlin</i>
-
-<b>💬 1 284</b> · активных дней 25/30
-<pre>Денис █████████░░░░░░░ 58%
-Вы    ███████░░░░░░░░░ 42%
-
-         Денис     Вы
-сообщ.     745    539
-ответ      12м    38м
-p90      1ч40м   3ч5м
-подряд     2.1    1.4
-длина       42     18
-правки       7      5</pre>
-⏳ без ответа: Денис, с 11:22 (2ч10м)
-<b>🕘 пик</b> вт 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-пн вт ср чт пт сб вс
-▂·▄▆▄▇▇▅▃▆▇▅▄▆█▃····▄▅▆▇▅▃▆▇█▃
-по дням 20.09 → 19.10
-
-серия    10 дн. · макс 14
-пауза    4д2ч · 05.10–10.10
-беседы   41 · старт Денис 61%
-удалено  3 · неясн. 1</pre>
-<b>📈 к пред. 30 дн.:</b> сообщ. +18% · ответ Денис 21м→12м · ответ Вы 40м→38м
-<i>история с 21.10.2025 · только текст · 13:32</i>
-""".strip("\n")
-
-PANEL_MONTH_EN = """
-<b>📊 Денис Петров · 30 d</b>
-<i>20 Sep–19 Oct · Europe/Berlin</i>
-
-<b>💬 1,284</b> · active days 25/30
-<pre>Denis █████████░░░░░░░ 58%
-You   ███████░░░░░░░░░ 42%
-
-           Denis    You
-msgs         745    539
-reply        12m    38m
-p90        1h40m   3h5m
-per turn     2.1    1.4
-length        42     18
-edits          7      5</pre>
-⏳ no reply: Denis, since 11:22 (2h10m)
-<b>🕘 peak</b> Tue 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-Mo Tu We Th Fr Sa Su
-▂·▄▆▄▇▇▅▃▆▇▅▄▆█▃····▄▅▆▇▅▃▆▇█▃
-by day 20 Sep → 19 Oct
-
-streak   10 d · max 14
-pause    4d2h · 5 Oct–10 Oct
-sessions 41 · Denis starts 61%
-deleted  3 · unexplained 1</pre>
-<b>📈 vs prev. 30 d:</b> msgs +18% · Denis reply 21m→12m · You reply 40m→38m
-<i>history since 21 Oct 2025 · text only · 13:32</i>
-""".strip("\n")
-
-PANEL_WEEK_RU = """
-<b>📊 Денис Петров · 7 дн.</b>
-<i>13.10–19.10 · Europe/Berlin</i>
-
-<b>💬 370</b> · активных дней 7/7
-<pre>Денис █████████░░░░░░░ 57%
-Вы    ███████░░░░░░░░░ 43%
-
-         Денис     Вы
-сообщ.     212    158
-ответ       9м    25м
-p90      1ч10м  2ч30м
-подряд     2.3    1.6
-длина       38     21</pre>
-⏳ без ответа: Вы, с 18.10 23:40 (13ч52м)
-<b>🕘 пик</b> вт 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-пн вт ср чт пт сб вс
-█▆▅▇█▇▄
-по дням 13.10 → 19.10
-
-серия    7 дн. · макс 7
-пауза    9ч40м · 14.10–15.10
-беседы   19 · старт Денис 42%</pre>
-<b>📈 к пред. 7 дн.:</b> сообщ. 0→370
-<i>история с 21.10.2025 · только текст · 13:32</i>
-""".strip("\n")
-
-PANEL_WEEK_EN = """
-<b>📊 Денис Петров · 7 d</b>
-<i>13 Oct–19 Oct · Europe/Berlin</i>
-
-<b>💬 370</b> · active days 7/7
-<pre>Denis █████████░░░░░░░ 57%
-You   ███████░░░░░░░░░ 43%
-
-           Denis    You
-msgs         212    158
-reply         9m    25m
-p90        1h10m  2h30m
-per turn     2.3    1.6
-length        38     21</pre>
-⏳ no reply: You, since 18 Oct 23:40 (13h52m)
-<b>🕘 peak</b> Tue 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-Mo Tu We Th Fr Sa Su
-█▆▅▇█▇▄
-by day 13 Oct → 19 Oct
-
-streak   7 d · max 7
-pause    9h40m · 14 Oct–15 Oct
-sessions 19 · Denis starts 42%</pre>
-<b>📈 vs prev. 7 d:</b> msgs 0→370
-<i>history since 21 Oct 2025 · text only · 13:32</i>
-""".strip("\n")
-
-PANEL_ALL_RU = """
-<b>📊 Денис Петров · всё время</b>
-<i>21.10.2025–19.10.2026 · Europe/Berlin</i>
-
-<b>💬 12 325</b> · активных дней 312/364
-<pre>Денис █████████░░░░░░░ 56%
-Вы    ███████░░░░░░░░░ 44%
-
-         Денис     Вы
-сообщ.   6 948  5 377
-ответ       9м    24м
-p90         2ч     4ч
-подряд     2.1    1.4
-длина       42     18
-правки     120     85</pre>
-<b>🕘 пик</b> вт 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-пн вт ср чт пт сб вс
-▂▆▇▅▆▇▇▆▅▅██▂
-по месяцам
-21.10.2025 → 19.10.2026
-
-серия    3 дн. · макс 23
-пауза    12д
-         28.12.2025–09.01.2026
-беседы   412 · старт Денис 58%
-удалено  37 · неясн. 4</pre>
-<i>история с 21.10.2025 · только текст · 13:32</i>
-""".strip("\n")
-
-PANEL_ALL_EN = """
-<b>📊 Денис Петров · all time</b>
-<i>21 Oct 2025–19 Oct 2026 · Europe/Berlin</i>
-
-<b>💬 12,325</b> · active days 312/364
-<pre>Denis █████████░░░░░░░ 56%
-You   ███████░░░░░░░░░ 44%
-
-           Denis    You
-msgs       6,948  5,377
-reply         9m    24m
-p90           2h     4h
-per turn     2.1    1.4
-length        42     18
-edits        120     85</pre>
-<b>🕘 peak</b> Tue 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-Mo Tu We Th Fr Sa Su
-▂▆▇▅▆▇▇▆▅▅██▂
-by month
-21 Oct 2025 → 19 Oct 2026
-
-streak   3 d · max 23
-pause    12d
-         28 Dec 2025–9 Jan 2026
-sessions 412 · Denis starts 58%
-deleted  37 · unexplained 4</pre>
-<i>history since 21 Oct 2025 · text only · 13:32</i>
-""".strip("\n")
-
-PANEL_PARTIAL_RU = """
-<b>📊 @denis · 90 дн.</b>
-<i>22.07–19.10 · Europe/Berlin</i>
-
-<b>💬 5</b> · активных дней 3/90
-<pre>Денис ████████████████ 100%
-Вы    ░░░░░░░░░░░░░░░░ 0%
-
-         Денис     Вы
-сообщ.       5      0
-ответ        –      –
-p90          –      –
-подряд     1.7      –
-длина       12      –</pre>
-⏳ без ответа: Денис, с 08.10 09:05 (11д)
-<b>🕘 пик</b> чт 9–10
-<pre>·········█▄·······█·····
-0     6     12    18  23
-·· ▆▆ ·· ██ ·· ·· ··
-пн вт ср чт пт сб вс
-······█··▄··█·
-по неделям 22.07 → 19.10
-
-серия    0 дн. · макс 1
-пауза    23д · 15.09–08.10
-беседы   3 · старт Денис 100%</pre>
-<i>история с 01.09.2026 (период неполный) · удалений вне истории 2 · правок без оригинала 1 · только текст · 13:32</i>
-""".strip("\n")
-
-PANEL_PARTIAL_EN = """
-<b>📊 @denis · 90 d</b>
-<i>22 Jul–19 Oct · Europe/Berlin</i>
-
-<b>💬 5</b> · active days 3/90
-<pre>Denis ████████████████ 100%
-You   ░░░░░░░░░░░░░░░░ 0%
-
-           Denis    You
-msgs           5      0
-reply          –      –
-p90            –      –
-per turn     1.7      –
-length        12      –</pre>
-⏳ no reply: Denis, since 8 Oct 09:05 (11d)
-<b>🕘 peak</b> Thu 9–10
-<pre>·········█▄·······█·····
-0     6     12    18  23
-·· ▆▆ ·· ██ ·· ·· ··
-Mo Tu We Th Fr Sa Su
-······█··▄··█·
-by week 22 Jul → 19 Oct
-
-streak   0 d · max 1
-pause    23d · 15 Sep–8 Oct
-sessions 3 · Denis starts 100%</pre>
-<i>history since 1 Sep 2026 (period partial) · deletions not in history 2 · edits without original 1 · text only · 13:32</i>
-""".strip("\n")
-
-PANEL_EMPTY_WEEK_RU = """
-<b>📊 Денис Петров · 7 дн.</b>
-<i>13.10–19.10 · Europe/Berlin</i>
-
-нет сообщений за период
-""".strip("\n")
-
-PANEL_EMPTY_WEEK_EN = """
-<b>📊 Денис Петров · 7 d</b>
-<i>13 Oct–19 Oct · Europe/Berlin</i>
-
-no messages in this period
-""".strip("\n")
-
-PANEL_EMPTY_ALL_RU = """
-<b>📊 Денис Петров · всё время</b>
-<i>Europe/Berlin</i>
-
-нет сообщений за период
-""".strip("\n")
-
-PANEL_EMPTY_ALL_EN = """
-<b>📊 Денис Петров · all time</b>
-<i>Europe/Berlin</i>
-
-no messages in this period
-""".strip("\n")
-
-CARD_ALL_RU = """
-<b>📊 Сергей × Денис · всё время</b>
-<i>21.10.2025–19.10.2026</i>
-
-<b>💬 12 325</b> · дней общения 312
-<pre>Денис  █████████░░░░░░░ 56%
-Сергей ███████░░░░░░░░░ 44%
-
-         Денис Сергей
-сообщ.   6 948  5 377
-ответ       9м    24м
-подряд     2.1    1.4
-длина       42     18</pre>
-<b>🕘 пик</b> вт 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-пн вт ср чт пт сб вс
-▂▆▇▅▆▇▇▆▅▅██▂
-по месяцам
-21.10.2025 → 19.10.2026
-
-рекорд   23 дн. подряд
-беседы   412 · старт Денис 58%</pre>
-<i>посчитал <a href="https://telesec.sergeybaus.com">Telesec</a></i>
-""".strip("\n")
-
-CARD_ALL_EN = """
-<b>📊 Sam × Denis · all time</b>
-<i>21 Oct 2025–19 Oct 2026</i>
-
-<b>💬 12,325</b> · days in touch 312
-<pre>Denis █████████░░░░░░░ 56%
-Sam   ███████░░░░░░░░░ 44%
-
-           Denis    Sam
-messages   6,948  5,377
-reply         9m    24m
-per turn     2.1    1.4
-length        42     18</pre>
-<b>🕘 peak</b> Tue 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-Mo Tu We Th Fr Sa Su
-▂▆▇▅▆▇▇▆▅▅██▂
-by month
-21 Oct 2025 → 19 Oct 2026
-
-record   23 days in a row
-sessions 412 · Denis starts 58%</pre>
-<i>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></i>
-""".strip("\n")
-
-CARD_MONTH_RU = """
-<b>📊 Сергей × Денис · 30 дн.</b>
-<i>20.09–19.10</i>
-
-<b>💬 1 284</b> · дней общения 25
-<pre>Денис  █████████░░░░░░░ 58%
-Сергей ███████░░░░░░░░░ 42%
-
-         Денис Сергей
-сообщ.     745    539
-ответ      12м    38м
-подряд     2.1    1.4
-длина       42     18</pre>
-<b>🕘 пик</b> вт 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-пн вт ср чт пт сб вс
-▂·▄▆▄▇▇▅▃▆▇▅▄▆█▃····▄▅▆▇▅▃▆▇█▃
-по дням 20.09 → 19.10
-
-рекорд   14 дн. подряд
-беседы   41 · старт Денис 61%</pre>
-<i>посчитал <a href="https://telesec.sergeybaus.com">Telesec</a></i>
-""".strip("\n")
-
-CARD_MONTH_EN = """
-<b>📊 Sam × Denis · 30 d</b>
-<i>20 Sep–19 Oct</i>
-
-<b>💬 1,284</b> · days in touch 25
-<pre>Denis █████████░░░░░░░ 58%
-Sam   ███████░░░░░░░░░ 42%
-
-           Denis    Sam
-messages     745    539
-reply        12m    38m
-per turn     2.1    1.4
-length        42     18</pre>
-<b>🕘 peak</b> Tue 21–22
-<pre>·····▁▂▂▄▅▄▃▃▄▅▅▄▅▆▇▇█▆▂
-0     6     12    18  23
-▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
-Mo Tu We Th Fr Sa Su
-▂·▄▆▄▇▇▅▃▆▇▅▄▆█▃····▄▅▆▇▅▃▆▇█▃
-by day 20 Sep → 19 Oct
-
-record   14 days in a row
-sessions 41 · Denis starts 61%</pre>
-<i>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></i>
-""".strip("\n")
-
-CARD_EMPTY_WEEK_RU = """
-<b>📊 Сергей × Денис · 7 дн.</b>
-<i>13.10–19.10</i>
-
-нет сообщений за период
-<i>посчитал <a href="https://telesec.sergeybaus.com">Telesec</a></i>
-""".strip("\n")
-
-CARD_EMPTY_WEEK_EN = """
-<b>📊 Sam × Denis · 7 d</b>
-<i>13 Oct–19 Oct</i>
-
-no messages in this period
-<i>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></i>
-""".strip("\n")
+# --- Helpers ---------------------------------------------------------------------
+# Russian names for a Russian owner, English ones otherwise; Berlin time.
 
 NAMES = {"ru": ("Сергей", "Денис"), "en": ("Sam", "Denis")}
 BUILDERS = {"month": _month, "week": _week, "all": _all, "partial": _partial, "empty": _empty}
-PANELS = [
-    ("month", "30d", "ru", PANEL_MONTH_RU),
-    ("month", "30d", "en", PANEL_MONTH_EN),
-    ("week", "7d", "ru", PANEL_WEEK_RU),
-    ("week", "7d", "en", PANEL_WEEK_EN),
-    ("all", "all", "ru", PANEL_ALL_RU),
-    ("all", "all", "en", PANEL_ALL_EN),
-    ("partial", "90d", "ru", PANEL_PARTIAL_RU),
-    ("partial", "90d", "en", PANEL_PARTIAL_EN),
-    ("empty", "7d", "ru", PANEL_EMPTY_WEEK_RU),
-    ("empty", "7d", "en", PANEL_EMPTY_WEEK_EN),
-    ("empty", "all", "ru", PANEL_EMPTY_ALL_RU),
-    ("empty", "all", "en", PANEL_EMPTY_ALL_EN),
-]
-CARDS = [
-    ("all", "all", "ru", CARD_ALL_RU),
-    ("all", "all", "en", CARD_ALL_EN),
-    ("month", "30d", "ru", CARD_MONTH_RU),
-    ("month", "30d", "en", CARD_MONTH_EN),
-    ("empty", "7d", "ru", CARD_EMPTY_WEEK_RU),
-    ("empty", "7d", "en", CARD_EMPTY_WEEK_EN),
-]
-PERIOD_FOR = {"month": "30d", "week": "7d", "all": "all", "partial": "90d", "empty": "7d"}
-ALLOWED_TAGS = {"b", "i", "pre", "code", "a"}
-_MARKUP_RE = re.compile(r"</?(?:b|i|pre|code)>|<a href=\"[^\"<>&]*\">|</a>|&(?:lt|gt|amp);")
+SITE = "https://telesec.sergeybaus.com"
+ALLOWED_TAGS = {"h3", "h4", "p", "br", "b", "i", "mark", "blockquote", "footer", "a", "table", "tr", "th", "td"}
+TABLE_ATTRS = {("striped", None), ("compact", None), ("bordered", None)}
+# Named entities rich messages accept, and the numeric one html.escape writes for "'".
+_BAD_ENTITY_RE = re.compile(r"&(?!(?:lt|gt|amp|quot|apos|nbsp|hellip|mdash|ndash|#x27);)")
 
 
 def _stats_for(cs, case: str, period: str):
@@ -684,19 +249,27 @@ def _stats_for(cs, case: str, period: str):
     return BUILDERS[case](cs, window), window
 
 
-def _panel(cs, render, case: str, period: str, lang: str | None, **changes: Any) -> str:
+def _panel(cs, render, case: str, period: str, lang: str | None, *, note: str | None = None, **changes: Any):
     stats, window = _stats_for(cs, case, period)
     contact = changes.pop("contact_name", NAMES[render._owner_panel.language(lang)][1])
-    return render.panel(replace(stats, **changes), window, period=period, language_code=lang, contact_name=contact)
+    return render.panel(
+        replace(stats, **changes), window, period=period, language_code=lang, contact_name=contact, note=note
+    )
 
 
 def _card(
-    cs, render, case: str, period: str, lang: str | None, *, owner: str | None = None, contact: str | None = None
+    cs, render, case: str, period: str, lang: str | None, *, owner: str | None = None, contact: str | None = None,
+    **changes: Any,
 ):
     stats, window = _stats_for(cs, case, period)
     names = NAMES[render._owner_panel.language(lang)]
     return render.card(
-        stats, window, period=period, owner_name=owner or names[0], contact_name=contact or names[1], language_code=lang
+        replace(stats, **changes),
+        window,
+        period=period,
+        owner_name=owner or names[0],
+        contact_name=contact or names[1],
+        language_code=lang,
     )
 
 
@@ -709,11 +282,16 @@ class _Tags(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag not in ALLOWED_TAGS:
             self.errors.append(f"tag {tag}")
-        if (tag == "a") != bool(attrs) or (attrs and attrs != [("href", "https://telesec.sergeybaus.com")]):
+        allowed = {
+            "table": set(attrs) <= TABLE_ATTRS,
+            "td": attrs in ([], [("align", "right")]),
+            "th": attrs in ([], [("align", "right")]),
+            "a": attrs == [("href", SITE)],
+        }.get(tag, attrs == [])
+        if not allowed:
             self.errors.append(f"attributes {tag} {attrs}")
-        if tag == "pre" and "pre" in self.stack:
-            self.errors.append("nested pre")
-        self.stack.append(tag)
+        if tag != "br":
+            self.stack.append(tag)
 
     def handle_endtag(self, tag: str) -> None:
         if not self.stack or self.stack.pop() != tag:
@@ -723,108 +301,217 @@ class _Tags(HTMLParser):
         self.errors.append(f"self-closing {tag}")
 
 
-def _columns(line: str) -> int:
-    """Monospace columns, counted apart from the renderer: wide characters take 2;
-    marks, format characters (LRM, ZWJ), and the emoji a ZWJ joins take 0."""
-    width, joined = 0, False
-    for char in line:
-        if not joined and unicodedata.category(char) not in ("Mn", "Me", "Cf"):
-            width += 2 if unicodedata.east_asian_width(char) in "WF" else 1
-        joined = char == "\u200d"
-    return width
-
-
 def _first_strong(line: str) -> str | None:
     return next((cls for cls in map(unicodedata.bidirectional, line) if cls in ("L", "R", "AL")), None)
 
 
 def _check_direction(line: str) -> None:
-    """Telegram picks a line's direction from its first strong character: it must stay left to right,
-    and every right-to-left run must sit between two LRMs."""
+    """A line must start left to right, and every right-to-left run must sit between two LRMs."""
     assert _first_strong(line) in (None, "L"), line
     outside = re.sub("\u200e[^\u200e]*\u200e", "", line)
     assert not any(unicodedata.bidirectional(char) in ("R", "AL", "AN") for char in outside), line
 
 
-def _check(text: str) -> str:
-    """Assert Telegram-valid HTML within the limits; returns the visible text."""
+def _check(view, render=None) -> str:
+    """Assert a valid rich message within the budgets and a fallback within 4096; returns the visible HTML text."""
     tags = _Tags()
-    tags.feed(text)
+    tags.feed(view.html)
     tags.close()
     assert tags.errors == [] and tags.stack == [], tags.errors
-    # Outside markup and the three entities html.escape writes, no raw "<", ">" or "&" is left.
-    assert not re.search(r"[<>&]", _MARKUP_RE.sub("", text))
-    assert len(text.encode("utf-16-le")) // 2 <= 4096
-    # Telegram gives every <pre> a copy bar: a view has two at most, none empty,
-    # and one empty line at most between the parts of a block, never at its ends.
-    blocks = _PRE_RE.findall(text)
-    assert len(blocks) <= 2, blocks
-    for block in blocks:
-        assert block.strip("\n") == block != "" and "\n\n\n" not in block, block
-    for block in blocks:
-        for line in html.unescape(block).split("\n"):
-            assert _columns(line) <= 31, line
-            assert line == line.rstrip(), line
-    visible = html.unescape(re.sub(r"<[^>]+>", "", text))
-    for line in visible.split("\n"):
+    # Outside the tags, no raw "<" or ">", and "&" only in an allowed entity.
+    assert not re.search(r"[<>]", re.sub(r"<[^>]+>", "", view.html))
+    assert not _BAD_ENTITY_RE.search(view.html)
+    limit = 8000 if render is None else render.MAX_HTML_UNITS
+    assert len(view.html.encode("utf-16-le")) // 2 <= limit
+    assert len(view.text.encode("utf-16-le")) // 2 <= 4096
+    import html as _html
+
+    visible = _html.unescape(re.sub(r"<[^>]+>", "", view.html))
+    for line in [*visible.split("\n"), *view.text.split("\n")]:
         _check_direction(line)
     return visible
 
 
-@pytest.mark.parametrize(("case", "period", "lang", "expected"), PANELS)
-def test_panel_goldens(cs, render, case: str, period: str, lang: str, expected: str):
-    text = _panel(cs, render, case, period, lang)
-    assert text == expected
-    _check(text)
-    assert text.count("<pre>") == (0 if case == "empty" else 2)
+# --- Goldens ---------------------------------------------------------------------
+
+PANEL_MONTH_RU = """
+<h3>📊 Денис Петров · 30 дней</h3>
+<p>20 сен – 19 окт · 💬 <b>1 284</b> · <b>25</b> из 30 дней</p>
+<p>58% 🟦🟦🟦🟦🟦🟦🟩🟩🟩🟩 42%</p>
+<table striped compact>
+<tr><th></th><th align="right">🟦 Денис</th><th align="right">🟩 Вы</th></tr>
+<tr><td>сообщений</td><td align="right"><b>745</b> · 58%</td><td align="right"><b>539</b> · 42%</td></tr>
+<tr><td>⚡ ответ</td><td align="right"><b>12 мин</b></td><td align="right"><b>38 мин</b></td></tr>
+<tr><td>p90</td><td align="right">1 ч 40 мин</td><td align="right">3 ч 5 мин</td></tr>
+<tr><td>подряд</td><td align="right">2,1</td><td align="right">1,4</td></tr>
+<tr><td>длина</td><td align="right">42</td><td align="right">18</td></tr>
+<tr><td>правки</td><td align="right">7</td><td align="right">5</td></tr>
+</table>
+<blockquote>⏳ Денис ждёт ответа <b>2 ч 10 мин</b></blockquote>
+<h4>🗓 Когда</h4>
+<table compact>
+<tr><th>пн</th><th>вт</th><th>ср</th><th>чт</th><th>пт</th><th>сб</th><th>вс</th></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td><td>🟨</td></tr>
+<tr><td>·</td><td>🟧</td><td>🟥</td><td>🟧</td><td>🟥</td><td>🟥</td><td>🟧</td></tr>
+<tr><td>🟧</td><td>🟧</td><td>🟥</td><td>🟧</td><td>🟧</td><td>🟥</td><td>🟥</td></tr>
+<tr><td>🟨</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟧</td><td>🟧</td></tr>
+<tr><td>🟥</td><td>🟥</td><td>🟧</td><td>🟧</td><td>🟥</td><td>🟥</td><td>🟥</td></tr>
+<tr><td>🟨</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+</table>
+<table compact>
+<tr><th>0</th><th>3</th><th>6</th><th>9</th><th>12</th><th>15</th><th>18</th><th>21</th></tr>
+<tr><td>·</td><td>🟨</td><td>🟧</td><td>🟧</td><td>🟧</td><td>🟥</td><td>🟥</td><td>🟥</td></tr>
+</table>
+<p>🎯 Пик — <mark>вт, 21–22</mark></p>
+<table compact>
+<tr><td>🔥 серия</td><td align="right"><b>10</b> дней</td><td>🏆 рекорд</td><td align="right"><b>14</b> дней</td></tr>
+<tr><td>💤 пауза</td><td align="right"><b>4</b> дня</td><td>🗣 бесед</td><td align="right"><b>41</b></td></tr>
+<tr><td>👋 первым</td><td align="right">🟦 <b>61%</b></td><td>🗑 удалено</td><td align="right"><b>3</b> · ❓1</td></tr>
+</table>
+<p>📈 К прошлым 30 дням: сообщений <b>+18%</b> · ответ 🟦 21 мин → 12 мин · ответ 🟩 40 мин → 38 мин</p>
+<footer>история с 21 окт 2025 · только текст</footer>
+""".strip("\n")
+PANEL_MONTH_RU_TEXT = """
+📊 Денис Петров · 30 дней
+20 сен – 19 окт · 💬 1 284 · 25 из 30 дней
+🟦 Денис: 745 (58%) · ⚡ 12 мин
+🟩 Вы: 539 (42%) · ⚡ 38 мин
+⏳ Денис ждёт ответа 2 ч 10 мин
+🎯 Пик — вт, 21–22
+история с 21 окт 2025 · только текст
+""".strip("\n")
+CARD_ALL_EN = """
+<h3>📊 Sam × Denis</h3>
+<p>all time · 21 Oct 2025 – 19 Oct 2026 · 💬 <b>12,325</b> · <b>312</b> days in touch</p>
+<p>56% 🟦🟦🟦🟦🟦🟦🟩🟩🟩🟩 44%</p>
+<table striped compact>
+<tr><th></th><th align="right">🟦 Denis</th><th align="right">🟩 Sam</th></tr>
+<tr><td>messages</td><td align="right"><b>6,948</b> · 56%</td><td align="right"><b>5,377</b> · 44%</td></tr>
+<tr><td>⚡ reply</td><td align="right"><b>9 min</b></td><td align="right"><b>24 min</b></td></tr>
+<tr><td>per turn</td><td align="right">2.1</td><td align="right">1.4</td></tr>
+<tr><td>length</td><td align="right">42</td><td align="right">18</td></tr>
+</table>
+<h4>🗓 When</h4>
+<table compact>
+<tr><th></th><th>J</th><th>F</th><th>M</th><th>A</th><th>M</th><th>J</th><th>J</th><th>A</th><th>S</th><th>O</th><th>N</th><th>D</th></tr>
+<tr><td>2025</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td>🟨</td><td>🟥</td><td>🟥</td></tr>
+<tr><td>2026</td><td>🟧</td><td>🟥</td><td>🟥</td><td>🟥</td><td>🟧</td><td>🟧</td><td>🟧</td><td>🟥</td><td>🟥</td><td>🟨</td><td></td><td></td></tr>
+</table>
+<table compact>
+<tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr>
+<tr><td>🟥</td><td>🟥</td><td>🟧</td><td>🟥</td><td>🟧</td><td>🟧</td><td>🟨</td></tr>
+</table>
+<table compact>
+<tr><th>0</th><th>3</th><th>6</th><th>9</th><th>12</th><th>15</th><th>18</th><th>21</th></tr>
+<tr><td>·</td><td>🟨</td><td>🟧</td><td>🟧</td><td>🟧</td><td>🟥</td><td>🟥</td><td>🟥</td></tr>
+</table>
+<p>🎯 Most often — <mark>Tue, 21–22</mark></p>
+<table compact>
+<tr><td>🏆 record</td><td align="right"><b>23</b> days in a row</td></tr>
+<tr><td>🗣 sessions</td><td align="right"><b>412</b> · first 🟦 <b>58%</b></td></tr>
+</table>
+<footer>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></footer>
+""".strip("\n")
+CARD_ALL_EN_TEXT = """
+📊 Sam × Denis
+all time · 21 Oct 2025 – 19 Oct 2026 · 💬 12,325 · 312 days in touch
+🟦 Denis: 6,948 (56%) · ⚡ 9 min
+🟩 Sam: 5,377 (44%) · ⚡ 24 min
+🎯 Most often — Tue, 21–22
+counted by Telesec · telesec.sergeybaus.com
+""".strip("\n")
+PANEL_EMPTY_EN = """
+<h3>📊 Денис Петров · 7 days</h3>
+<p>no messages in this period</p>
+<footer>history since 21 Oct 2025 · text only</footer>
+""".strip("\n")
+PANEL_EMPTY_EN_TEXT = """
+📊 Денис Петров · 7 days
+no messages in this period
+history since 21 Oct 2025 · text only
+""".strip("\n")
+CARD_EMPTY_RU = """
+<h3>📊 Сергей × Денис</h3>
+<p>7 дней · нет сообщений за период</p>
+<footer>посчитал <a href="https://telesec.sergeybaus.com">Telesec</a></footer>
+""".strip("\n")
 
 
-@pytest.mark.parametrize(("case", "period", "lang", "expected"), CARDS)
-def test_card_goldens(cs, render, case: str, period: str, lang: str, expected: str):
-    text = _card(cs, render, case, period, lang)
-    assert text == expected
-    _check(text)
-    assert text.count("<pre>") == (0 if case == "empty" else 2)
+def test_panel_golden(cs, render):
+    view = _panel(cs, render, "month", "30d", "ru")
+    assert view.html == PANEL_MONTH_RU
+    assert view.text == PANEL_MONTH_RU_TEXT
+    _check(view)
+
+
+def test_card_golden(cs, render):
+    view = _card(cs, render, "all", "all", "en")
+    assert view.html == CARD_ALL_EN
+    assert view.text == CARD_ALL_EN_TEXT
+    _check(view)
+
+
+def test_empty_period(cs, render):
+    view = _panel(cs, render, "empty", "7d", "en")
+    assert (view.html, view.text) == (PANEL_EMPTY_EN, PANEL_EMPTY_EN_TEXT)
+    _check(view)
+    card = _card(cs, render, "empty", "7d", "ru")
+    assert card.html == CARD_EMPTY_RU
+    _check(card)
 
 
 def test_language_follows_the_owner_client(cs, render):
     for code in ("ru", "ru-RU", "RU"):
-        assert _panel(cs, render, "month", "30d", code) == PANEL_MONTH_RU
+        assert _panel(cs, render, "month", "30d", code).html == PANEL_MONTH_RU
     for code in (None, "", "en", "de", "uk"):
-        assert _panel(cs, render, "month", "30d", code) == PANEL_MONTH_EN
+        assert _panel(cs, render, "month", "30d", code).html.startswith("<h3>📊 Денис Петров · 30 days</h3>\n")
+
+
+@pytest.mark.parametrize("lang", ["en", "ru"])
+def test_paused_note_is_the_last_paragraph(cs, render, lang: str):
+    note = "History is paused for this chat." if lang == "en" else "История этого чата сейчас не сохраняется."
+    for case, period in (("month", "30d"), ("empty", "7d")):
+        plain = _panel(cs, render, case, period, lang)
+        noted = _panel(cs, render, case, period, lang, note=note)
+        head, footer = plain.html.rsplit("\n", 1)
+        assert noted.html == f"{head}\n<p>{note}</p>\n{footer}"
+        head, footer = plain.text.rsplit("\n", 1)
+        assert noted.text == f"{head}\n{note}\n{footer}"
+        _check(noted)
+
+
+def test_waiting_names_the_side(cs, render):
+    contact = _panel(cs, render, "month", "30d", "en")
+    assert "<blockquote>⏳ Denis is waiting for your reply <b>2 h 10 min</b></blockquote>" in contact.html
+    assert "\n⏳ Denis is waiting for your reply 2 h 10 min\n" in contact.text
+    owner = _panel(cs, render, "week", "7d", "ru")
+    assert "<blockquote>⏳ Вы ждёте ответа <b>13 ч 52 мин</b></blockquote>" in owner.html
+    assert "\n⏳ Вы ждёте ответа 13 ч 52 мин\n" in owner.text
+    # No clock time: Telegram may show the message in another time zone.
+    assert not re.search(r"\d\d:\d\d", contact.html + owner.html + contact.text + owner.text)
+    assert "blockquote" not in _panel(cs, render, "all", "all", "en").html
 
 
 def test_panel_omits_rows_without_data(cs, render):
-    month = _panel(cs, render, "month", "30d", "en")
-    assert "edits" in month and "deleted" in month and "no reply" in month and "vs prev." in month
-    # The week has no deletions or edits, so those rows are gone, not zero.
-    week = _panel(cs, render, "week", "7d", "en")
-    assert "edits" not in week and "deleted" not in week
+    week = _panel(cs, render, "week", "7d", "en").html
+    assert "edits" not in week and "deleted" not in week  # none in the week, so no rows
     bare = _panel(
-        cs,
-        render,
-        "month",
-        "30d",
-        "en",
-        waiting=None,
-        previous=None,
-        silence=None,
-        deletions=cs.Deletions(total=2, likely_correction=2),
-        edited=cs.SideCounts(unknown=3),
-        share=cs.Share(),
+        cs, render, "month", "30d", "en",
+        waiting=None, previous=None, silence=None, share=cs.Share(),
+        deletions=cs.Deletions(total=2, likely_correction=2), edited=cs.SideCounts(unknown=3),
     )
-    assert "no reply" not in bare and "vs prev." not in bare and "pause" not in bare
-    assert "edits" not in bare  # only unknown-direction edits: no side to show them under
-    assert "deleted  2</pre>" in bare and "unexplained" not in bare
-    assert "█░" not in bare.split("<pre>")[1]  # no share bars without known sides
-    _check(bare)  # so the first block starts with the table, not an empty line
-    # A missing name falls back to the stats' own name.
-    assert "<pre>Денис П… " in _panel(cs, render, "month", "30d", "ru", contact_name=None)
+    _check(bare)
+    html = bare.html
+    assert "blockquote" not in html and "📈" not in html and "pause" not in html and "edits" not in html
+    assert '<td>🗑 deleted</td><td align="right"><b>2</b></td><td></td><td></td></tr>' in html and "❓" not in html
+    assert "🟦🟦" not in html and "%" not in html.split("<h4>")[0].split("</h3>")[1].split("</p>", 1)[1]
+    # A missing name falls back to the stats' own name, clipped for the column.
+    assert '<th align="right">🟦 Денис Петров</th>' in _panel(cs, render, "month", "30d", "ru", contact_name=None).html
 
 
 def test_card_never_shows_owner_only_details(cs, render):
     stats, window = _stats_for(cs, "month", "30d")
-    card = render.card(stats, window, period="30d", owner_name="Sam", contact_name="Denis")
+    view = render.card(stats, window, period="30d", owner_name="Sam", contact_name="Denis")
     stripped = replace(
         stats,
         deletions=cs.Deletions(),
@@ -840,238 +527,247 @@ def test_card_never_shows_owner_only_details(cs, render):
         name="Hidden Name",
         display_name="Hidden Name (@hidden)",
     )
-    # Deletions, edits, waiting, missing history, p90, the comparison, and the
-    # stats' own name never reach the card, so removing them changes nothing.
-    assert render.card(stripped, window, period="30d", owner_name="Sam", contact_name="Denis") == card
-    for word in ("p90", "deleted", "unexplained", "edits", "no reply", "history", "You", "vs prev."):
-        assert word not in card
-    for lang in ("ru", "en"):
-        partial = _card(cs, render, "partial", "90d", lang)
-        assert "2026" not in partial.split("</i>")[1]  # no "history since"
+    # None of these reach the card, so removing them changes nothing.
+    assert render.card(stripped, window, period="30d", owner_name="Sam", contact_name="Denis") == view
+    for word in ("p90", "deleted", "edits", "waiting", "history", "You", "previous", "📈", "Hidden"):
+        assert word not in view.html + view.text
 
 
-def test_names_are_escaped_and_clipped(cs, render):
-    hostile = "<b>Eve & Co</b>\x1b[31m\n\u202e"
-    safe = "<b>Eve & Co</b>\\x1b[31m\\n\\u202e"
+# --- Heat maps -------------------------------------------------------------------
+
+
+def _grid_stats(cs, bucket: str, start: date, first: date, last: date, counts: tuple[int, ...]):
+    activity = cs.Activity(bucket=bucket, start=start, counts=counts, first_day=first, last_day=last)
+    hours = (0,) * 21 + (3, 0, 0)
+    return _base(
+        cs, messages=cs.SideCounts(received=3), activity=activity, hours=hours, weekdays=(1, 0, 0, 0, 0, 0, 2)
+    )
+
+
+HOURS_TABLE = """<table compact>
+<tr><th>0</th><th>3</th><th>6</th><th>9</th><th>12</th><th>15</th><th>18</th><th>21</th></tr>
+<tr><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td></tr>
+</table>"""
+WEEKDAY_TABLE = """<table compact>
+<tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr>
+<tr><td>🟧</td><td>·</td><td>·</td><td>·</td><td>·</td><td>·</td><td>🟥</td></tr>
+</table>"""
+GRIDS = [
+    (
+        ("day", date(2026, 10, 14), date(2026, 10, 14), date(2026, 10, 19), (0, 1, 2, 3, 0, 6)),
+        """<table compact>
+<tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr>
+<tr><td></td><td></td><td>·</td><td>🟨</td><td>🟨</td><td>🟧</td><td>·</td></tr>
+<tr><td>🟥</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+</table>""",
+    ),
+    (
+        ("week", date(2026, 8, 24), date(2026, 8, 26), date(2026, 10, 19), (1, 2, 3, 4, 5, 6, 7, 8, 9)),
+        """<table compact>
+<tr><td>Aug</td><td>🟨</td><td>🟨</td><td></td><td></td></tr>
+<tr><td>Sep</td><td>🟨</td><td>🟧</td><td>🟧</td><td>🟧</td></tr>
+<tr><td>Oct</td><td>🟥</td><td>🟥</td><td>🟥</td><td></td></tr>
+</table>""",
+    ),
+    (
+        ("month", date(2025, 11, 1), date(2025, 11, 15), date(2026, 2, 10), (3, 0, 1, 2)),
+        """<table compact>
+<tr><th></th><th>J</th><th>F</th><th>M</th><th>A</th><th>M</th><th>J</th><th>J</th><th>A</th><th>S</th><th>O</th><th>N</th><th>D</th></tr>
+<tr><td>2025</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td>🟥</td><td>·</td></tr>
+<tr><td>2026</td><td>🟨</td><td>🟧</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+</table>""",
+    ),
+    (
+        ("quarter", date(2024, 10, 1), date(2024, 11, 1), date(2026, 10, 19), (9, 0, 1, 2, 3, 4, 5, 6, 7)),
+        """<table compact>
+<tr><th></th><th>I</th><th>II</th><th>III</th><th>IV</th></tr>
+<tr><td>2024</td><td></td><td></td><td></td><td>🟥</td></tr>
+<tr><td>2025</td><td>·</td><td>🟨</td><td>🟨</td><td>🟨</td></tr>
+<tr><td>2026</td><td>🟧</td><td>🟧</td><td>🟧</td><td>🟥</td></tr>
+</table>""",
+    ),
+    (
+        ("year", date(2015, 1, 1), date(2015, 3, 1), date(2026, 10, 19), (1,) * 11 + (3,)),
+        """<table compact>
+<tr><th>2015</th><th>2016</th><th>2017</th><th>2018</th><th>2019</th><th>2020</th><th>2021</th><th>2022</th></tr>
+<tr><td>🟨</td><td>🟨</td><td>🟨</td><td>🟨</td><td>🟨</td><td>🟨</td><td>🟨</td><td>🟨</td></tr>
+</table>
+<table compact>
+<tr><th>2023</th><th>2024</th><th>2025</th><th>2026</th></tr>
+<tr><td>🟨</td><td>🟨</td><td>🟨</td><td>🟥</td></tr>
+</table>""",
+    ),
+]
+
+
+@pytest.mark.parametrize(("activity", "expected"), GRIDS, ids=[grid[0][0] for grid in GRIDS])
+def test_every_activity_bucket_has_its_grid(cs, render, activity, expected: str):
+    stats = _grid_stats(cs, *activity)
+    window = _window(cs, None)
+    when = render._when(stats, render._format(window, "en"))
+    # The calendar shows weekdays itself; every other grid gets the weekday row.
+    rows = [expected, HOURS_TABLE] if activity[0] == "day" else [expected, WEEKDAY_TABLE, HOURS_TABLE]
+    assert when == "\n".join(["<h4>🗓 When</h4>", *rows])
+    view = render.panel(stats, window, period="all")
+    assert when in view.html
+    _check(view)
+
+
+def test_heat_scale(render):
+    assert [render.heat(value, 9) for value in (0, 1, 3, 4, 6, 7, 9)] == ["·", "🟨", "🟨", "🟧", "🟧", "🟥", "🟥"]
+    assert render.heat(1, 1000) == "🟨" and render.heat(5, 0) == "·" and render.heat(-1, 3) == "·"
+
+
+def test_balance_bar_rounding(cs, render):
+    def cells(received: int, sent: int, **sides: bool) -> int:
+        return render.balance_cells(received, sent, has_received=sides.get("r", True), has_sent=sides.get("s", True))
+
+    assert [cells(58, 42), cells(50, 50), cells(54, 46), cells(55, 45), cells(45, 55)] == [6, 5, 5, 6, 5]
+    # A side with any messages keeps one square.
+    assert (cells(3, 97), cells(97, 3), cells(100, 0, s=False), cells(0, 100, r=False)) == (1, 9, 10, 0)
+    stats = _base(cs, messages=cs.SideCounts(received=1, sent=199), share=cs.Share(received=1, sent=99))
+    assert render._balance(stats) == "1% 🟦🟩🟩🟩🟩🟩🟩🟩🟩🟩 99%"
+    assert render._balance(_base(cs, share=cs.Share(received=None, sent=None))) is None
+
+
+@pytest.mark.parametrize(
+    ("days", "of_ru", "touch_ru", "row_ru", "of_en", "touch_en"),
+    [
+        (1, "из 1 дня", "день общения", "день подряд", "of 1 day", "day in touch"),
+        (2, "из 2 дней", "дня общения", "дня подряд", "of 2 days", "days in touch"),
+        (5, "из 5 дней", "дней общения", "дней подряд", "of 5 days", "days in touch"),
+        (11, "из 11 дней", "дней общения", "дней подряд", "of 11 days", "days in touch"),
+        (21, "из 21 дня", "день общения", "день подряд", "of 21 days", "days in touch"),
+        (23, "из 23 дней", "дня общения", "дня подряд", "of 23 days", "days in touch"),
+        (112, "из 112 дней", "дней общения", "дней подряд", "of 112 days", "days in touch"),
+    ],
+)
+def test_plurals(cs, render, days, of_ru, touch_ru, row_ru, of_en, touch_en):
+    window = _window(cs, "30d")
+    ru, en = render._format(window, "ru"), render._format(window, "en")
+    assert (render._of_days(ru, days), render._days_in_touch(ru, days), render._in_a_row(ru, days)) == (
+        of_ru,
+        touch_ru,
+        row_ru,
+    )
+    assert (render._of_days(en, days), render._days_in_touch(en, days)) == (of_en, touch_en)
+    assert render._in_a_row(en, days) == ("day in a row" if days == 1 else "days in a row")
+
+
+# --- Names, safety, and size -----------------------------------------------------
+
+
+def test_hostile_names_are_escaped_and_clipped(cs, render):
+    hostile = "<b>Eve & Co</b>'\"\x1b[31m\n\u202e"
+    escaped = "&lt;b&gt;Eve &amp; Co&lt;/b&gt;&#x27;&quot;\\x1b[31m\\n\\u202e"
     panel = _panel(cs, render, "month", "30d", "en", name=hostile, display_name=hostile, contact_name=hostile)
-    visible = _check(panel)
-    assert panel.startswith("<b>📊 &lt;b&gt;Eve &amp; Co&lt;/b&gt;\\x1b[31m\\n\\u202e · 30 d</b>\n")
-    assert f"📊 {safe} · 30 d" in visible
-    assert "\x1b" not in panel and "\u202e" not in panel and "<b>Eve" not in panel
-    # In <pre> blocks and the lines around them, names are clipped to 8 columns and padded.
-    short = "<b>Eve …"
-    assert f"{short} █████████░░░░░░░ 58%\nYou      ███████░░░░░░░░░ 42%" in visible
-    assert f"\n          {short}      You\nmsgs           745      539\n" in visible
-    assert f"no reply: {short}, since" in visible and f"{short} reply 21m→12m" in visible
-    # A row too wide for 31 columns wraps under the values.
-    assert f"\nsessions 41\n         {short} starts 61%\n" in visible
+    _check(panel)
+    assert panel.html.startswith(f"<h3>📊 {escaped} · 30 days</h3>\n")
+    # Columns, the waiting line, and the fallback get the name clipped to 16 characters.
+    assert '<th align="right">🟦 &lt;b&gt;Eve &amp; Co&lt;/b&gt;…</th>' in panel.html
+    assert "⏳ &lt;b&gt;Eve &amp; Co&lt;/b&gt;… is waiting" in panel.html
+    assert "\n🟦 <b>Eve & Co</b>…: 745 (58%)" in panel.text
+    for text in (panel.html, panel.text):
+        assert "\x1b" not in text and "\u202e" not in text
+    assert "<b>Eve" not in panel.html
 
     card = _card(cs, render, "month", "30d", "en", owner="A&B <i>", contact=hostile)
-    visible = _check(card)
-    assert card.startswith("<b>📊 A&amp;B &lt;i&gt; × &lt;b&gt;Eve &amp; Co&lt;/b&gt;\\x1b[31m\\n\\u202e · 30 d</b>")
-    assert f"{short} █████████░░░░░░░ 58%\nA&B <i>  ███████░░░░░░░░░ 42%" in visible
-    # Long names are clipped in the title too.
-    long = _card(cs, render, "month", "30d", "en", owner="O" * 50, contact="\U0001f600" * 50)
-    title = _check(long).split("\n")[0]
-    assert title == f"📊 {'O' * 31}… × {chr(0x1F600) * 31}… · 30 d"
-    # An emoji takes two columns: three fit before the ellipsis, then one space pads to the owner's 8.
-    assert f"{chr(0x1F600) * 3}…  ████" in long
-
-
-WORST_NAMES = [
-    "W" * 40,
-    "\U0001f600" * 40,
-    "&" * 40,
-    "a\x1bb\u202ec" * 10,
-    "Я",
-    "たなかたろうさん",
-    "Ден🚀🚀🚀🚀🚀",
-    "👨\u200d👩\u200d👧" * 6,
-    "e\u0301" * 12,
-    "محمد علي",
-    "דוד 42",
-    "٣٣٣",
-]
-OWNER_NAMES = [*WORST_NAMES[:3], "たなかたろうさん", "محمد علي"]
-
-
-@pytest.mark.parametrize("lang", ["ru", "en"])
-def test_every_view_stays_within_the_limits(cs, render, lang: str):
-    big = cs.SideCounts(received=9_999_999, sent=9_999_998, unknown=1)
-    extremes = {
-        "messages": big,
-        "active_days": cs.ActiveDays(total=99_999),
-        "sessions": cs.Sessions(total=999_999, started_by_contact=999_999),
-        "deletions": cs.Deletions(total=999_999, unexplained=cs.SideCounts(received=999_999)),
-        "missing": cs.MissingHistory(
-            retained_from=_utc(1999, 12, 31, 12, 0),
-            range_partial=True,
-            deletions_not_in_history=999_999,
-            edit_only_messages=999_999,
-        ),
-        "share": cs.Share(received=100, sent=0),
-        "turns": cs.Turns(received=1, sent=1, per_turn_received=9_999_999.0, per_turn_sent=0.1),
-        "replies": cs.Replies(
-            received=cs.ReplyTimes(count=1, median_seconds=10**9, p90_seconds=10**9),
-            sent=cs.ReplyTimes(count=1, median_seconds=9 * 86400 + 23 * 3600, p90_seconds=23 * 3600 + 59 * 60),
-        ),
-        "waiting": cs.Waiting(side="sent", since=_utc(2001, 1, 1), seconds=10**9),
-        "text_length": cs.TextLength(received=9_999_999, sent=0),
-        "edited": big,
-        "streaks": cs.Streaks(current_days=99_999, longest_days=99_999),
-        "silence": cs.Silence(seconds=10**9, start=_utc(2001, 12, 28, 22, 0), end=_utc(2031, 12, 30, 22, 0)),
-    }
-    for (case, period), contact, owner in itertools.product(
-        [("month", "30d"), ("week", "7d"), ("all", "all"), ("partial", "90d"), ("empty", "7d")],
-        WORST_NAMES,
-        OWNER_NAMES,
-    ):
-        stats, window = _stats_for(cs, case, period)
-        for changes in ({}, extremes):
-            worst = replace(stats, name=contact * 3, display_name=contact * 3, **changes)
-            _check(render.panel(worst, window, period=period, language_code=lang, contact_name=contact))
-            _check(
-                render.card(worst, window, period=period, owner_name=owner, contact_name=contact, language_code=lang)
-            )
-
-
-def test_display_width_counts_monospace_columns(render):
-    assert [render.display_width(text) for text in ("Денис", "たなか", "🚀", "█░▁·–→…", "e\u0301")] == [5, 6, 2, 7, 1]
-    assert render.display_width("❤\ufe0f") == 2  # emoji presentation
-    assert render.display_width("👍🏻") == 2  # a skin tone joins its emoji
-    assert render.display_width("👨\u200d👩\u200d👧") == 2  # one ZWJ family
-    assert render.display_width("🇩🇪🇫🇷") == 4  # two flags
-    assert render.display_width("\u200eمحمد\u200e") == 4  # the marks take no room
-    # A <pre> name is cut to 8 columns, never inside a character a reader sees.
-    assert render.pre_name("👨\u200d👩\u200d👧" * 5) == "👨\u200d👩\u200d👧" * 3 + "…"
-    assert render.pre_name("e\u0301" * 9) == "e\u0301" * 7 + "…"
-    assert render.pre_name("🇩🇪" * 5) == "🇩🇪" * 3 + "…"
-    assert render.pre_name("たなかたろうさん") == "たなか…"
-
-
-def test_wide_names_keep_the_columns_aligned(cs, render):
-    for contact, clipped in (("たなかたろうさん", "たなか…"), ("Ден🚀🚀🚀🚀🚀", "Ден🚀🚀…"), ("Маша 🌸", "Маша 🌸")):
-        for view in (
-            _panel(cs, render, "month", "30d", "en", contact_name=contact),
-            _card(cs, render, "month", "30d", "en", owner="Sam", contact=contact),
-        ):
-            _check(view)
-            bars, table = (part.split("\n") for part in html.unescape(_PRE_RE.findall(view)[0]).split("\n\n"))
-            assert bars[0].startswith(f"{clipped} ")
-            # Both bars start in the same column, and every table line ends in the same one.
-            assert len({_columns(re.split("[█░]", line)[0]) for line in bars}) == 1, bars
-            assert len({_columns(line) for line in table}) == 1, table
+    _check(card)
+    # 32 characters for each name in the card's title.
+    assert card.html.startswith(f"<h3>📊 A&amp;B &lt;i&gt; × {escaped[:-2]}…</h3>\n")
+    # Long names are clipped in the title too, never inside a character a reader sees.
+    long = _card(cs, render, "month", "30d", "en", owner="O" * 50, contact="👨\u200d👩\u200d👧" * 50)
+    assert long.html.startswith(f"<h3>📊 {'O' * 31}… × {'👨' + chr(0x200D) + '👩' + chr(0x200D) + '👧'}")
+    assert long.text.split("\n")[0] == f"📊 {'O' * 31}… × {'👨‍👩‍👧' * 31}…"
 
 
 def test_right_to_left_names_cannot_flip_a_line(cs, render):
     lrm, name = "\u200e", "محمد علي"
     # _check asserts that every line starts left to right and keeps each name between LRMs.
-    visible = _check(_panel(cs, render, "month", "30d", "ru", contact_name=name))
-    assert f"\n{lrm}{name}{lrm} █████████░░░░░░░ 58%\nВы       ███████░░░░░░░░░ 42%" in visible
-    assert f"старт {lrm}{name}{lrm} 61%" in visible and f"ответ {lrm}{name}{lrm} 21м→12м" in visible
-    visible = _check(_card(cs, render, "all", "all", "en", owner="דוד", contact=name))
-    assert visible.startswith(f"📊 {lrm}דוד{lrm} × {lrm}{name}{lrm} · all time\n")
-    header = next(line for line in visible.split("\n") if line.endswith(f"{lrm}דוד{lrm}"))
-    assert header.lstrip(" ").startswith(f"{lrm}{name}{lrm}")  # the contact's column stays on the left
+    panel = _panel(cs, render, "month", "30d", "ru", contact_name=name)
+    _check(panel)
+    assert f"🟦 {lrm}{name}{lrm}</th>" in panel.html
+    card = _card(cs, render, "all", "all", "en", owner="דוד", contact=name)
+    _check(card)
+    assert card.text.startswith(f"📊 {lrm}דוד{lrm} × {lrm}{name}{lrm}\n")
     # Names without right-to-left letters get no marks.
-    assert lrm not in _panel(cs, render, "month", "30d", "ru") + _card(cs, render, "all", "all", "en")
+    assert lrm not in _panel(cs, render, "month", "30d", "ru").html + _card(cs, render, "all", "all", "en").html
 
 
-def test_every_activity_bucket_and_year_fits(cs, render):
-    window = _window(cs, None)
-    stats = _all(cs, window)
-    for bucket, first in (
-        ("day", date(2026, 9, 19)),
-        ("week", date(2026, 1, 1)),
-        ("month", date(2023, 12, 31)),
-        ("quarter", date(2019, 12, 31)),
-        ("year", date(1996, 12, 31)),
-    ):
-        activity = cs.Activity(
-            bucket=bucket, start=first, counts=(1,) * 31, first_day=first, last_day=date(2026, 10, 19)
-        )
-        for lang in ("ru", "en"):
-            visible = _check(render.panel(replace(stats, activity=activity), window, period="all", language_code=lang))
-            assert "▁" * 31 not in visible and "█" * 31 in visible
+WORST_NAMES = ["W" * 100, "\U0001f600" * 100, "&" * 100, "a\x1bb\u202ec" * 30, "たなかたろうさん", "דוד 42"]
+
+
+@pytest.mark.parametrize("lang", ["ru", "en"])
+def test_every_view_stays_valid(cs, render, lang: str):
+    for case, period in (("month", "30d"), ("week", "7d"), ("all", "all"), ("partial", "90d"), ("empty", "7d")):
+        for name in WORST_NAMES:
+            _check(_panel(cs, render, case, period, lang, name=name, display_name=name, contact_name=name, note="x"))
+            _check(_card(cs, render, case, period, lang, owner=name, contact=name))
+
+
+def test_budget_cut_keeps_title_note_and_footer(cs, render, monkeypatch: pytest.MonkeyPatch):
+    note = "History is paused for this chat."
+    full = _panel(cs, render, "month", "30d", "en", note=note)
+    title = full.html.split("\n", 1)[0]
+    tail = f"<p>{note}</p>\n<footer>history since 21 Oct 2025 · text only</footer>"
+    assert full.html.endswith(tail)
+    # A little under the full size: the heat maps go first, the tiles stay.
+    monkeypatch.setattr(render, "MAX_HTML_UNITS", len(full.html.encode("utf-16-le")) // 2 - 1)
+    cut = _panel(cs, render, "month", "30d", "en", note=note)
+    _check(cut, render)
+    assert "<h4>" not in cut.html and "🔥 streak" in cut.html and cut.html.endswith(tail)
+    # Far too small: only what always stays.
+    monkeypatch.setattr(render, "MAX_HTML_UNITS", 10)
+    monkeypatch.setattr(render, "MAX_TEXT_UNITS", 10)
+    tiny = _panel(cs, render, "month", "30d", "en", note=note)
+    assert tiny.html == f"{title}\n{tail}"
+    assert tiny.text == f"📊 Денис Петров · 30 days\n{note}\nhistory since 21 Oct 2025 · text only"
+    card = _card(cs, render, "all", "all", "en")
+    assert card.html == f'<h3>📊 Sam × Denis</h3>\n<footer>counted by <a href="{SITE}">Telesec</a></footer>'
+
+
+# --- Formatting ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("seconds", "ru", "en"),
     [
         (None, "–", "–"),
-        (0, "0с", "0s"),
-        (40, "40с", "40s"),
-        (59, "59с", "59s"),
-        (60, "1м", "1m"),
-        (12 * 60 + 59, "12м", "12m"),
-        (3600, "1ч", "1h"),
-        (2 * 3600, "2ч", "2h"),
-        (3600 + 40 * 60, "1ч40м", "1h40m"),
-        (3 * 3600 + 5 * 60, "3ч5м", "3h5m"),
-        (86400, "1д", "1d"),
-        (3 * 86400, "3д", "3d"),
-        (3 * 86400 + 5 * 3600 + 59 * 60, "3д5ч", "3d5h"),
-        (9 * 86400 + 23 * 3600, "9д23ч", "9d23h"),
-        (10 * 86400 + 23 * 3600, "10д", "10d"),
-        (400 * 86400, "400д", "400d"),
+        (40, "40 с", "40 s"),
+        (12 * 60 + 59, "12 мин", "12 min"),
+        (2 * 3600, "2 ч", "2 h"),
+        (3600 + 40 * 60, "1 ч 40 мин", "1 h 40 min"),
+        (3 * 86400 + 5 * 3600 + 59 * 60, "3 дн 5 ч", "3 d 5 h"),
+        (10 * 86400 + 23 * 3600, "10 дн", "10 d"),
     ],
 )
-def test_compact_durations(cs, render, seconds: int | None, ru: str, en: str):
+def test_durations(cs, render, seconds: int | None, ru: str, en: str):
     window = _window(cs, "30d")
     for lang, expected in (("ru", ru), ("en", en)):
         assert render._format(window, lang).dur(seconds) == expected
 
 
-def test_numbers_dates_and_glyphs(cs, render):
+def test_numbers_and_dates(cs, render):
     window = _window(cs, "30d")
     ru, en = render._format(window, "ru"), render._format(window, "en")
-    assert [ru.num(n) for n in (0, 999, 1000, 12325, 1234567)] == ["0", "999", "1 000", "12 325", "1 234 567"]
-    assert [en.num(n) for n in (0, 999, 1000, 12325, 1234567)] == ["0", "999", "1,000", "12,325", "1,234,567"]
-    # The year shows only outside the current one, and then on both ends of a span.
-    assert (ru.day(date(2026, 10, 3)), en.day(date(2026, 10, 3))) == ("03.10", "3 Oct")
-    assert (ru.day(date(2025, 10, 21)), en.day(date(2025, 10, 21))) == ("21.10.2025", "21 Oct 2025")
-    assert ru.span(date(2026, 9, 20), date(2026, 10, 19)) == "20.09–19.10"
-    assert en.span(date(2025, 10, 21), date(2026, 10, 19)) == "21 Oct 2025–19 Oct 2026"
-    assert ru.span(date(2026, 10, 3), date(2026, 10, 3)) == "03.10"
-    assert render.spark([0, 1, 2, 3, 4, 5, 6, 7, 8]) == "·▁▂▃▄▅▆▇█"
-    assert render.spark([0, 1, 100]) == "·▁█"
-    assert render.spark([0, 0]) == "··" and render.spark([]) == ""
-    assert [render.bar(share) for share in (0, 3, 4, 50, 58, 97, 100)] == [
-        "░" * 16,
-        "░" * 16,
-        "█" + "░" * 15,
-        "█" * 8 + "░" * 8,
-        "█" * 9 + "░" * 7,
-        "█" * 16,
-        "█" * 16,
-    ]
-    assert render.HOURS_AXIS.index("6") == 6 and render.HOURS_AXIS.index("12") == 12
-    assert render.HOURS_AXIS.index("18") == 18 and render.HOURS_AXIS.rindex("23") == 22
-    assert len(render.HOURS_AXIS) == 24
-    with pytest.raises(ValueError):
-        render.period_label("14d")
+    assert [ru.num(n) for n in (999, 1000, 1234567)] == ["999", "1 000", "1 234 567"]
+    assert [en.num(n) for n in (999, 1000, 1234567)] == ["999", "1,000", "1,234,567"]
+    assert (ru.decimal(2.4), en.decimal(2.4), ru.decimal(None)) == ("2,4", "2.4", "–")
+    assert (ru.day(date(2026, 5, 3)), en.day(date(2026, 5, 3))) == ("3 мая", "3 May")
+    assert ru.span(date(2026, 9, 20), date(2026, 10, 19)) == "20 сен – 19 окт"
+    assert en.span(date(2025, 10, 21), date(2026, 10, 19)) == "21 Oct 2025 – 19 Oct 2026"
     assert [render.period_label(period, "ru") for period in render.PERIODS] == [
-        "7 дн.",
-        "30 дн.",
-        "90 дн.",
+        "7 дней",
+        "30 дней",
+        "90 дней",
         "всё время",
     ]
-    assert [render.period_label(period) for period in render.PERIODS] == ["7 d", "30 d", "90 d", "all time"]
+    assert [render.period_label(period) for period in render.PERIODS] == ["7 days", "30 days", "90 days", "all time"]
+    with pytest.raises(ValueError):
+        render.period_label("14d")
 
 
 def test_every_russian_string_has_an_english_one(render):
     assert set(render._STRINGS["ru"]) <= set(render._STRINGS["en"])
     for strings in render._STRINGS.values():
         assert not any(char in value for value in strings.values() for char in "<>&")
-
-
-def test_last_resort_guards_keep_valid_html(plugin):
-    render = importlib.import_module(f"{plugin.__name__}.stats_render")  # the real guards
-    assert render._cut("x" * 40) == "x" * 30 + "…"
-    assert render._cut("x" * 31) == "x" * 31
-    blocks = ["<b>head</b>", "<pre>" + "y" * 3000 + "</pre>", "<i>" + "z" * 3000 + "</i>"]
-    assert render._finish(blocks) == "\n".join(blocks[:2])
-    assert render._finish(["<b>" + "w" * 5000 + "</b>"]) == "<b>" + "w" * 5000 + "</b>"
-    # A tail (the panel's paused line) always stays last; the blocks before it go first.
-    assert render._finish(blocks, ["paused"]) == "\n".join([*blocks[:2], "paused"])
-    assert render._finish(blocks[:2], ["p" * 1100]) == "\n".join([blocks[0], "p" * 1100])

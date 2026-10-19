@@ -3,22 +3,22 @@
 The view is shown only in the owner's private chat with the bot, never in the
 Business chat with the contact. It is deterministic and read-only, and stores
 nothing. It computes the same stats as ``stats --chat`` for the same window
-and shows them as compact Telegram HTML (``stats_render.panel``), so the panel
-and the CLI cannot drift. Like the CLI, it never shows message text.
+and shows them as a Bot API rich message (``stats_render.panel``) with a
+plain-text fallback, so the panel and the CLI cannot drift. Like the CLI, it
+never shows message text. Its error states are short plain-text views.
 
 ``build_stats_view`` returns a panel-independent ``StatsPanelView``;
 ``render_section`` turns it into the owner panel's section view.
 
 ``build_stats_card`` is the in-chat ``/stats`` command's public card
-(``stats_render.card``) over the same window rules. Unlike the panel, the card
-is posted into the Business chat, so the contact sees it too; its error states
-are short notices without details.
+(``stats_render.card``, also a rich message with a plain-text fallback) over the
+same window rules. Unlike the panel, the card is posted into the Business chat,
+so the contact sees it too; its error states are short notices without details.
 """
 
 from __future__ import annotations
 
 import argparse
-import html
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -44,8 +44,7 @@ CURRENT_MARK = "• "
 MAX_LABEL_CHARS = _render.TITLE_NAME_CHARS
 _PERIODS = dict(PERIODS)
 
-# Panel strings. Values are Telegram HTML, the view's parse mode, so they hold
-# only fixed text; untrusted values are escaped before they are formatted in.
+# Panel strings: plain text. The rich report escapes the paused note itself.
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
         "stats.title": SECTION_LABEL,
@@ -92,9 +91,10 @@ _owner_panel.register_strings(STRINGS)
 
 @dataclass(frozen=True, slots=True)
 class StatsPanelView:
-    text: str  # Telegram HTML
+    text: str  # plain text: the report's fallback, or a short state
     # One row of period buttons as (label, sub-argument); empty when there is nothing to choose.
     buttons: tuple[tuple[str, str], ...] = ()
+    html: str | None = None  # the report as rich message HTML; None for a state
 
 
 def _period(period: str | None) -> str:
@@ -130,9 +130,9 @@ def _label(text: str) -> str:
 
 
 def _state(message: str, language_code: str | None, title: str | None = None, note: str | None = None) -> str:
-    # ``message`` and ``note`` are catalog HTML; ``title`` is untrusted.
+    # Plain text: ``message`` and ``note`` are catalog strings; ``title`` went through safe_name.
     heading = _owner_panel.tr("stats.title", language_code) if title is None else f"{_ICON} {title}"
-    text = f"<b>{html.escape(heading, quote=False)}</b>\n{message}"
+    text = f"{heading}\n{message}"
     return text if note is None else f"{text}\n{note}"
 
 
@@ -145,10 +145,10 @@ def render_report(
     contact_name: str | None = None,
     note: str | None = None,
 ) -> StatsPanelView:
-    """The report for one chat, with the period buttons; ``note`` is a catalog HTML last line."""
+    """The report for one chat, with the period buttons; ``note`` is a plain catalog line kept last."""
     sub = _period(period)
-    text = _render.panel(stats, window, period=sub, language_code=language_code, contact_name=contact_name, note=note)
-    return StatsPanelView(text=text, buttons=period_buttons(sub, language_code))
+    view = _render.panel(stats, window, period=sub, language_code=language_code, contact_name=contact_name, note=note)
+    return StatsPanelView(text=view.text, buttons=period_buttons(sub, language_code), html=view.html)
 
 
 def _first_name(entry: Mapping[str, Any]) -> str | None:
@@ -166,8 +166,7 @@ def _read_error_text(
             _stats._cli_option("--connection", business_connection_id),
         )
     )
-    code = html.escape(_stats._safe(command), quote=False)
-    message = f"{_owner_panel.tr('stats.read_error', language_code)}\n<code>{code}</code>"
+    message = f"{_owner_panel.tr('stats.read_error', language_code)}\n{_stats._safe(command)}"
     return _state(message, language_code, note=note)
 
 
@@ -220,10 +219,12 @@ def build_stats_view(
 
 @dataclass(frozen=True, slots=True)
 class StatsCard:
-    text: str
-    # True: the card, Telegram HTML. False: a short plain-text notice (history off,
+    # The card's plain-text fallback, or a short plain-text notice (history off,
     # no history, read error) that the command deletes again after a few seconds.
+    text: str
+    # True: the card, with ``html`` set. False: a notice.
     ok: bool
+    html: str | None = None  # the card as rich message HTML
 
 
 CARD_DEFAULT_PERIOD = "all"
@@ -268,7 +269,7 @@ def build_stats_card(
         # Exception text can carry contact names and paths, so only its type is logged.
         logger.warning("telesec stats command: history could not be read (%s)", type(exc).__name__)
         return StatsCard(_owner_panel.tr("stats.card.read_error", lang), ok=False)
-    text = _render.card(
+    view = _render.card(
         stats,
         window,
         period=sub,
@@ -276,7 +277,7 @@ def build_stats_card(
         contact_name=contact_name or _first_name(entries[0]) or stats.name or stats.display_name,
         language_code=lang,
     )
-    return StatsCard(text, ok=True)
+    return StatsCard(view.text, ok=True, html=view.html)
 
 
 def render_section(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
@@ -291,12 +292,8 @@ def render_section(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
         history_paused=_chat_settings.default_store().is_off(ctx.owner_user_id, ctx.chat_id, "history"),
     )
     row = [(label, _owner_panel.section_callback(ctx.chat_id, SECTION_KEY, sub)) for label, sub in view.buttons]
-    return _owner_panel.PanelView(
-        text=view.text,
-        buttons=[row] if row else [],
-        parse_mode=_render.PARSE_MODE,
-        disable_link_preview=True,
-    )
+    # The router sends ``html`` as a rich message, and ``text`` when Telegram rejects it.
+    return _owner_panel.PanelView(text=view.text, buttons=[row] if row else [], html=view.html)
 
 
 def register_section() -> None:

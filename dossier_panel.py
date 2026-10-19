@@ -480,14 +480,16 @@ async def handle_dossier_command_update(update: Any, *, bot: Any, adapter: Any,
     payload = edited or getattr(update, "business_message", None)
     if payload is None:
         return False
+    conn = _history._get(payload, "business_connection_id") or _history._get(payload, "_hermes_business_connection_id")
+    chat = _history._get(payload, "chat")
+    chat_id = _history._get(chat, "id")
     if _history.is_dossier_post(payload):
+        # Its send may have timed out after delivery, so only its echo tells the id its deletion has.
+        _history.remember_control_message(conn, chat_id, _history._get(payload, "message_id"))
         return True
     text = _history._get(payload, "text")
     if not _history.is_dossier_control_message(payload, text):
         return False
-    conn = _history._get(payload, "business_connection_id") or _history._get(payload, "_hermes_business_connection_id")
-    chat = _history._get(payload, "chat")
-    chat_id = _history._get(chat, "id")
     if not conn or chat_id is None or _history._get(chat, "type") not in (None, "private"):
         return False
     resolved = await _history.resolve_business_direction(
