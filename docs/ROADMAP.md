@@ -32,7 +32,9 @@ The product connects readable Telegram voice messages with useful personal corre
 - Settings in the private chat with the bot: `/telesec` or the ⚙️ Settings button turns transcription, history, and dossiers on or off for all chats, and `hermes telesec settings` does the same from the terminal. The old environment variables and the Desktop `history_enable` setting are moved into Settings once. [Settings](../README.md#settings).
 - Per-chat history and dossier controls: each chat's owner panel has **Save history** / **Don't save** and **Keep dossier** / **No dossier** rows in the style of transcription modes, and `hermes telesec chat` does the same from the terminal. Off pauses the chat and keeps what was saved. [Per-chat history and dossier](../README.md#per-chat-history-and-dossier).
 
-## Unreleased
+## Implemented in 0.12.2
+
+- Business voice messages, round videos, and audio are transcribed from every contact; `TELESEC_VOICE_BYPASS_AUTH` is removed.
 
 - Stats redesign ([#4](https://github.com/neoromantic/telesec/issues/4)): the panel's 📊 Stats section is a compact report in Russian or English with bars and sparklines. The owner's in-chat `/stats` (all history, or `7d`, `30d`, `90d`) edits the command into a shareable card that the contact sees too, without owner-only details; the command and card never reach history. With `/dossier`, it is one of the two owner commands typed in a Business chat. [Owner panel stats](STATS.md#in-telegram-owner-panel), [in-chat `/stats`](STATS.md#in-a-business-chat-stats).
 - Conversation metrics in `stats` ([#28](https://github.com/neoromantic/telesec/issues/28)): share, turns, reply times (median and p90), waiting, message length, edits, hours and weekdays, activity, streaks, the longest silence, and a comparison with the previous period. JSON `schema_version` 2. The stats time zone now defaults to the Hermes time zone. [Conversation metrics](STATS.md#conversation-metrics).
