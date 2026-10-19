@@ -2708,7 +2708,7 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
 
 def register(ctx: Any) -> None:
     global _llm_facade
-    _llm_facade = ctx.llm
+    _llm_facade = getattr(ctx, "llm", None)
     _dossier_support.bind_llm(_llm_facade)
     ctx.register_telegram_handler(_register_telegram_handlers)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)

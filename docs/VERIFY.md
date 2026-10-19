@@ -25,6 +25,26 @@ Read-only checks of `hermes-gateway-baus.service`, its `gateway.log`, `state.db`
 
 No message text, contact names, or raw contact IDs are included here.
 
+## Catalog readiness checks: 2026-10-19
+
+Used fresh Python 3.14.5 virtual environments and temporary `HERMES_HOME` directories, without the installed Hermes 0.21.2 or production credentials:
+
+| Hermes source | Result |
+|---|---|
+| `v0.21.6`, commit `818c13be1dc4fd28987e1e881a9408224afd4535` | Minimum supported version: CLI validation passed; real PluginManager/PluginContext discovery bound the host `PluginLlm` and registered the CLI, skills, hook, and native factory. |
+| `v0.22.2`, commit `d923a5eb487a17c0a68801bba9ef0f56c81040a8` | CLI validation passed; security scan `safe`; no core override. |
+| Current `main`, commit `493208879a3248c6a4b844981d2c31c78ae00929` | `hermes plugins validate /path/to/plugin --install-deps --json` passed, including dependency preparation and capability matching. Security scan `safe`; no core override. |
+
+The minimum-version smoke used a real PTB Application and an in-memory Telegram transport. All three handlers registered in group `-100`; text history persisted one synthetic event, mode `off` claimed a voice note without download or reply, the panel matched `tb:` callbacks, and an unrelated callback reached core. Importing the configured STT entrypoint succeeded. No Telegram or model request left the process, and no gateway was restarted.
+
+The full plugin suite passed **700 tests**. PTB emitted 28 existing duration deprecation warnings for voice/video/audio objects; these are separate from catalog admission.
+
+The `tools.plugin_guard.scan_plugin` admission scanner uses the `tools.skills_guard` engine. Release and current-main scans returned **SAFE / ALLOWED**, with no high or critical findings. Current main reported 12 medium and 4 low findings: disclosed ffmpeg/ffprobe subprocesses, a concurrency-test subprocess, escaped control-character handling/test fixtures, documentation install commands, developer instruction files, and the 1.4 MiB illustration. No scanner exclusions were added.
+
+One validation warning remains on 0.22.2 and current main: `__init__.py:1687 tools.transcription_tools.transcribe_audio` is an undocumented core import. No documented consumer STT facade exists in the checked API; the [submission draft](CATALOG_SUBMISSION.md) explains why this import remains. Isolation is informationally `in_process`: native Telegram handlers need the live Application, and the CLI registration does not cross the plugin-host boundary.
+
+The validator's recording context lacks the documented `ctx.llm` property. The plugin tolerates its absence during registration; the minimum-version smoke confirmed a real context still supplies `PluginLlm`. This does not change model-provider or trust-gate behavior.
+
 ## Live gateway smoke: owner panel, 2026-10-19
 
 On the owner's gateway at `de52645`: sending `/start bizChat<chat_id>` to the bot from the owner's account (what "Manage Bot" sends) opened the panel with the chat label, the current mode (`off`), the four mode buttons, Reset, and Refresh. Tapping the current mode answered with the toast "Transcription: off" and kept the mode. Nothing appeared in the Business chat.

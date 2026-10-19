@@ -244,13 +244,18 @@ def make_audio_file_message(
 def test_manifest_uses_current_fields():
     manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text(encoding="utf-8"))
     assert manifest == {
-        "manifest_version": 1,
+        "manifest_version": 2,
         "name": LEGACY_PLUGIN_ID,
         "version": "0.9.0",
         "description": (
             "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
         ),
         "author": "neoromantic",
+        "license": "MIT",
+        "homepage": "https://hermes.sergeybaus.com",
+        "tags": ["telegram", "business", "voice", "history"],
+        "requires_hermes": ">=0.21.6",
+        "config_schema": {},
         "kind": "standalone",
         "provides_hooks": ["pre_gateway_dispatch"],
     }

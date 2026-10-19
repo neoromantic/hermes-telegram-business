@@ -1,10 +1,16 @@
-manifest_version: 1
+manifest_version: 2
 # Legacy-stable runtime identity: changing this would break existing Hermes
 # install directories, config keys, and update/remove commands.
 name: telegram-business-voice-transcriber
 version: 0.9.0
 description: "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
 author: neoromantic
+license: MIT
+homepage: https://hermes.sergeybaus.com
+tags: [telegram, business, voice, history]
+requires_hermes: ">=0.21.6"
+# Existing settings are environment variables, not ctx.get_config() settings.
+config_schema: {}
 kind: standalone
 provides_hooks:
   - pre_gateway_dispatch
