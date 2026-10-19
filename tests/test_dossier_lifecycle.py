@@ -1117,6 +1117,20 @@ async def test_quiet_period_defers_then_refreshes(dossier_plugin, dossiers):
     assert (rep.refreshed, rep.calls) == (1, 1)
     assert refs(payloads(fake, CONTACT)[0]) == ["m13"]
 
+    # An edit is activity: quiet counts from when the edit was observed, not from message_at.
+    await edit(dossier_plugin, ALICE, 12, "Great, see you at the harbour office at noon", 10)
+    rep = cycle(ds, fake, now=ago(7))  # 3 min after the edit of an 80-min-old message
+    assert (rep.waiting, rep.calls) == (1, 0)
+    assert cycle(ds, fake, now=ago(-1)).refreshed == 1  # 11 min after the edit
+
+    # A deletion is activity; a classification stamp is not.
+    await seed_alice(dossier_plugin, [(14, "in", "Ping", -2)])
+    await delete(dossier_plugin, ALICE, 11, when=-8)
+    rep = cycle(ds, fake, now=ago(-15))  # 13 min after m14, 7 min after the deletion
+    assert (rep.waiting, rep.refreshed, rep.calls) == (1, 0, 0)
+    maintain(dossier_plugin, -14)  # deletion.classified stamp, the newest record
+    assert cycle(ds, fake, now=ago(-19)).refreshed == 1  # 11 min after the deletion, 5 after the stamp
+
 
 @pytest.mark.asyncio
 async def test_failed_contact_retried_next_cycle_and_others_continue(dossier_plugin, dossiers):
