@@ -19,15 +19,15 @@ Enabling dossiers sends private chat text to the configured model provider. Hist
 
 No environment variable or Desktop setting switches dossiers. Before 0.11.0, `TELESEC_DOSSIER_ENABLE` or the Desktop `dossier_enable` setting did. On the first start after upgrading, if one of them says on and no switch is stored yet, the switch is stored as on once (`status` shows `via migration`) and the gateway log says so. After that both are ignored, and you can remove them.
 
-One switch covers every private Business chat in history. There is no per-contact build step. Groups, supergroups, and channels are never processed, even when history captures them.
+One switch covers every private Business chat in history. There is no per-contact build step. Groups, supergroups, and channels are never processed, even when an older version's history captured them.
 
 ### One chat
 
-To leave one chat out, tap **Manage Bot** in that chat and then **No dossier** in your private chat with the bot, or run `hermes telesec chat set 991 --dossier off` ([per-chat history and dossier](../README.md#per-chat-history-and-dossier)). **Keep dossier** or `--dossier on` brings it back; it is the default, so nothing is stored for it. History keeps recording under No dossier, so the next cycle after Keep dossier catches up and sends what was written meanwhile to the model. A chat set to **Don't save** (no history) is paused the same way, and so is a chat that `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, or `TELESEC_HISTORY_CHAT_TYPES` leave out. For a paused chat:
+To leave one chat out, tap **Manage Bot** in that chat and then **No dossier** in your private chat with the bot, or run `hermes telesec chat set 991 --dossier off` ([per-chat history and dossier](../README.md#per-chat-history-and-dossier)). **Keep dossier** or `--dossier on` brings it back; it is the default, so nothing is stored for it. History keeps recording under No dossier, so the next cycle after Keep dossier catches up and sends what was written meanwhile to the model. A chat set to **Don't save** (no history) is paused the same way. For a paused chat:
 
 - The worker skips it, its messages are kept out of the persona (also when it is paused in the middle of a cycle), and a running panel Refresh for it stops before its next model call or write.
 - `dossier run --contact` and `dossier preview` for it refuse with `Dossier is off for this chat.`, and the panel offers no Refresh.
-- The stored dossier stays frozen: you can still read it in the panel (with the note `Off for this chat.`) and the CLI, and the worker never treats it as an orphan. `dossier forget` deletes it. Persona facts already learned from the chat stay until you remove them in the persona view.
+- The stored dossier stays frozen: you can still read it in the panel (with the note `Off for this chat.`) and the CLI, and the worker never treats it as an orphan. `dossier forget` deletes it. Under Don't save, the panel's **🗑 Erase saved history** (or `history forget`) deletes the chat's history and its dossier together ([erase one chat](HISTORY.md#erase-one-chat)). Persona facts already learned from the chat stay until you remove them in the persona view.
 - The owner's `/dossier` in the chat posts nothing, and the bot tells you privately: `Dossier is off for this chat.`
 
 The setting is per owner, so it never touches another owner's chat with the same contact. The worker never asks Telegram who owns a connection: when the owner is not known yet, a chat id that some owner paused stays paused.
@@ -279,7 +279,7 @@ Dossiers live next to history, never inside it. Directories are `0700` and files
 
 There is no second message archive. A dossier keeps its facts, quotes of at most 200 characters, and 64-bit fingerprints of the messages it has processed, used to notice edits. The fingerprints are short hashes and are not reversible in practice, but they are not a cryptographic guarantee.
 
-Dossiers read history only under its read locks and never write to it. `forget` deletes dossier data only. Removing the history directory does not remove dossiers, and external backups or exports are yours to remove.
+Dossiers read history only under its read locks and never write to it. `forget` deletes dossier data only. [Erasing a chat's history](HISTORY.md#erase-one-chat) forgets its dossier too, and `history forget --all --yes` forgets every dossier with all history. Removing the history directory by hand does not remove dossiers, and external backups or exports are yours to remove.
 
 To stop processing and delete every dossier:
 

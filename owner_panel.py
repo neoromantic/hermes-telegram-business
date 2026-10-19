@@ -34,9 +34,12 @@ CALLBACK_PREFIX = "tb:"
 MAX_CALLBACK_BYTES = 64  # Telegram's callback_data limit.
 ACTIONS = frozenset({"m", "r", "s", "b", "p", "f"})
 NO_ARG_ACTIONS = frozenset({"r", "b", "p"})
-# `tb:f:<chat>:<arg>`: this chat's history (h) or dossier (d) on or off. Args carry the target value,
-# so a stale or double tap is harmless.
-FLAG_ARGS = frozenset({"h.on", "h.off", "d.on", "d.off"})
+# `tb:f:<chat>:<arg>`: this chat's history (h) or dossier (d) on or off, or erasing its saved history
+# (ask, then do). Args carry the target value, so a stale or double tap is harmless.
+ERASE_ASK = "h.erase"
+ERASE_DO = "h.erase.yes"
+ERASE_ARGS = frozenset({ERASE_ASK, ERASE_DO})
+FLAG_ARGS = frozenset({"h.on", "h.off", "d.on", "d.off", *ERASE_ARGS})
 FLAG_FEATURES = {"h": "history", "d": "dossier"}
 
 MAX_TEXT_UNITS = 4096  # Telegram's message text limit, counted in UTF-16 code units.
@@ -85,8 +88,20 @@ _STRINGS: dict[str, dict[str, str]] = {
         "dossier.on": "Keep dossier",
         "dossier.off": "No dossier",
         "history.settings": "History: off in Settings",
-        "history.server": "History: off (server settings)",
         "history.unreadable": "Chat settings can't be read; history and dossiers are paused.",
+        "history.erase": "🗑 Erase saved history",
+        "erase.messages.one": "{n} saved message",
+        "erase.messages.few": "{n} saved messages",
+        "erase.messages.many": "{n} saved messages",
+        "erase.question": "Erase {messages} from this chat?",
+        "erase.question_any": "Erase this chat's saved history?",
+        "erase.explain": "Its dossier is deleted too. This cannot be undone.",
+        "erase.yes": "Erase",
+        "cancel": "Cancel",
+        "erase.done": "Saved history erased",
+        "erase.none": "No saved history for this chat",
+        "erase.needs_off": "Choose Don't save for this chat first",
+        "erase.error": "Error: could not erase the saved history",
         "dossier.settings": "Dossier: off in Settings",
         "dossier.needs_history": "Dossier: needs history",
         "dossier.private_only": "Dossier: private chats only",
@@ -130,8 +145,20 @@ _STRINGS: dict[str, dict[str, str]] = {
         "dossier.on": "Вести досье",
         "dossier.off": "Не вести",
         "history.settings": "История: выключена в настройках",
-        "history.server": "История: выкл (настройки сервера)",
         "history.unreadable": "Настройки чатов не читаются; история и досье на паузе.",
+        "history.erase": "🗑 Стереть сохранённую историю",
+        "erase.messages.one": "{n} сохранённое сообщение",
+        "erase.messages.few": "{n} сохранённых сообщения",
+        "erase.messages.many": "{n} сохранённых сообщений",
+        "erase.question": "Стереть {messages} из этого чата?",
+        "erase.question_any": "Стереть сохранённую историю этого чата?",
+        "erase.explain": "Его досье тоже удалится. Отменить это нельзя.",
+        "erase.yes": "Стереть",
+        "cancel": "Отмена",
+        "erase.done": "Сохранённая история стёрта",
+        "erase.none": "Для этого чата нет сохранённой истории",
+        "erase.needs_off": "Сначала выберите «Не сохранять» для этого чата",
+        "erase.error": "Ошибка: не удалось стереть сохранённую историю",
         "dossier.settings": "Досье: выключено в настройках",
         "dossier.needs_history": "Досье: нужна история",
         "dossier.private_only": "Досье: только для личных чатов",
@@ -378,18 +405,19 @@ def chat_label_text(chat_id: Any, label: str | None) -> str:
 
 
 # Row states with a status line of their own; any other hidden state shows no line.
-_HISTORY_LINES = frozenset({"settings", "server", "unreadable"})
+_HISTORY_LINES = frozenset({"settings", "unreadable"})
 _DOSSIER_LINES = frozenset({"settings", "needs_history"})
 CHAT_DEFAULT_FEATURES = ("on", "on")
 
 
 def feature_rows(
-    chat_id: Any, features: tuple[str, str], language_code: str | None = None
+    chat_id: Any, features: tuple[str, str], language_code: str | None = None, *, erasable: bool = False
 ) -> tuple[list[str], list[list[tuple[str, str]]]]:
     """This chat's history and dossier controls in the transcription style: (status lines, button rows).
 
     ``features`` is (history, dossier) from ``chat_settings.chat_state``: "on" or "off" shows a choice
     row with "•" on the value in effect; any other state hides the row, and some show a line instead.
+    ``erasable`` (the chat has saved history) adds "Erase saved history" under a history row set to off.
     """
     lines: list[str] = []
     rows: list[list[tuple[str, str]]] = []
@@ -404,9 +432,32 @@ def feature_rows(
                     for value in ("on", "off")
                 ]
             )
+            if feature == "history" and state == "off" and erasable:
+                rows.append([(tr("history.erase", language_code), callback_data("f", chat_id, ERASE_ASK))])
         elif state in with_line:
             lines.append(tr(f"{feature}.{state}", language_code))
     return lines, rows
+
+
+def saved_messages_text(count: int, language_code: str | None = None) -> str:
+    """ "12 saved messages", with the Russian plural forms."""
+    tens, ones = count % 100, count % 10
+    form = "many" if 11 <= tens <= 14 else "one" if ones == 1 else "few" if 2 <= ones <= 4 else "many"
+    if language(language_code) == "en":
+        form = "one" if count == 1 else "many"
+    return tr(f"erase.messages.{form}", language_code, n=count)
+
+
+def render_erase_confirm(ctx: PanelContext, messages: int) -> PanelView:
+    """Asks before erasing this chat's saved history (``messages`` of it); Cancel goes back to the panel."""
+    chat, lang = ctx.chat_id, ctx.language_code
+    question = (tr("erase.question", lang, messages=saved_messages_text(messages, lang)) if messages > 0
+                else tr("erase.question_any", lang))
+    text = "\n".join([f"{tr('title', lang)}: {chat_label_text(chat, ctx.chat_label)}", question,
+                      tr("erase.explain", lang)])
+    buttons = [[(tr("erase.yes", lang), callback_data("f", chat, ERASE_DO)),
+                (tr("cancel", lang), callback_data("b", chat))]]
+    return PanelView(text=text, buttons=buttons)
 
 
 def flag_unavailable(feature: str, features: tuple[str, str], language_code: str | None = None) -> str | None:
@@ -430,12 +481,13 @@ def render_main(
     *,
     notice: str | None = None,
     features: tuple[str, str] = CHAT_DEFAULT_FEATURES,
+    erasable: bool = False,
 ) -> PanelView:
     """The panel's main view: transcription, history and dossier controls, then the sections and Refresh.
 
     ``entry`` is the chat's stored mode entry (None for the default). ``notice``
     is a one-line status such as a save error, shown under the header.
-    ``features`` is (history, dossier), see ``feature_rows``.
+    ``features`` is (history, dossier) and ``erasable`` whether the chat has saved history, see ``feature_rows``.
     """
     chat = ctx.chat_id
     lang = ctx.language_code
@@ -456,7 +508,7 @@ def render_main(
             buttons.append([(tr("reset", lang), callback_data("r", chat))])
     else:
         lines.append(tr("transcription_disabled", lang))
-    feature_lines, feature_buttons = feature_rows(chat, features, lang)
+    feature_lines, feature_buttons = feature_rows(chat, features, lang, erasable=erasable)
     lines += feature_lines
     buttons += feature_buttons
     # Sections and Refresh, two per row.

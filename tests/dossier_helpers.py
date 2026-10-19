@@ -327,7 +327,7 @@ def raw(
 
     Use it for shapes the capture path cannot produce: unknown direction on a known
     sender, missing ``message_at``, partitions in old months, and group chats that
-    the history allowlist would reject.
+    capture never records.
 
     Each row is ``(message_id, who, text, when)`` or ``(message_id, who, text, when, event)``
     with ``event`` in ``created`` (default), ``edited`` or ``deleted``. ``when`` is the

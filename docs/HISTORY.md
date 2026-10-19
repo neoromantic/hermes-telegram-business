@@ -16,7 +16,7 @@ hermes telesec settings set history on
 
 No gateway restart is needed: capture starts with the next update. **Don't save** or `hermes telesec settings set history off` stops capture and keeps what was stored; retention and delayed deletion classification keep running. How long history is kept is set in Settings too ([retention](#retention-and-removal)). Up to 0.11.0, `TELESEC_HISTORY_ENABLE=1` or the Desktop `history_enable` setting turned history on. On the first start after upgrading, an "on" there is stored in Settings once and the gateway log says so (a variable set to off over a Desktop "on" is stored as off); after that they are ignored. Remove them once you no longer plan to go back to 0.11.0 or older.
 
-By default, capture includes private chats Telegram delivers through the bot's Business connections. Connection and chat filters are optional. Your own chat with the bot (where the owner panel and your agent chat live) is never captured: Telegram also delivers it as Business updates, but it is not a Business chat. The plugin knows it by the bot's id (from the running bot, or from the digits before `:` in `TELEGRAM_BOT_TOKEN`), and readers (history, stats, dossiers, the panel) also skip such a chat if an older version captured it. Groups, supergroups, and channels require explicit configuration. The plugin does not fetch conversations from before capture started, but you can [import a chat's earlier messages](#import-past-messages) from a Telegram Desktop export.
+Capture includes every private chat Telegram delivers through the bot's Business connections, except chats set to [Don't save](#one-chat). Your own chat with the bot (where the owner panel and your agent chat live) is never captured: Telegram also delivers it as Business updates, but it is not a Business chat. The plugin knows it by the bot's id (from the running bot, or from the digits before `:` in `TELEGRAM_BOT_TOKEN`), and readers (history, stats, dossiers, the panel) also skip such a chat if an older version captured it. Groups, supergroups, and channels are never recorded. The plugin does not fetch conversations from before capture started, but you can [import a chat's earlier messages](#import-past-messages) from a Telegram Desktop export.
 
 Text, edits, deletions, reply relationships, sender/direction, and available contact snapshots are recorded. Media bytes, media metadata, and captions are excluded. Missing original text is recorded as missing rather than reconstructed. The owner's in-chat [`/stats` command](STATS.md#in-a-business-chat-stats), its card or notice, and their edits and deletion are control traffic. They are not recorded while the gateway remembers their message IDs: 24 hours, in memory. After that, or after a gateway restart, an edit or deletion of the card is recorded as an edit or deletion of a message that is not in history.
 
@@ -30,7 +30,30 @@ hermes telesec chat get 991
 hermes telesec chat list
 ```
 
-**Save history** or `--history on` turns it back on; it is the default, so nothing is stored for it. While a chat is set to Don't save, its new messages, edits, and deletions are not recorded, and its dossier pauses too. What was saved before stays, and retention and the size cap still prune it. Edits and deletions of older messages that arrive in the meantime are not recorded, so turning history back on leaves a gap. The setting is stored per owner in `chat-settings.json` and never touches another owner's chat with the same contact. The check fails closed: if the file was never readable, or the chat id is paused by some owner and the owner of the update's connection cannot be found, nothing is recorded. See [per-chat history and dossier](../README.md#per-chat-history-and-dossier).
+**Save history** or `--history on` turns it back on; it is the default, so nothing is stored for it. While a chat is set to Don't save, its new messages, edits, and deletions are not recorded, and its dossier pauses too. What was saved before stays until you [erase it](#erase-one-chat), and retention and the size cap still prune it. Edits and deletions of older messages that arrive in the meantime are not recorded, so turning history back on leaves a gap. The setting is stored per owner in `chat-settings.json` and never touches another owner's chat with the same contact. The check fails closed: if the file was never readable, or the chat id is paused by some owner and the owner of the update's connection cannot be found, nothing is recorded. See [per-chat history and dossier](../README.md#per-chat-history-and-dossier).
+
+Up to 0.12, `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` chose the recorded chats. Since 0.13 they are no longer read. On the first start with any of them set, each chat they kept out is set to Don't save once, and a chat whose owner is unknown is only counted in the log, so choose Don't save for it in its panel. New chats are recorded unless you tap Don't save. [Moving from the history environment variables](../README.md#moving-from-the-history-environment-variables) has the details.
+
+## Erase one chat
+
+While a chat is set to Don't save and history still holds messages from it, its panel shows **🗑 Erase saved history**. It asks first (`Erase 12 saved messages from this chat? Its dossier is deleted too. This cannot be undone.`), then deletes:
+
+- every month file of that chat on your Business connection,
+- the chat's entry in the contact catalog (`contacts.json`),
+- pending deletion classification for the chat,
+- the chat's dossier, after stopping a running dossier refresh.
+
+Stats then show no history for the chat. The chat stays at Don't save, so nothing new is recorded. The button refuses unless the chat is still set to Don't save, so a stale or repeated tap erases nothing, and only the verified owner of the chat's connection sees it. Another owner's chat with the same contact is never touched.
+
+From the terminal:
+
+```bash
+hermes telesec history forget --chat 991
+hermes telesec history forget --contact @alice --yes
+hermes telesec history forget --all --yes
+```
+
+`forget` takes the same selectors as `show`. Without `--yes` it prints what it would erase and exits with code 1. With `--yes` it erases the chat's history and dossier the same way as the button. It also works while the chat still saves history; then it says new messages are saved again. `--all --yes` erases all saved history and every dossier, including the owner persona; Telegram has no button for that. Persona facts learned from an erased chat stay until you remove them in the persona view or run `dossier forget --persona`. A running gateway notices the erase the next time it reads the chat; no restart is needed.
 
 ## Find a conversation
 
@@ -101,16 +124,13 @@ These are observable text-similarity categories, not judgments about a person's 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TELESEC_HISTORY_CONNECTIONS` | unset | Optional comma-separated connection filter or `*`. |
-| `TELESEC_HISTORY_CHATS` | unset | Optional exact chat filter or `*`; exact IDs can opt in a chat outside the default types. |
-| `TELESEC_HISTORY_CHAT_TYPES` | `private` | Eligible chat types; explicitly add `group`, `supergroup`, or `channel`. |
 | `TELESEC_HISTORY_CORRECTION_WINDOW` | `120` | Post-delete replacement window and classification delay, in seconds. |
 | `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | Pre-delete replacement window, in seconds. |
 | `TELESEC_HISTORY_MAX_BYTES` | `1073741824` | Disk-safety limit for operators: above this total size the oldest closed months are pruned, whatever the retention in Settings. |
 
 Retention is not a variable: it is set in [Settings](#retention-and-removal). `TELESEC_HISTORY_RETENTION_DAYS` is no longer read; on the first start a value other than `0` is stored once as the retention and the gateway log says so. A `settings set` that creates or repairs `settings.json` stores retention as forever, so the variable is not moved in after that.
 
-Unknown chat types are excluded unless an exact chat ID or earlier canonical profile evidence establishes eligibility. No member-count requests run on capture.
+An update without a chat type uses the type history already has for that chat; with none, it is not recorded. No member-count requests run on capture.
 
 History has no time zone setting: it stores UTC timestamps. [Correspondence stats](STATS.md#time-and-time-zone) show them in the Hermes time zone (`HERMES_TIMEZONE`, or `timezone` in Hermes's `config.yaml`), else UTC, and `--tz` overrides it for one report.
 
@@ -153,12 +173,12 @@ hermes telesec settings --format json   # retention.days, 0 is forever
 
 Automatic retention and size pruning remove whole closed monthly partitions. Partitions follow observation time. A month is deleted once all of it is older than the retention: with 30 days, September goes at the first cleanup on or after October 31. The current month and partitions needed for pending deletion classification are preserved, so neither retention nor `TELESEC_HISTORY_MAX_BYTES` is a hard storage ceiling. The contact catalog is rebuilt from retained evidence after pruning.
 
-Don't save for one chat stops capture but keeps what that chat already has. No record-level erasure command ships in this version. To remove an entire local archive, turn history off in Settings, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history does not remove dossiers; use `hermes telesec dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
+Don't save for one chat stops capture but keeps what that chat already has. [Erase one chat](#erase-one-chat) deletes one chat's history and dossier; there is no command to erase single messages. `hermes telesec history forget --all --yes` erases all history and every dossier. To remove an entire local archive by hand, turn history off in Settings, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history by hand does not remove dossiers; use `hermes telesec dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
 
 ## Runtime boundary
 
 The native Telegram observer records eligible Business text before ordinary Hermes handlers. It also receives deleted-message updates, which have no effective message. Capture does not change the ordinary Hermes authorization or agent routing of text messages. Turn history off in Settings to stop capturing new messages; use Hermes's normal configuration to control agent replies.
 
-The owner's `/dossier` command (once the bot confirms the sender as the connection's owner) and the dossier the bot posts are never recorded. A `/dossier` whose owner cannot be confirmed is stored as ordinary text, and an owner's edit of a stored message into `/dossier` is recorded as an edit. Dossiers read history only through its read locks and never modify it. `dossier forget` deletes dossier data only and never touches history. When retention or size pruning removes a message a dossier cites, the dossier drops that source. A fact with no sources left becomes unsupported, or `source gone` if the owner pinned or corrected it ([source changes](DOSSIERS.md#source-changes)).
+The owner's `/dossier` command (once the bot confirms the sender as the connection's owner) and the dossier the bot posts are never recorded. A `/dossier` whose owner cannot be confirmed is stored as ordinary text, and an owner's edit of a stored message into `/dossier` is recorded as an edit. Dossiers read history only through its read locks and never modify it. `dossier forget` deletes dossier data only and never touches history; [erasing a chat](#erase-one-chat) deletes both. When retention or size pruning removes a message a dossier cites, the dossier drops that source. A fact with no sources left becomes unsupported, or `source gone` if the owner pinned or corrected it ([source changes](DOSSIERS.md#source-changes)).
 
 The separate voice module still deletes transient audio after processing. This version does not insert voice transcripts into the text archive automatically.

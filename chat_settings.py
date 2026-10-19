@@ -9,7 +9,12 @@ only when it changed, so a change applies to the next update without a restart.
 
 A pause fails closed: a damaged file keeps the last valid settings, and with none (a cold start)
 history capture and dossiers pause for every chat until the file is repaired. Off is not delete:
-saved history and the stored dossier stay. Stdlib-only; the file never holds message text or names.
+saved history and the stored dossier stay until the owner erases them (``history_support.forget_chat``).
+Stdlib-only; the file never holds message text or names.
+
+Up to 0.12, TELESEC_HISTORY_CONNECTIONS, _CHATS and _CHAT_TYPES decided which chats history recorded.
+``migrate_history_scope()`` stores "Don't save" once for every known chat they kept out, and they are
+never read again.
 """
 
 from __future__ import annotations
@@ -365,6 +370,7 @@ def default_store() -> ChatSettingsStore:
 
 def reset_in_memory_caches() -> None:
     _STORE.clear_cache()
+    _SCOPE_WARNED.clear()
 
 
 def known_owner(business_connection_id: Any) -> str | None:
@@ -377,36 +383,15 @@ def paused(business_connection_id: Any, chat_id: Any, feature: str, owner: Any =
     """Is ``feature`` paused for this chat by its owner? A dossier also pauses while the chat's history is off.
 
     No live lookup: the owner comes from ``owner``, the cache or a binding, and an unknown owner of a
-    chat id that some owner paused counts as paused (fail closed). A dossier also pauses for a chat
-    outside the TELESEC_HISTORY_* scope, as the panel shows it; its stored dossier stays.
+    chat id that some owner paused counts as paused (fail closed).
     """
     _check_feature(feature)
-    if feature == "dossier" and not _scope_allows(business_connection_id, chat_id, "private"):
-        return True
     store = default_store()
     features = ("history",) if feature == "history" else FEATURES
     if not any(store.excluded_anywhere(name, chat_id) for name in features):
         return False
     owner = owner if owner is not None else known_owner(business_connection_id)
     return any(store.is_off(owner, chat_id, name) for name in features)
-
-
-def _scope_allows(connection: Any, chat: Any, chat_type: Any, owner_connections: Iterable[str] = ()) -> bool:
-    """TELESEC_HISTORY_CONNECTIONS/CHATS/CHAT_TYPES allow this chat (a Business chat is private when unknown).
-
-    Without the chat's connection, a chat of an owner none of whose known connections is allowed is out.
-    """
-    config = _history.history_config_from_env()
-    if connection:
-        if not config.connection_allowed(connection):
-            return False
-    else:
-        known = tuple(owner_connections)
-        if known and not any(config.connection_allowed(item) for item in known):
-            return False
-    if not config.chat_in_scope(chat):
-        return False
-    return config.exact_chat_allowed(chat) or config.chat_type_allowed(chat_type or "private")
 
 
 def _stored_on(snapshot: ChatSnapshot, owner: Any, chat: Any, feature: str) -> bool:
@@ -417,21 +402,18 @@ def _stored_on(snapshot: ChatSnapshot, owner: Any, chat: Any, feature: str) -> b
     return entry is None or entry.on(feature)
 
 
-def chat_state(owner: Any, chat: Any, *, connection: Any = None, chat_type: Any = None,
-               owner_connections: Iterable[str] = (), snapshot: ChatSnapshot | None = None) -> tuple[str, str]:
+def chat_state(owner: Any, chat: Any, *, chat_type: Any = None,
+               snapshot: ChatSnapshot | None = None) -> tuple[str, str]:
     """(history, dossier) for one owner's chat, as the panel shows them. Blocking.
 
-    history: "on" | "off" (this chat) | "settings" (off for all chats) | "server" (outside the env
-    scope) | "unreadable" (chat-settings.json can't be read, everything paused).
+    history: "on" | "off" (this chat) | "settings" (off for all chats) | "unreadable" (chat-settings.json
+    can't be read, everything paused).
     dossier: "on" | "off" (this chat) | "settings" (dossiers off for all chats) | "needs_history" (this
     chat's history is off) | "no_history" (history is not on for the chat) | "private_only".
-    ``owner_connections`` are the owner's known Business connections, for a chat whose own is unknown.
     """
     snapshot = snapshot or default_store().snapshot()
     if not _settings.enabled("history"):
         history = "settings"
-    elif not _scope_allows(connection, chat, chat_type, owner_connections):
-        history = "server"
     elif snapshot.blind:
         history = "unreadable"
     else:
@@ -449,36 +431,175 @@ def chat_state(owner: Any, chat: Any, *, connection: Any = None, chat_type: Any 
 
 @dataclass(frozen=True)
 class ChatScope:
-    """What the CLI knows of each chat for ``chat_state``: from the history catalog and the owner bindings."""
+    """What the CLI knows of each chat for ``chat_state``: its type, from the history catalog."""
 
-    connections: Mapping[str, str] = field(default_factory=dict)  # chat -> the one connection history lists
     chat_types: Mapping[str, str] = field(default_factory=dict)
-    owner_connections: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
-    def state(self, owner: str | None, chat: str, *, connection: str | None = None,
-              snapshot: ChatSnapshot | None = None) -> tuple[str, str]:
-        return chat_state(owner, chat, connection=connection or self.connections.get(chat),
-                          chat_type=self.chat_types.get(chat),
-                          owner_connections=self.owner_connections.get(owner, ()) if owner is not None else (),
-                          snapshot=snapshot)
+    def state(self, owner: str | None, chat: str, *, snapshot: ChatSnapshot | None = None) -> tuple[str, str]:
+        return chat_state(owner, chat, chat_type=self.chat_types.get(chat), snapshot=snapshot)
 
 
-def cli_scope(bindings: Mapping[str, str]) -> ChatScope:
-    """One read of the history catalog for a CLI call; ``bindings`` maps a connection to its owner."""
-    connections: dict[str, set[str]] = {}
+def cli_scope() -> ChatScope:
+    """One read of the history catalog for a CLI call."""
     chat_types: dict[str, str] = {}
     for entry in _modes._history_entries():
-        chat = str(entry.get("chat_id"))
-        if entry.get("business_connection_id"):
-            connections.setdefault(chat, set()).add(str(entry["business_connection_id"]))
         chat_type = _history._normalize_chat_type(entry.get("chat_type"))
         if chat_type:
-            chat_types.setdefault(chat, chat_type)
-    owners: dict[str, list[str]] = {}
-    for connection, owner in sorted(bindings.items()):
-        owners.setdefault(str(owner), []).append(str(connection))
-    return ChatScope({chat: next(iter(items)) for chat, items in connections.items() if len(items) == 1},
-                     chat_types, {owner: tuple(items) for owner, items in owners.items()})
+            chat_types.setdefault(str(entry.get("chat_id")), chat_type)
+    return ChatScope(chat_types)
+
+
+# ---------------------------------------------------------------------------
+# One-time migration of the 0.12 history scope (TELESEC_HISTORY_CONNECTIONS / _CHATS / _CHAT_TYPES)
+# ---------------------------------------------------------------------------
+
+SCOPE_ENV = (_history.HISTORY_CONNECTIONS_ENV, _history.HISTORY_CHATS_ENV, _history.HISTORY_CHAT_TYPES_ENV)
+SCOPE_MIGRATION = "history_scope"
+MIGRATION_VIA = "migration"
+SCOPE_HINT = "New chats are recorded unless you tap Manage Bot in the chat and choose Don't save."
+_SCOPE_WARNED: set[str] = set()
+
+
+def _legacy_scope() -> Callable[[str | None, str, str | None, Iterable[str]], bool]:
+    """The 0.12 filter as it read the variables: does it let (connection, chat, chat type) into history?
+
+    Without the chat's connection, an owner none of whose bound connections is allowed is out.
+    """
+    connections = _history._parse_scope(os.environ.get(_history.HISTORY_CONNECTIONS_ENV))
+    chats = _history._parse_scope(os.environ.get(_history.HISTORY_CHATS_ENV))
+    chat_types = _history._parse_chat_types(os.environ.get(_history.HISTORY_CHAT_TYPES_ENV))
+
+    def allows(connection: str | None, chat: str, chat_type: str | None, owner_connections: Iterable[str]) -> bool:
+        if connections is not None:
+            known = (connection,) if connection else tuple(owner_connections)
+            if known and not any(connections.matches(item) for item in known):
+                return False
+        if chats is not None and not chats.matches(chat):
+            return False
+        return (chats is not None and chats.contains_exact(chat)) or (chat_type or "private") in chat_types
+
+    return allows
+
+
+def _scope_targets() -> tuple[set[tuple[str, str]], int]:
+    """(owner, chat) pairs the old scope kept out of history, and how many such chats have no known owner.
+
+    Chats come from the history catalog (rebuilt when stale), transcription modes and chat-settings.json.
+    Only private chats count: Business chats are private, and history never records another type.
+    """
+    allows = _legacy_scope()
+    try:
+        entries = _history._catalog_entries_for_cli()
+    except ValueError:
+        entries = _history.rebuild_contact_catalog().get("contacts", [])
+    modes = _modes.default_store().read_strict()
+    owner_connections: dict[str, list[str]] = {}
+    for connection, owner in modes.connections.items():
+        owner_connections.setdefault(str(owner), []).append(str(connection))
+    targets: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str]] = set()
+    no_owner = 0
+    for entry in entries:
+        connection, chat = str(entry.get("business_connection_id") or ""), str(entry.get("chat_id"))
+        chat_type = _history._normalize_chat_type(entry.get("chat_type"))
+        if not connection or chat_type not in (None, "private"):
+            continue
+        owner = known_owner(connection)
+        if owner is not None:
+            seen.add((owner, chat))
+        if allows(connection, chat, chat_type, ()):
+            continue
+        if owner is None:
+            no_owner += 1
+        else:
+            targets.add((owner, chat))
+    stored = [(owner, chat) for owner, chats in modes.items() for chat in chats]
+    stored += [(owner, chat) for owner, chats in default_store().read_strict().owners.items() for chat in chats]
+    for owner, chat in stored:
+        if (owner, chat) not in seen and not allows(None, chat, None, owner_connections.get(owner, ())):
+            targets.add((owner, chat))
+    # A key the file would reject must never be written: it would pause every chat.
+    return {(o, c) for o, c in targets if _OWNER_KEY_RE.match(o) and _CHAT_KEY_RE.match(c)}, no_owner
+
+
+def _scope_migrated(raw: dict[str, Any]) -> bool:
+    migrations = raw.get("migrations")
+    return isinstance(migrations, dict) and SCOPE_MIGRATION in migrations
+
+
+def _store_scope_targets(store: ChatSettingsStore, targets: set[tuple[str, str]], no_owner: int, *,
+                         now: datetime | None) -> int | None:
+    """Write "Don't save" for ``targets`` and the migration record in one locked write; None when already done."""
+    path = store.path
+    stamp = _modes._format_timestamp(now)
+    changed = 0
+    with _modes._writer_lock(path):
+        raw, _backup = store._read_for_write(path, now=now, repair_corrupt=False)
+        if _scope_migrated(raw):
+            return None
+        owners = raw.setdefault("owners", {})
+        for owner, chat in sorted(targets):
+            chats = owners.setdefault(owner, {"chats": {}}).setdefault("chats", {})
+            item = chats.get(chat) or {}
+            if item.get("history") != OFF:
+                chats[chat] = {**item, "history": OFF, "updated_at": stamp, "updated_via": MIGRATION_VIA}
+                changed += 1
+        if not isinstance(raw.get("migrations"), dict):
+            raw["migrations"] = {}
+        raw["migrations"][SCOPE_MIGRATION] = {"at": stamp, "chats_off": changed, "no_owner": no_owner}
+        raw["version"] = SCHEMA_VERSION
+        _modes._write_private_json_atomic(path, raw)
+        store._remember_write(path, raw)
+    return changed
+
+
+def migrate_history_scope(*, now: datetime | None = None) -> list[str]:
+    """Store "Don't save" once for every chat the old TELESEC_HISTORY_* variables kept out of history.
+
+    Runs only while one of them is set and chat-settings.json has no record of this migration; a
+    damaged file, catalog or modes file leaves it for the next start. Records the run (counts only)
+    under "migrations" in chat-settings.json. Returns the variables it moved, for ``warn_ignored_scope_env``.
+    """
+    names = [name for name in SCOPE_ENV if name in os.environ]
+    if not names:
+        return []
+    store = default_store()
+    path = store.path
+    try:
+        if _scope_migrated(store._read_for_write(path, now=now, repair_corrupt=False)[0]):
+            return []
+        targets, no_owner = _scope_targets()
+        changed = _store_scope_targets(store, targets, no_owner, now=now)
+    except (OSError, ValueError) as exc:
+        logger.warning("%s: %s not moved to per-chat settings yet (%s); retrying at the next start",
+                       _history.PLUGIN_NAME, ", ".join(names), type(exc).__name__)
+        return []
+    if changed is None:
+        return []  # another process just ran it
+    # WARNING, not INFO: register() runs before the gateway configures logging. Counts only, never ids or names.
+    logger.warning("%s: %s no longer read. Chats outside the old scope now set to Don't save: %d. %s",
+                   _history.PLUGIN_NAME, ", ".join(names) + (" is" if len(names) == 1 else " are"), changed,
+                   SCOPE_HINT)
+    if no_owner:
+        logger.warning("%s: chats outside the old scope with no known owner: %d. They are recorded from now "
+                       "on; tap Manage Bot in each and choose Don't save.", _history.PLUGIN_NAME, no_owner)
+    return names
+
+
+def warn_ignored_scope_env(skip: Iterable[str] = ()) -> list[str]:
+    """One WARNING per process for each old scope variable still set; ``skip`` names the ones the migration
+    just logged."""
+    warned = []
+    for name in SCOPE_ENV:
+        if name not in os.environ or name in _SCOPE_WARNED:
+            continue
+        _SCOPE_WARNED.add(name)
+        if name in skip:
+            continue
+        logger.warning("%s: %s is no longer read; history is set per chat: Manage Bot > Don't save, or "
+                       "'hermes telesec chat set <chat> --history off'.", _history.PLUGIN_NAME, name)
+        warned.append(name)
+    return warned
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +640,7 @@ def _entry_json(owner: str | None, chat: str, entry: ChatEntry | None, *, scope:
                 connection: str | None = None, label: str | None = None,
                 snapshot: ChatSnapshot | None = None) -> dict[str, Any]:
     entry_or_default = entry or ChatEntry()
-    history, dossier = scope.state(owner, chat, connection=connection, snapshot=snapshot)
+    history, dossier = scope.state(owner, chat, snapshot=snapshot)
     return {
         "owner": owner,
         "chat_id": chat,
@@ -544,14 +665,6 @@ def _modes_snapshot(owner_arg: str | None) -> _modes.Snapshot:
         if owner_arg is None:
             raise ValueError(f"{_modes.MODES_FILENAME} is corrupt, so the owner can't be inferred; pass --owner")
         return _modes.Snapshot()
-
-
-def _bindings() -> Mapping[str, str]:
-    """Connection -> owner from transcription-modes.json; none when it can't be read (the scope check skips it)."""
-    try:
-        return _modes.default_store().read_strict().connections
-    except (_modes.ModesFileCorrupt, OSError):
-        return {}
 
 
 def _single_holder(store: ChatSettingsStore, chat: str) -> str | None:
@@ -593,7 +706,7 @@ def _list(args: argparse.Namespace, store: ChatSettingsStore) -> int:
             if owner is None or owner_key == owner
             for chat, entry in sorted(snapshot.owners[owner_key].items(), key=lambda item: int(item[0]))]
     if getattr(args, "format", None) == "json":
-        scope = cli_scope(_bindings())
+        scope = cli_scope()
         _print_json({"history_enabled": _settings.enabled("history"),
                      "dossiers_enabled": _settings.enabled("dossiers"),
                      "chats": [_entry_json(o, c, e, scope=scope, snapshot=snapshot) for o, c, e in rows]})
@@ -621,12 +734,12 @@ def handle_chat_cli(args: argparse.Namespace, *, store: ChatSettingsStore | None
         if action == "get":
             snapshot = store.read_strict()
             entry = snapshot.owners.get(owner, {}).get(chat) if owner is not None else None
-            scope = cli_scope(_bindings())
+            scope = cli_scope()
             if getattr(args, "format", None) == "json":
                 _print_json(_entry_json(owner, chat, entry, scope=scope, connection=connection, label=label,
                                         snapshot=snapshot))
                 return 0
-            history, dossier = scope.state(owner, chat, connection=connection, snapshot=snapshot)
+            history, dossier = scope.state(owner, chat, snapshot=snapshot)
             stored = "" if entry is None else f" (via {entry.updated_via} at {entry.updated_at})"
             print(f"chat={chat} {_entry_text(entry)}{stored}")
             print(f"in effect: history={history} dossier={dossier}")

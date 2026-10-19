@@ -650,27 +650,32 @@ async def test_enable_only_private_capture_spans_multiple_connections_and_chats(
 
 
 @pytest.mark.asyncio
-async def test_connection_filter_still_narrows_capture(plugin, monkeypatch: pytest.MonkeyPatch):
+async def test_old_scope_variables_no_longer_narrow_capture(plugin, monkeypatch: pytest.MonkeyPatch):
     set_switch(plugin, "history", True)
     monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
+    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", "group")
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(business_id="business-123", chat_id=991, text="kept"),
         bot=FakeBot(),
     )
     await plugin._history_support.observe_ptb_update(
-        make_business_text_update(business_id="business-456", chat_id=992, text="dropped"),
+        make_business_text_update(business_id="business-456", chat_id=992, text="also kept"),
         bot=FakeBot(),
     )
 
     assert [record["text"] for record in load_records(plugin, business_id="business-123", chat_id=991)] == ["kept"]
-    assert not load_records(plugin, business_id="business-456", chat_id=992)
+    assert [record["text"] for record in load_records(plugin, business_id="business-456", chat_id=992)] == ["also kept"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("chat_type", ["group", "supergroup", "channel"])
-async def test_history_skips_non_private_chat_types_by_default(plugin, monkeypatch: pytest.MonkeyPatch, chat_type: str):
+async def test_history_never_records_non_private_chat_types(plugin, monkeypatch: pytest.MonkeyPatch, chat_type: str):
     set_switch(plugin, "history", True)
+    # The 0.12 opt-ins are gone: Business chats are private.
+    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", f"private,{chat_type}")
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
 
     wrote = await plugin._history_support.observe_ptb_update(
         make_business_text_update(chat_type=chat_type, chat_title=f"{chat_type} room", chat_first_name=None, chat_last_name=None),
@@ -679,39 +684,6 @@ async def test_history_skips_non_private_chat_types_by_default(plugin, monkeypat
 
     assert wrote is False
     assert not load_records(plugin, chat_id=991)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("chat_type", ["group", "supergroup", "channel"])
-async def test_history_chat_type_opt_in_allows_additional_chat_types(
-    plugin,
-    monkeypatch: pytest.MonkeyPatch,
-    chat_type: str,
-):
-    set_switch(plugin, "history", True)
-    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", f"private,{chat_type}")
-
-    wrote = await plugin._history_support.observe_ptb_update(
-        make_business_text_update(chat_type=chat_type, chat_title=f"{chat_type} room", chat_first_name=None, chat_last_name=None),
-        bot=FakeBot(),
-    )
-
-    assert wrote is True
-    assert load_records(plugin)[0]["chat_profile"]["type"] == chat_type
-
-
-@pytest.mark.asyncio
-async def test_exact_chat_id_opt_in_allows_group_chat_even_without_chat_type_opt_in(plugin, monkeypatch: pytest.MonkeyPatch):
-    set_switch(plugin, "history", True)
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
-
-    wrote = await plugin._history_support.observe_ptb_update(
-        make_business_text_update(chat_type="group", chat_title="support room", chat_first_name=None, chat_last_name=None),
-        bot=FakeBot(),
-    )
-
-    assert wrote is True
-    assert load_records(plugin)[0]["chat_profile"]["type"] == "group"
 
 
 @pytest.mark.asyncio
@@ -739,17 +711,12 @@ async def test_delete_updates_follow_same_chat_boundary_and_known_type_fallback(
 
 def test_history_config_defaults_and_env_overrides(plugin, monkeypatch: pytest.MonkeyPatch):
     config = plugin._history_support.history_config_from_env()
-    assert config.connections is None
-    assert config.chats is None
-    assert config.chat_types == {"private"}
     assert config.nearby_before_seconds == 15
     assert config.retention_days == 0
     assert config.max_bytes == 1024 * 1024 * 1024
 
     monkeypatch.setenv("TELESEC_HISTORY_NEARBY_BEFORE_SECONDS", "7")
-    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", "private,group")
     config = plugin._history_support.history_config_from_env()
-    assert config.chat_types == {"group", "private"}
     assert config.nearby_before_seconds == 7
     assert config.retention_days == 0
 
@@ -816,8 +783,6 @@ async def test_raw_history_records_create_edit_delete_without_needing_gateway_di
 
     reloaded = _load_plugin_module(monkeypatch, tmp_path)
     set_switch(reloaded, "history", True)
-    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     await reloaded._history_support.observe_ptb_update(
         make_business_text_update(text="hello", message_id=77, update_id=1, date=base),
@@ -2170,7 +2135,6 @@ async def test_direction_resolution_accepts_sender_business_bot_and_owner_lookup
 ):
     plugin = enabled_history
     base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
-    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "*")
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="bot", message_id=77, update_id=1, date=base, sender_business_bot_id=9),
@@ -2338,8 +2302,6 @@ async def _delete_and_classify(
 ):
     base = base or datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     set_switch(plugin, "history", True)
-    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
 
     if original_text is not None:
@@ -2560,8 +2522,6 @@ async def test_identical_pre_delete_message_outside_nearby_before_window_is_unex
 @pytest.mark.asyncio
 async def test_deleted_message_classification_survives_restart(plugin, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     set_switch(plugin, "history", True)
-    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 
@@ -2626,8 +2586,6 @@ async def test_idle_deletion_is_classified_by_scheduler_without_manual_maintain(
 @pytest.mark.asyncio
 async def test_startup_maintenance_classifies_overdue_deletions(plugin, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     set_switch(plugin, "history", True)
-    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     timers = TimerHarness()
@@ -2657,8 +2615,6 @@ async def test_startup_maintenance_classifies_overdue_deletions(plugin, monkeypa
 @pytest.mark.asyncio
 async def test_startup_maintenance_recovers_pending_timer_before_window(plugin, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     set_switch(plugin, "history", True)
-    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
     first_timers = TimerHarness()
@@ -2700,8 +2656,6 @@ async def test_month_boundary_pending_deletion_protects_closed_partition_until_c
     tmp_path: Path,
 ):
     set_switch(plugin, "history", True)
-    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
     monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     june_message_at = datetime(2026, 6, 30, 23, 59, 50, tzinfo=UTC)
     deleted_at = datetime(2026, 6, 30, 23, 59, 59, tzinfo=UTC)
@@ -4893,3 +4847,38 @@ def test_history_cli_deletions_pending_streams_live_tombstones_with_bounded_stat
     assert output == [
         f"{deleted_three['observed_at']} message.deleted connection=business-123 chat=991 message=503 status=pending"
     ]
+
+
+@pytest.mark.asyncio
+async def test_erase_cancels_pending_deletion_timers_and_a_late_one_never_recreates_the_chat(
+    enabled_history,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    plugin = enabled_history
+    history = plugin._history_support
+    base = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
+    timers = TimerHarness()
+    monkeypatch.setattr(history.threading, "Timer", timers.timer)
+    await history.observe_ptb_update(make_business_text_update(text="hello", message_id=77, update_id=1, date=base),
+                                     bot=FakeBot(), now=base)
+    await history.observe_ptb_update(
+        make_business_text_update(text="other", chat_id=992, message_id=78, update_id=2, date=base),
+        bot=FakeBot(), now=base,
+    )
+    await history.observe_ptb_update(make_deleted_update(message_ids=(77,), update_id=3), bot=FakeBot(),
+                                     now=base + timedelta(seconds=1))
+    chat_dir = history._history_chat_dir_path("business-123", 991)
+    (timer,) = [t for t in timers.timers if t.started and str(t.args[1]).endswith("/991")]
+
+    saved = history.erase_chat_history("business-123", 991)
+
+    assert (saved.chats, saved.messages, saved.records, saved.files) == (1, 1, 2, 1)
+    assert timer.cancelled and not chat_dir.exists()
+    timer.cancelled = False
+    timer.fire()  # a timer that was already running
+    assert not chat_dir.exists()
+    assert history.erase_chat_history("business-123", 991) is None
+    assert [record["text"] for record in load_records(plugin, chat_id=992)] == ["other"]
+    assert [str(entry["chat_id"]) for entry in history._catalog_entries_for_cli()] == ["992"]
+    assert history.has_saved_history("business-123", 991) is False
+    assert history.has_saved_history("business-123", 992) is True

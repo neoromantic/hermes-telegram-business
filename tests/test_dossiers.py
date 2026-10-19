@@ -813,11 +813,10 @@ async def test_qualification_requires_received_and_sent_in_window(plug: ModuleTy
 
 
 @pytest.mark.asyncio
-async def test_groups_never_processed(plug: ModuleType, dossiers: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_groups_never_processed(plug: ModuleType, dossiers: ModuleType) -> None:
     ds = dossiers
-    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", "private,group")
-    plug._history_support.reset_in_memory_caches()
-    await seed(plug, -5516, None, [
+    # Capture never records a group since 0.13; one recorded by an older version's TELESEC_HISTORY_CHAT_TYPES.
+    raw(plug, -5516, [
         (1, "in", "GROUP-SECRET question", 60),
         (2, "out", "GROUP-SECRET answer", 55),
     ], chat_type="group", title="Team room")
@@ -1591,7 +1590,87 @@ async def test_dossier_subcommand_coexists_with_history_cli(plug: ModuleType, do
     code, out, _err = cli(plug, "history")
     assert code == 1
     assert out == ("Usage: hermes telesec history "
-                   "<chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>\n")
+                   "<chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain|forget>\n")
 
     code, _out, _err = cli(plug, "dossier", "no-such-command")
     assert code == 2
+
+
+# --- history forget -------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_history_forget_erases_one_chat_and_its_dossier(plug: ModuleType, dossiers: ModuleType) -> None:
+    ds, history = dossiers, plug._history_support
+    await seed(plug, 5504, "forget_me", [(1, "in", "FORGET-TAG question", 90), (2, "out", "FORGET-TAG reply", 85)])
+    await seed(plug, 5505, "keep_me", [(1, "in", "KEEP-TAG question", 80), (2, "out", "KEEP-TAG reply", 75)])
+    assert cycle(ds, FakeLlm(quote_first, quote_first, quote_first)).refreshed == 2
+    before = snapshot_history_tree(plug)
+
+    code, out, _err = cli(plug, "history", "forget", "--chat", "5504")
+
+    assert code == 1
+    size = history._saved_in_chat_dir(history._history_chat_dir_path(BUSINESS_ID, 5504)).bytes
+    assert out.splitlines() == [
+        f"Would erase 2 saved messages (2 records, 1 file, {size} bytes) of @forget_me "
+        + f"(connection={BUSINESS_ID} chat=5504) and its dossier.",
+        "Nothing was erased. Run it again with --yes to erase; this cannot be undone.",
+    ]
+    assert snapshot_history_tree(plug) == before and read_dossier(ds, 5504) is not None
+
+    code, out, _err = cli(plug, "history", "forget", "--chat", "5504", "--yes")
+
+    assert code == 0
+    assert out.startswith("Erased 2 saved messages (2 records, 1 file, ")
+    assert "Its dossier was forgotten too." in out
+    assert "History is still on for this chat, so new messages are saved again." in out
+    assert not history._history_chat_dir_path(BUSINESS_ID, 5504).exists()
+    assert read_dossier(ds, 5504) is None and read_dossier(ds, 5505) is not None
+    assert [str(entry["chat_id"]) for entry in history._catalog_entries_for_cli()] == ["5505"]
+    assert cli(plug, "history", "show", "--chat", "5504")[0] == 1
+    stats = cli(plug, "stats", "--format", "json")[1]
+    assert "forget_me" not in stats and "keep_me" in stats
+    assert cycle(ds, FakeLlm(quote_first), now=NOW + timedelta(hours=25)).refreshed == 0
+    assert read_dossier(ds, 5504) is None
+
+    code, out, _err = cli(plug, "history", "forget", "--chat", "5504", "--yes")
+    assert code == 1 and "no matching history chat found" in out
+
+
+@pytest.mark.asyncio
+async def test_history_forget_skips_the_still_on_note_for_a_chat_set_to_dont_save(plug: ModuleType,
+                                                                                 dossiers: ModuleType) -> None:
+    await seed(plug, 5504, "paused", [(1, "in", "question", 90), (2, "out", "reply", 85)])
+    plug._chat_settings.default_store().set_flag(1000, 5504, "history", False, via="cli")
+
+    code, out, _err = cli(plug, "history", "forget", "--chat", "5504", "--yes")
+
+    assert code == 0 and "It had no dossier." in out and "History is still on" not in out
+
+
+@pytest.mark.asyncio
+async def test_history_forget_all_needs_yes_and_erases_every_chat_and_dossier(plug: ModuleType,
+                                                                             dossiers: ModuleType) -> None:
+    ds, history = dossiers, plug._history_support
+    await seed(plug, 5504, "first", [(1, "in", "ONE question", 90), (2, "out", "ONE reply", 85)])
+    await seed(plug, 5505, "second", [(1, "in", "TWO question", 80), (2, "out", "TWO reply", 75)])
+    assert cycle(ds, FakeLlm(quote_first, quote_first, quote_first)).persona == "refreshed"
+    before = snapshot_history_tree(plug)
+
+    code, out, _err = cli(plug, "history", "forget", "--all")
+    assert code == 1
+    assert out.startswith("Would erase all saved history: 2 chats, 4 saved messages (4 records, 2 files, ")
+    assert "and every dossier (contacts and the owner persona)." in out
+    code, out, _err = cli(plug, "history", "forget", "--all", "--chat", "5504", "--yes")
+    assert code == 1 and "--all cannot be combined" in out
+    assert snapshot_history_tree(plug) == before and read_persona(ds) is not None
+
+    code, out, _err = cli(plug, "history", "forget", "--all", "--yes")
+
+    assert code == 0
+    assert out.startswith("Erased all saved history: 2 chats, 4 saved messages (4 records, 2 files, ")
+    assert "Forgot 2 contact dossiers and the owner persona." in out
+    assert "History is still on, so new messages are saved again." in out
+    assert read_dossier(ds, 5504) is None and read_dossier(ds, 5505) is None and read_persona(ds) is None
+    assert history._catalog_entries_for_cli() == []
+    assert cli(plug, "history", "chats")[1].strip() == "No Telegram Business history found."

@@ -34,12 +34,10 @@ Use this plugin skill when you need to inspect or maintain the opt-in Telegram B
 ## Environment
 
 - Capture is a stored switch, not a variable: the owner turns it on in Telegram Settings (`/telesec`) or with `hermes telesec settings set history on`. Check it with `hermes telesec settings --format json` (`history.enabled`). Change it only when the owner asks.
-- Default capture after enablement is private Business chats only.
+- Capture after enablement covers private Business chats only. Groups, supergroups, and channels are never recorded.
 - The owner can stop one chat with **Don't save** in its owner panel or `hermes telesec chat set <chat> --history off`; what was saved stays. Check it with `hermes telesec chat get <chat> --format json` (`effective_history`, `history_state`). A gap in a chat's history can mean it was paused. Change it only when the owner asks.
-- `TELESEC_HISTORY_CONNECTIONS` is an optional comma-separated Business-connection filter or `*`.
-- `TELESEC_HISTORY_CHATS` is an optional exact chat filter/override or `*`. Exact chat IDs may opt in those chats even when their type is not part of the default chat-type set.
-- `TELESEC_HISTORY_CHAT_TYPES` defaults to `private` and may add `group`, `supergroup`, or `channel`.
-- Missing or unknown chat type stays fail-closed unless an exact chat ID is explicitly allowed or earlier canonical profile evidence already established an eligible type.
+- `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` are no longer read (since 0.13); never suggest them. On the first start with one of them set, each chat they kept out was set to Don't save once (`updated_via: migration`). New chats are recorded unless the owner taps Don't save.
+- An update without a chat type uses the type history already has for that chat; with none, it is not recorded.
 - Optional controls:
   - `TELESEC_HISTORY_CORRECTION_WINDOW` seconds, default `120`; this is the post-delete candidate window and classification delay
   - `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` seconds, default `15`
@@ -112,6 +110,14 @@ hermes telesec history maintain
 
 Routine delayed classification does not depend on `maintain`; the runtime scheduler handles exact due-time classification, and startup maintenance recovers overdue or still-pending deletions after a restart. `maintain` remains the safe manual path for recovery plus closed-partition retention/size pruning without deleting active-month files.
 
-Automatic retention and size pruning physically remove only whole closed monthly partitions. The active month is preserved even if that leaves the configured cap short, and chats with pending unclassified deletions also keep their closed partitions until classification is durably appended. `contacts.json` is rebuilt from the retained canonical JSONL, so identities and aliases disappear once no retained partition still contains evidence for them. No record-level or right-to-erasure command ships in v1.
+Automatic retention and size pruning physically remove only whole closed monthly partitions. The active month is preserved even if that leaves the configured cap short, and chats with pending unclassified deletions also keep their closed partitions until classification is durably appended. `contacts.json` is rebuilt from the retained canonical JSONL, so identities and aliases disappear once no retained partition still contains evidence for them. There is no command to erase single messages.
+
+```bash
+hermes telesec history forget --chat <chat>          # dry run: what would be erased, exit code 1
+hermes telesec history forget --chat <chat> --yes
+hermes telesec history forget --all --yes
+```
+
+`history forget` erases one chat's saved history and its dossier (same selectors as `show`); `--all --yes` erases all history and every dossier, including the persona. The owner panel offers the same per-chat erase as **🗑 Erase saved history** while the chat is set to Don't save. Both cannot be undone: run them only when the owner explicitly asks, show the dry run first, and suggest `hermes telesec chat set <chat> --history off` first if the chat should stay out of history.
 
 Human-readable CLI output escapes carriage returns, tabs, ESC/control bytes, and DEL in stored text while keeping Unicode readable. JSONL export remains the raw machine-readable stream.

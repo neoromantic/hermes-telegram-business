@@ -16,12 +16,13 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import unicodedata
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import copy_context
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "telesec"
 get_config = {}.get
+# The 0.12 history scope. Since 0.13 only chat_settings' one-time migration reads it.
 HISTORY_CONNECTIONS_ENV = "TELESEC_HISTORY_CONNECTIONS"
 HISTORY_CHATS_ENV = "TELESEC_HISTORY_CHATS"
 HISTORY_CHAT_TYPES_ENV = "TELESEC_HISTORY_CHAT_TYPES"
@@ -107,11 +109,6 @@ class Scope:
             return True
         return str(value) in self.values
 
-    def render(self) -> str:
-        if self.wildcard:
-            return "*"
-        return ",".join(sorted(self.values))
-
     def contains_exact(self, value: Any) -> bool:
         return str(value) in self.values
 
@@ -119,9 +116,6 @@ class Scope:
 @dataclass(frozen=True)
 class HistoryConfig:
     enabled: bool
-    connections: Scope | None
-    chats: Scope | None
-    chat_types: frozenset[str]
     correction_window_seconds: int = DEFAULT_CORRECTION_WINDOW_SECONDS
     nearby_before_seconds: int = DEFAULT_NEARBY_BEFORE_SECONDS
     retention_days: int = DEFAULT_RETENTION_DAYS
@@ -130,27 +124,6 @@ class HistoryConfig:
     @property
     def active(self) -> bool:
         return self.enabled
-
-    def connection_allowed(self, business_connection_id: Any) -> bool:
-        return self.connections is None or self.connections.matches(business_connection_id)
-
-    def chat_in_scope(self, chat_id: Any) -> bool:
-        return self.chats is None or self.chats.matches(chat_id)
-
-    def exact_chat_allowed(self, chat_id: Any) -> bool:
-        return self.chats is not None and self.chats.contains_exact(chat_id)
-
-    def chat_type_allowed(self, chat_type: Any) -> bool:
-        normalized = _normalize_chat_type(chat_type)
-        return normalized in self.chat_types
-
-    def allows(self, business_connection_id: Any, chat_id: Any, *, chat_type: Any, known_chat_type: Any = None) -> bool:
-        if not self.active or not self.connection_allowed(business_connection_id) or not self.chat_in_scope(chat_id):
-            return False
-        if self.exact_chat_allowed(chat_id):
-            return True
-        normalized_type = _normalize_chat_type(chat_type) or _normalize_chat_type(known_chat_type)
-        return normalized_type in self.chat_types
 
 
 @dataclass
@@ -690,7 +663,8 @@ def _parse_chat_types(raw: str | None) -> frozenset[str]:
 
 
 def capture_enabled() -> bool:
-    """The global history switch (Settings or `hermes telesec settings`); scope and tuning stay env."""
+    """The global history switch (Settings or `hermes telesec settings`); per-chat "Don't save" is in
+    chat_settings, and only tuning stays env."""
     from . import global_settings  # lazy: global_settings imports this module
 
     return global_settings.enabled("history")
@@ -710,9 +684,6 @@ def history_config_from_env() -> HistoryConfig:
     max_bytes = max(1, _env_int(HISTORY_MAX_BYTES_ENV, DEFAULT_MAX_BYTES))
     return HistoryConfig(
         enabled=capture_enabled(),
-        connections=_parse_scope(os.environ.get(HISTORY_CONNECTIONS_ENV)),
-        chats=_parse_scope(os.environ.get(HISTORY_CHATS_ENV)),
-        chat_types=_parse_chat_types(os.environ.get(HISTORY_CHAT_TYPES_ENV)),
         correction_window_seconds=correction_window,
         nearby_before_seconds=nearby_before_seconds,
         retention_days=retention_days,
@@ -2143,6 +2114,8 @@ def _run_scheduled_deletion_timer(chat_dir_text: str, deleted_event_id: str, due
         if entry is None or entry.due_at != due_at:
             return
         _DELETION_TIMERS.pop(key, None)
+    if not chat_dir.is_dir():
+        return  # erased since: never recreate it
     try:
         _classified, refresh_exc, dirty_exc = _classify_due_for_chat(
             chat_dir,
@@ -2412,6 +2385,140 @@ def collect_history_stats(*, now: datetime | None = None) -> HistoryStats:
         cap_exceeded=cap_exceeded,
         cap_shortfall_bytes=max(0, total_bytes - max_bytes),
     )
+
+
+@dataclass(frozen=True)
+class SavedHistory:
+    """What history holds on disk for some chats: what ``erase_chat_history`` deletes."""
+
+    chats: int = 0
+    messages: int = 0  # message.created records
+    records: int = 0
+    files: int = 0
+    bytes: int = 0
+
+    def __add__(self, other: SavedHistory) -> SavedHistory:
+        return SavedHistory(self.chats + other.chats, self.messages + other.messages,
+                            self.records + other.records, self.files + other.files, self.bytes + other.bytes)
+
+
+def _saved_in_chat_dir(chat_dir: Path) -> SavedHistory:
+    """Counts for one chat dir; a torn or unreadable line still counts its bytes."""
+    messages = records = files = size = 0
+    for path in _iter_history_files(chat_dir):
+        try:
+            size += path.stat().st_size
+            with path.open("rb") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(record, dict):
+                        records += 1
+                        messages += record.get("event_type") == "message.created"
+        except OSError:
+            continue
+        files += 1
+    return SavedHistory(1 if files else 0, messages, records, files, size)
+
+
+def has_saved_history(business_connection_id: Any, chat_id: Any) -> bool:
+    """Does history hold a file for this chat? A cheap check for the owner panel (no lock, no read)."""
+    chat_dir = _history_chat_dir_path(business_connection_id, chat_id)
+    try:
+        return any(path.suffix == ".jsonl" and path.is_file() for path in chat_dir.iterdir())
+    except OSError:
+        return False
+
+
+def saved_chat_history(business_connection_id: Any, chat_id: Any) -> SavedHistory | None:
+    """What history holds for one chat, None when nothing. Blocking; reads without a lock (a preview)."""
+    if not has_saved_history(business_connection_id, chat_id):
+        return None
+    saved = _saved_in_chat_dir(_history_chat_dir_path(business_connection_id, chat_id))
+    return saved if saved.files else None
+
+
+def _erase_chat_dir_locked(chat_dir: Path) -> SavedHistory:
+    """Delete one chat dir with its pending deletion timers and cached state; the root writer lock is held."""
+    with _chat_writer_lock(chat_dir):
+        saved = _saved_in_chat_dir(chat_dir)
+        _cancel_chat_timers(chat_dir)
+        _invalidate_chat_cache(chat_dir)
+        shutil.rmtree(chat_dir)
+    with suppress(OSError):
+        chat_dir.parent.rmdir()  # the connection dir, only when now empty
+    return saved
+
+
+def _drop_catalog_entries_locked(keys: set[tuple[str, str]], base_source_signature: dict[str, Any]) -> None:
+    """Remove erased chats from contacts.json: in place when it was fresh, else a rebuild (dirty when that fails)."""
+    try:
+        catalog = None if _catalog_dirty_locked() else _read_catalog_locked()
+    except ValueError:
+        catalog = None
+    try:
+        if catalog is not None and _catalog_source_signature(catalog) == base_source_signature:
+            entries = {key: entry for key, entry in _catalog_contacts_map(catalog).items() if key not in keys}
+            _write_catalog_locked(_catalog_from_entries(
+                entries, source_signature=_history_source_signature_locked(chat_lock=_chat_writer_lock)))
+        else:
+            _rebuild_catalog_locked(repair_tails=False)
+    except Exception as exc:  # noqa: BLE001 - the erase stands; a dirty catalog is rebuilt on demand
+        logger.warning("%s: contact catalog refresh after an erase failed (%s); %s", PLUGIN_NAME,
+                       type(exc).__name__, _catalog_rebuild_instruction())
+        _mark_catalog_dirty_locked("history_erase")
+
+
+def erase_chat_history(business_connection_id: Any, chat_id: Any) -> SavedHistory | None:
+    """Delete one chat's canonical history: every month file of that connection and chat, its catalog entry,
+    and its pending deletion timers. Returns what was deleted, None when nothing was stored.
+
+    Blocking. Holds the root, then the chat writer lock, like every history writer. Dossiers are separate:
+    see ``forget_chat``.
+    """
+    chat_dir = _history_chat_dir_path(business_connection_id, chat_id)
+    if not chat_dir.is_dir():
+        return None
+    with _root_writer_lock():
+        if not chat_dir.is_dir():
+            return None
+        base_source_signature = _history_source_signature_locked(chat_lock=_chat_writer_lock)
+        saved = _erase_chat_dir_locked(chat_dir)
+        _drop_catalog_entries_locked({_catalog_contact_key(business_connection_id, chat_id)}, base_source_signature)
+    return saved if saved.files else None
+
+
+def erase_all_history() -> SavedHistory:
+    """Delete every chat's canonical history and empty the contact catalog. Blocking."""
+    total = SavedHistory()
+    if not history_root().exists():
+        return total
+    with _root_writer_lock():
+        for chat_dir in list(_iter_chat_dirs()):
+            total += _erase_chat_dir_locked(chat_dir)
+        _write_catalog_locked(_catalog_from_entries(
+            {}, source_signature=_history_source_signature_locked(chat_lock=_chat_writer_lock)))
+    return total
+
+
+def _forget_dossier(target: tuple[str, Any]) -> dict[str, Any]:
+    """The only place an erase touches dossiers: ``dossier_support.forget`` for a contact or ``("all", None)``."""
+    from . import dossier_support  # lazy: dossier_support imports this module
+
+    return dossier_support.forget(target)
+
+
+def forget_chat(business_connection_id: Any, chat_id: Any) -> tuple[SavedHistory | None, bool]:
+    """Forget the chat's dossier, then erase its saved history: (history erased, a dossier was deleted).
+
+    The dossier goes first: it is built from this history, and a failed erase can simply be retried.
+    Blocking.
+    """
+    dossier = _forget_dossier(("contact", {"business_connection_id": str(business_connection_id),
+                                           "chat_id": chat_id}))
+    return erase_chat_history(business_connection_id, chat_id), bool(dossier.get("existed"))
 
 
 def _record_maintenance_run(now: datetime) -> None:
@@ -2867,16 +2974,11 @@ async def _capture_update(update: Any, *, bot: Any, current: datetime, direction
     chat_id = _get(chat, "id")
     if not business_connection_id or chat_id is None:
         return False
+    # Business chats are private; an update without a chat type uses the type history already knows.
     chat_type = _normalize_chat_type(_get(chat, "type"))
-    known_chat_type = None
-    if chat_type is None and not config.exact_chat_allowed(chat_id):
-        known_chat_type = await asyncio.to_thread(_known_chat_type_for_capture, business_connection_id, chat_id)
-    if not config.allows(
-        business_connection_id,
-        chat_id,
-        chat_type=chat_type,
-        known_chat_type=known_chat_type,
-    ):
+    if chat_type is None:
+        chat_type = await asyncio.to_thread(_known_chat_type_for_capture, business_connection_id, chat_id)
+    if chat_type != "private":
         return False
     if await _chat_capture_paused(bot, business_connection_id, chat_id):
         return False
@@ -3608,8 +3710,87 @@ def add_history_parser(subs: Any) -> None:
     maintain = history_subs.add_parser("maintain", help="Run classification and retention/size maintenance")
     maintain.set_defaults(_history_action="maintain")
 
+    forget = history_subs.add_parser("forget", help="Erase one chat's saved history and its dossier, or all of it")
+    forget.add_argument("--connection")
+    forget.add_argument("--chat")
+    forget.add_argument("--contact")
+    forget.add_argument("--all", action="store_true", help="Erase all saved history and every dossier")
+    forget.add_argument("--yes", action="store_true", help="Erase; without it, only show what would be erased")
+    forget.set_defaults(_history_action="forget")
+
     from . import dossier_cli
     dossier_cli.add_parser(subs)
+
+
+FORGET_CONFIRM_HINT = "Nothing was erased. Run it again with --yes to erase; this cannot be undone."
+
+
+def _count_text(count: int, word: str) -> str:
+    return f"{count} {word}" + ("" if count == 1 else "s")
+
+
+def _saved_text(saved: SavedHistory) -> str:
+    return (f"{_count_text(saved.messages, 'saved message')} ({_count_text(saved.records, 'record')}, "
+            f"{_count_text(saved.files, 'file')}, {_count_text(saved.bytes, 'byte')})")
+
+
+def _still_recorded_note(business_connection_id: Any, chat_id: Any) -> str | None:
+    """A note when new messages of this chat are still saved after an erase."""
+    from . import chat_settings  # lazy: chat_settings imports this module
+
+    if not capture_enabled() or chat_settings.paused(business_connection_id, chat_id, "history"):
+        return None
+    return (f"History is still on for this chat, so new messages are saved again. "
+            f"'hermes telesec chat set {chat_id} --history off' stops that.")
+
+
+def _forget_all_cli(confirmed: bool) -> int:
+    if not confirmed:
+        saved = SavedHistory()
+        for chat_dir in _iter_chat_dirs():
+            saved += _saved_in_chat_dir(chat_dir)
+        print(f"Would erase all saved history: {_count_text(saved.chats, 'chat')}, {_saved_text(saved)}, "
+              "and every dossier (contacts and the owner persona).")
+        print(FORGET_CONFIRM_HINT)
+        return 1
+    dossiers = _forget_dossier(("all", None))
+    saved = erase_all_history()
+    print(f"Erased all saved history: {_count_text(saved.chats, 'chat')}, {_saved_text(saved)}.")
+    print(f"Forgot {_count_text(dossiers['contacts'], 'contact dossier')}"
+          + (" and the owner persona." if dossiers["persona"] else "."))
+    if capture_enabled():
+        print("History is still on, so new messages are saved again. "
+              "'hermes telesec settings set history off' stops that.")
+    return 0
+
+
+def _forget_cli(args: argparse.Namespace) -> int:
+    """`history forget`: one chat (same selectors as `show`) or `--all`; a dry run without --yes exits 1."""
+    confirmed = bool(getattr(args, "yes", False))
+    if getattr(args, "all", False):
+        if any(getattr(args, name, None) is not None for name in ("connection", "chat", "contact")):
+            raise ValueError("--all cannot be combined with --connection, --chat or --contact")
+        return _forget_all_cli(confirmed)
+    entry = _resolve_history_entry(
+        business_connection_id=getattr(args, "connection", None),
+        chat_id=None if getattr(args, "chat", None) is None else str(args.chat),
+        contact=getattr(args, "contact", None),
+    )
+    connection, chat = str(entry.get("business_connection_id")), entry.get("chat_id")
+    label = (f"{_escape_terminal_text(_catalog_entry_display_name(entry))} "
+             f"({_chat_lookup_label(business_connection_id=connection, chat_id=str(chat))})")
+    if not confirmed:
+        saved = saved_chat_history(connection, chat) or SavedHistory()
+        print(f"Would erase {_saved_text(saved)} of {label} and its dossier.")
+        print(FORGET_CONFIRM_HINT)
+        return 1
+    saved, dossier = forget_chat(connection, chat)
+    print(f"Erased {_saved_text(saved or SavedHistory())} of {label}.")
+    print("Its dossier was forgotten too." if dossier else "It had no dossier.")
+    note = _still_recorded_note(connection, chat)
+    if note:
+        print(note)
+    return 0
 
 
 def handle_cli(args: argparse.Namespace) -> int:
@@ -3621,7 +3802,8 @@ def handle_cli(args: argparse.Namespace) -> int:
         return history_import.handle_cli(args)
     action = getattr(args, "_history_action", None)
     if action is None:
-        print("Usage: hermes telesec history <chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain>")
+        print("Usage: hermes telesec history "
+              "<chats|contacts|catalog|stats|show|search|deletions|export|verify|maintain|forget>")
         return 1
     try:
         if action == "chats":
@@ -3679,9 +3861,6 @@ def handle_cli(args: argparse.Namespace) -> int:
                 " ".join(
                     [
                         f"enabled={config.enabled}",
-                        f"connections={config.connections.render() if config.connections else '<unset>'}",
-                        f"chats={config.chats.render() if config.chats else '<unset>'}",
-                        f"chat_types={','.join(sorted(config.chat_types))}",
                         f"correction_window={config.correction_window_seconds}s",
                         f"nearby_before={config.nearby_before_seconds}s",
                         f"retention_days={config.retention_days}",
@@ -3786,6 +3965,9 @@ def handle_cli(args: argparse.Namespace) -> int:
             if result.suppressed_error_count:
                 print(f"error: suppressed {result.suppressed_error_count} additional errors")
             return 0 if result.ok else 1
+
+        if action == "forget":
+            return _forget_cli(args)
 
         if action == "maintain":
             result = maintain_history()

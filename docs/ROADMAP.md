@@ -44,6 +44,7 @@ The product connects readable Telegram voice messages with useful personal corre
 - Stats as Telegram rich messages ([#4](https://github.com/neoromantic/telesec/issues/4)): the panel's 📊 Stats view and the in-chat `/stats` card have one balance bar, one table with a column for each side, emoji heat maps of when you talk, tiles, and a short footer. [Owner panel stats](STATS.md#in-telegram-owner-panel).
 - Import a chat's past messages from a Telegram Desktop export with `hermes telesec history import`, so stats and new dossiers see the time before capture started. [Import past messages](HISTORY.md#import-past-messages).
 - History retention in Settings: **Forever · 1 year · 90 days · 30 days**, also `hermes telesec settings set retention`, replacing `TELESEC_HISTORY_RETENTION_DAYS`. Settings also shows the dossier and voice cleanup models, read-only. [Settings](../README.md#settings).
+- History is switched per chat in Telegram, not by environment variables: every private Business chat is recorded unless the owner taps **Don't save**, and `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` are moved into Don't save once and then ignored. Under Don't save, **🗑 Erase saved history** deletes the chat's saved history and its dossier after a confirmation; `hermes telesec history forget` does the same from the terminal, and `--all` erases everything. [Moving from the history environment variables](../README.md#moving-from-the-history-environment-variables), [erase one chat](HISTORY.md#erase-one-chat).
 
 ## Next
 
