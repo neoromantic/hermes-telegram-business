@@ -27,7 +27,7 @@ The product connects readable Telegram voice messages with useful personal corre
 
 - Dossiers in Telegram ([#17](https://github.com/neoromantic/telesec/issues/17)): the panel's Dossier section (rich, Russian or English, with pin, unpin, remove, refresh, the persona, and the on/off switch), and the owner's `/dossier` that posts a contact's dossier into the chat (the one in-chat control besides the panel). Dossiers are switched only in the panel or with `dossier enable`/`disable`; the old environment variable and Desktop setting are moved into that switch once. [Dossiers in Telegram](DOSSIERS.md#in-telegram).
 
-## Unreleased
+## Implemented in 0.12.0
 
 - Settings in the private chat with the bot: `/telesec` or the ⚙️ Settings button turns transcription, history, and dossiers on or off for all chats, and `hermes telesec settings` does the same from the terminal. The old environment variables and the Desktop `history_enable` setting are moved into Settings once. [Settings](../README.md#settings).
 - Per-chat history and dossier controls: each chat's owner panel has **Save history** / **Don't save** and **Keep dossier** / **No dossier** rows in the style of transcription modes, and `hermes telesec chat` does the same from the terminal. Off pauses the chat and keeps what was saved. [Per-chat history and dossier](../README.md#per-chat-history-and-dossier).
