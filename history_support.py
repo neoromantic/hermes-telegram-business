@@ -2638,29 +2638,132 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
-async def _resolve_direction(message: Any, *, bot: Any = None) -> str:
-    if _get(message, "sender_business_bot") is not None:
-        return "outbound"
-    business_connection_id = _get(message, "business_connection_id") or _get(message, "_hermes_business_connection_id")
-    from_user_id = _get(_get(message, "from_user"), "id")
-    if not business_connection_id or from_user_id is None or bot is None:
-        return "unknown"
+@dataclass(frozen=True)
+class BusinessDirection:
+    """Who authored a Business message, with a log-only reason that never carries content."""
+
+    direction: str  # "own" | "peer" | "unknown"
+    owner_user_id: str | None
+    reason: str
+
+
+def cached_business_owner(business_connection_id: Any) -> str | None:
+    if not business_connection_id:
+        return None
+    return _OWNER_CACHE.get(str(business_connection_id))
+
+
+async def resolve_business_owner(bot: Any, business_connection_id: Any) -> tuple[str | None, str]:
+    """Return the connected Business owner id, caching only successful lookups."""
+    if not business_connection_id:
+        return None, "missing_connection"
     connection_key = str(business_connection_id)
-    owner_id = _OWNER_CACHE.get(connection_key)
+    cached = _OWNER_CACHE.get(connection_key)
+    if cached is not None:
+        return cached, "cached"
+    if bot is None:
+        return None, "no_bot"
+    get_connection = getattr(bot, "get_business_connection", None)
+    if not callable(get_connection):
+        return None, "lookup_unavailable"
+    try:
+        connection = await _maybe_await(get_connection(business_connection_id))
+    except Exception as exc:  # noqa: BLE001 - owner uncertainty is reported, never raised
+        return None, f"lookup_failed:{type(exc).__name__}"
+    owner = _get(_get(connection, "user"), "id")
+    if owner is None:
+        return None, "owner_missing"
+    owner_id = str(owner)
+    _OWNER_CACHE[connection_key] = owner_id
+    return owner_id, "lookup"
+
+
+async def resolve_business_direction(
+    message: Any, *, bot: Any, stored_owner: Callable[[str], str | None] | None = None
+) -> BusinessDirection:
+    """Classify a Business message as the owner's own, a peer's, or unknown.
+
+    ``stored_owner`` maps a connection id to the owner persisted for it; it is
+    consulted only when the live owner lookup fails and nothing is cached.
+    """
+    business_connection_id = _get(message, "business_connection_id") or _get(message, "_hermes_business_connection_id")
+    if _get(message, "sender_business_bot") is not None:
+        return BusinessDirection("own", cached_business_owner(business_connection_id), "sender_business_bot")
+    if not business_connection_id:
+        return BusinessDirection("unknown", None, "missing_connection")
+    from_user_id = _get(_get(message, "from_user"), "id")
+    if from_user_id is None:
+        return BusinessDirection("unknown", None, "missing_sender")
+    if bot is None:
+        return BusinessDirection("unknown", None, "no_bot")
+    owner_id, reason = await resolve_business_owner(bot, business_connection_id)
+    prefix = ""
+    if owner_id is None and stored_owner is not None:
+        owner_id = stored_owner(str(business_connection_id))
+        prefix = "stored_"
     if owner_id is None:
-        get_connection = getattr(bot, "get_business_connection", None)
-        if not callable(get_connection):
-            return "unknown"
-        try:
-            connection = await _maybe_await(get_connection(business_connection_id))
-        except Exception:
-            return "unknown"
-        owner = _get(_get(connection, "user"), "id")
-        if owner is None:
-            return "unknown"
-        owner_id = str(owner)
-        _OWNER_CACHE[connection_key] = owner_id
-    return "outbound" if owner_id == str(from_user_id) else "inbound"
+        return BusinessDirection("unknown", None, reason)
+    if str(from_user_id) == owner_id:
+        return BusinessDirection("own", owner_id, f"{prefix}owner_match")
+    return BusinessDirection("peer", owner_id, f"{prefix}owner_mismatch")
+
+
+_HISTORY_DIRECTIONS = {"own": "outbound", "peer": "inbound", "unknown": "unknown"}
+
+
+async def _resolve_direction(message: Any, *, bot: Any = None) -> str:
+    return _HISTORY_DIRECTIONS[(await resolve_business_direction(message, bot=bot)).direction]
+
+
+# Mirrors the voice module's disable switch: no transcription, no `/transcribe` command.
+TRANSCRIBER_DISABLE_ENV = "TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE"
+
+# Transcription-mode vocabulary shared with transcription_modes.status_text.
+TRANSCRIBE_MODES = ("both", "own", "peer", "off")
+TRANSCRIBE_DEFAULT_MODE = "both"
+TRANSCRIBE_USAGE = f"Usage: /transcribe [{'|'.join((*TRANSCRIBE_MODES, 'reset'))}]"
+TRANSCRIBE_SAVE_ERROR = "Error: could not save transcription mode"
+
+# The one `/transcribe` predicate for the whole plugin. `/transcribeoff` and
+# `/transcribers` are ordinary text; any `@bot` suffix is accepted.
+TRANSCRIBE_COMMAND_RE = re.compile(r"^/transcribe(?:@[A-Za-z0-9_]{1,64})?(?=\s|$)", re.IGNORECASE)
+
+
+def is_transcribe_command_text(text: Any) -> bool:
+    return isinstance(text, str) and TRANSCRIBE_COMMAND_RE.match(text) is not None
+
+
+# The exact shape of the plugin's own status output (transcription_modes.status_text),
+# so other bot-sent text that merely starts with `/transcribe` stays history.
+TRANSCRIBE_STATUS_RE = re.compile(
+    r"^/transcribe(?: [^\n]*)? → (?:Transcription: (?:"
+    + "|".join(map(re.escape, TRANSCRIBE_MODES))
+    + r")(?: \(default\))?|"
+    + re.escape(TRANSCRIBE_USAGE)
+    + "|"
+    + re.escape(TRANSCRIBE_SAVE_ERROR)
+    + r")\Z"
+)
+
+
+def is_transcribe_status_text(text: Any) -> bool:
+    return isinstance(text, str) and TRANSCRIBE_STATUS_RE.match(text) is not None
+
+
+def is_transcribe_control_message(message: Any, text: Any) -> bool:
+    """True for an outbound `/transcribe` command or the plugin's own status for one.
+
+    A forwarded or inline-bot message is someone else's text, and a bot-sent
+    message counts only when it is exactly a status line. With voice
+    transcription disabled there is no command, so it is ordinary text.
+    """
+    if not is_transcribe_command_text(text) or _truthy_env(TRANSCRIBER_DISABLE_ENV):
+        return False
+    if _get(message, "forward_origin") is not None or _get(message, "via_bot") is not None:
+        return False
+    if _get(message, "sender_business_bot") is not None:
+        return is_transcribe_status_text(text)
+    return True
 
 
 def _extract_history_text(message: Any) -> str | None:
@@ -2758,6 +2861,10 @@ async def observe_ptb_update(update: Any, *, bot: Any = None, now: datetime | No
             return False
         chat_dir = _history_chat_dir(business_connection_id, chat_id)
         direction = await _resolve_direction(payload, bot=bot)
+        if direction == "outbound" and is_transcribe_control_message(payload, text):
+            # Owner transcription-mode commands and the bot's status edits are
+            # control traffic, never conversation history.
+            return False
         message_date = _normalize_timestamp(_get(payload, "date"))
         chat_profile = _extract_chat_profile(payload)
         sender_profile = _extract_sender_profile(payload)
@@ -3329,6 +3436,10 @@ def _chat_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def setup_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="telegram_business_command")
+    add_history_parser(subs)
+
+
+def add_history_parser(subs: Any) -> None:
     history = subs.add_parser("history", help="Read and maintain Telegram Business history")
     history_subs = history.add_subparsers(dest="telegram_business_history_command")
 

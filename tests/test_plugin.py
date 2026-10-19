@@ -245,7 +245,7 @@ def test_manifest_uses_current_fields():
     assert manifest == {
         "manifest_version": 1,
         "name": LEGACY_PLUGIN_ID,
-        "version": "0.8.0",
+        "version": "0.9.0",
         "description": (
             "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
         ),
@@ -255,11 +255,22 @@ def test_manifest_uses_current_fields():
     }
 
 
+def test_release_notes_and_readme_match_manifest_version():
+    version = yaml.safe_load((ROOT / "plugin.yaml").read_text(encoding="utf-8"))["version"]
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    first_release = next(line for line in changelog.splitlines() if line.startswith("## "))
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert first_release.startswith(f"## {version} ")
+    assert "/transcribe" in readme
+    assert "hermes telegram-business mode" in readme
+
+
 def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
     assert metadata["name"] == "hermes-telegram-business"
-    assert metadata["version"] == "0.8.0"
+    assert metadata["version"] == "0.9.0"
     assert metadata["description"] == (
         "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
     )
@@ -377,10 +388,10 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
     assert cli_registrations == [
         {
             "name": "telegram-business",
-            "help": "Read and maintain Telegram Business history",
-            "setup_fn": plugin._history_support.setup_cli,
-            "handler_fn": plugin._history_support.handle_cli,
-            "description": "Telegram Business history, verification, and maintenance",
+            "help": "Read Telegram Business history and manage transcription modes",
+            "setup_fn": plugin._setup_cli,
+            "handler_fn": plugin._handle_cli,
+            "description": "Telegram Business history, transcription modes, verification, and maintenance",
         }
     ]
     assert skill_registrations == [

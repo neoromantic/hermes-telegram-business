@@ -22,6 +22,46 @@ A Telegram Business integration for [Hermes Agent](https://github.com/NousResear
 
 Handled updates are identified from stable Telegram Business connection, chat, update/message, and relationship data, then suppressed in memory for 24 hours. A successful caption edit suppresses the separate transcript reply, so the chat never receives both forms. PTB `BadRequest` is treated as a definite Telegram-side rejection unless it is the recognized `message is not modified` or unsupported-entity case. Failed entity requests are not treated as delivered before their targeted plain-text retry, and ambiguous post-send transport/backend failures suppress the reply fallback unless remote state is verified. The plugin never runs a separate model provider client and never needs its own credentials.
 
+## Per-chat transcription modes
+
+Each Business chat has one mode that covers voice messages, round videos, and attached audio:
+
+| Mode | Transcribes |
+|---|---|
+| `both` (default) | Your messages and the contact's. |
+| `own` | Only your own messages. |
+| `peer` | Only the contact's messages. |
+| `off` | Nothing in this chat. |
+
+The main control is an in-chat command. As the connected Business account owner, send it in the chat itself:
+
+```text
+/transcribe          show the current mode
+/transcribe off      set both, own, peer, or off
+/transcribe reset    return to the default (both)
+```
+
+The bot edits your command into a short status such as `/transcribe off → Transcription: off`, or sends a Business reply when the edit does not apply. Unknown arguments get a short usage status the same way. Only the account owner's command counts; a contact who sends `/transcribe`, or a forwarded or inline-bot `/transcribe`, is just ordinary text. Commands and their status edits are never written to history and never reach the ordinary Hermes path.
+
+The same modes are available from the CLI:
+
+```bash
+hermes telegram-business mode list
+hermes telegram-business mode get 991
+hermes telegram-business mode set @alice off
+hermes telegram-business mode reset 991
+```
+
+A chat is a numeric `chat_id` or, with history enabled, a `@username` or name resolved through the history contact catalog. Ambiguous names need the numeric `chat_id` or `--connection`. Without `--owner USER_ID`, a chat on a Business connection whose owner the modes file records belongs to that owner. The connection comes from `--connection`, from the history entry of a chat named by `@username` or name, or, for a numeric `chat_id`, from history when exactly one connection lists that chat. Otherwise the CLI uses the only known owner, where an owner is known once the modes file stores a mode for them or records them as a connection's owner. It does so only when history lists at most one Business connection, or only connections recorded for that owner, since a connection with no recorded owner may belong to another Business account; in every other case pass `--owner`. History does not record owner ids, so on a fresh install the first `set` or `reset` needs `--owner USER_ID`, or one in-chat `/transcribe <mode>` or `/transcribe reset` first (a bare `/transcribe` only shows the mode and records nothing); `list` and `get` report the default. `set` warns about an `--owner` it has not seen before. If the modes file cannot be read or is corrupt, the CLI reports an error instead of the default; only `set` or `reset` with `--owner` backs a corrupt file up and starts a new one.
+
+Modes are stored per (owner, chat) in `$HERMES_HOME/data/telegram-business/transcription-modes.json` with `0600` permissions and atomic writes. Each entry holds only the mode, when and how (`chat` or `cli`) it was set, and a display label for the chat. The file also records which owner each Business connection belongs to: an in-chat `/transcribe <mode>` or `/transcribe reset` records it, and so does the gateway when it looks up the owner for media in a chat with a non-default mode. The gateway's own lookup never records a connection whose chats all use the default, and a recorded connection stays recorded after its chats return to the default. It never holds message text or transcripts. The gateway re-reads the file when it changes, so a CLI change applies to the next message without a restart.
+
+The mode is checked once, before any download, speech recognition, or cleanup. A skipped note is still consumed silently: nothing is posted and the ordinary Hermes path does not see it. Logs record the decision and its reason, never content. When something is uncertain the plugin errs toward transcribing:
+
+- A missing modes file, or an empty one (zero bytes or only whitespace), means every chat uses `both`. If the file becomes corrupt or cannot be read, the gateway keeps the modes it last read successfully (`both` everywhere if it never read any) and logs it. An in-chat `/transcribe <mode>` or `/transcribe reset` never overwrites a corrupt file and answers with an error status, while a bare `/transcribe` shows the mode the gateway is applying. While the file is corrupt or unreadable, the gateway also stops recording connection owners. Only `set` or `reset` with `--owner` from the CLI backs a corrupt file up and starts a new one.
+- Under `own` or `peer`, a message whose direction cannot be determined is transcribed as usual.
+- If the Business owner lookup fails, the plugin uses the owner it last recorded for that Business connection, both to pick the mode (so `off` stays off) and to tell own from peer messages under `own`/`peer`. The owner's `/transcribe` also keeps working through that record; a message sent by the Business bot never counts as an owner command. A connection with no recorded owner falls back to transcribing, so one owner's mode never applies to another owner's chat with the same contact.
+
 ## Correspondence history
 
 Add this to the active Hermes profile's `.env`, then restart the gateway to enable text history for private Business chats:
@@ -45,7 +85,7 @@ Canonical storage is profile-local JSONL with a rebuildable contact catalog. Cap
 
 ## Planned assistant
 
-The next layer uses opted-in history to build an editable, evidence-backed owner persona and per-contact context. It will support contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover. These features are requirements, not runtime capabilities in 0.8.0.
+The next layer uses opted-in history to build an editable, evidence-backed owner persona and per-contact context. It will support contextual reply drafts with **Send / Edit / Discard**, plus explicitly enabled per-chat automatic replies with pause and human handover. These features are requirements, not runtime capabilities in 0.9.0.
 
 See the [roadmap](docs/ROADMAP.md) and [assistant design](docs/ASSISTANT.md). This project complements Nous Research's [official reply-drafting plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/telegram-business); it is a separate community integration.
 
@@ -109,7 +149,7 @@ All plugin variables are optional.
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` | false | Disable voice/audio transcription. |
+| `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` | false | Disable voice/audio transcription. `/transcribe` is then ordinary text. |
 | `TG_BUSINESS_VOICE_TRANSCRIBER_SEND_ERRORS` | false | Reply with a short STT error notice. |
 | `TG_BUSINESS_VOICE_CLEANUP_DISABLE` | false | Skip LLM cleanup and post raw STT text. |
 | `TG_BUSINESS_VOICE_CLEANUP_PROVIDER` | `gemini` | Host provider requested for cleanup. |
@@ -191,6 +231,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 ## Failure behavior
 
 - Non-Telegram, non-Business, generic-document, and video events pass through untouched.
+- Media skipped by a chat's [transcription mode](#per-chat-transcription-modes) is claimed before download and posts nothing. A modes file that was never readable, unknown direction under `own`/`peer`, or a failed owner lookup on a connection with no recorded owner transcribe as usual.
 - Disabled and pass-through modules do not consume the event's duplicate identity.
 - A module enable/route exception is logged and contained, and later modules still receive the event.
 - Background module exceptions are contained and cannot crash the gateway.
