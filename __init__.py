@@ -20,7 +20,7 @@ import subprocess
 import threading
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from enum import Enum
@@ -75,6 +75,7 @@ else:
 
 
 from . import history_support as _history_support
+from . import transcription_modes as _transcription_modes
 
 
 logger = logging.getLogger(__name__)
@@ -409,6 +410,15 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
     from telegram.ext import ApplicationHandlerStop, BaseHandler
 
     async def on_business_update(update: Any, context: Any) -> None:
+        # Owner `/transcribe` commands are claimed before history capture, the
+        # media filter, and the DM allowlist: Business ownership is the auth.
+        try:
+            if await _handle_transcribe_command_update(update, bot=context.bot, adapter=adapter):
+                raise ApplicationHandlerStop
+        except ApplicationHandlerStop:
+            raise
+        except Exception as exc:  # noqa: BLE001 - command failures must not break dispatch
+            logger.warning("%s: transcribe command handling failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         try:
             await _history_support.observe_ptb_update(update, bot=context.bot)
         except Exception as exc:  # noqa: BLE001 - capture failures must not break dispatch
@@ -1149,23 +1159,11 @@ def _within_business_edit_window(message: Any, *, now: Optional[datetime] = None
 
 async def _is_outgoing_business_message(*, bot: Any, message: Any) -> bool:
     """Identify messages sent by the connected Business owner or their bot."""
-    if _get(message, "sender_business_bot") is not None:
-        return True
-
-    business_connection_id = _business_connection_id(message)
-    from_user = _get(message, "from_user")
-    from_user_id = _get(from_user, "id")
-    get_connection = getattr(bot, "get_business_connection", None)
-    if not business_connection_id or from_user_id is None or not callable(get_connection):
-        return False
-
-    try:
-        connection = await _maybe_await(get_connection(business_connection_id))
-    except Exception as exc:  # noqa: BLE001 - direction uncertainty must use the safe reply path
-        logger.debug("%s: Business owner lookup failed; using transcript reply: %s", _PLUGIN_NAME, exc)
-        return False
-    owner_id = _get(_get(connection, "user"), "id")
-    return owner_id is not None and str(owner_id) == str(from_user_id)
+    resolved = await _history_support.resolve_business_direction(message, bot=bot)
+    if resolved.reason.startswith("lookup_failed"):
+        # Direction uncertainty must use the safe reply path.
+        logger.debug("%s: Business owner lookup failed; using transcript reply (%s)", _PLUGIN_NAME, resolved.reason)
+    return resolved.direction == "own"
 
 
 def _caption_edit_error_detail(exc: Exception) -> str:
@@ -1792,6 +1790,13 @@ async def _process_business_voice_event(
         logger.warning("%s: Telegram bot object unavailable", _PLUGIN_NAME)
         return
 
+    # The per-chat transcription mode is checked once, before any download,
+    # ffprobe, STT, or cleanup. A skipped note stays claimed and posts nothing.
+    decision = await _transcription_policy_decision(message=message, bot=bot)
+    _log_policy_decision(message, decision)
+    if not decision.transcribe:
+        return
+
     media_payload = _transcribable_payload(message)
     media_label = media_payload[1] if media_payload else "media"
     if media_label in {"audio", "audio_document"}:
@@ -1849,6 +1854,193 @@ async def _process_business_voice_event(
             path.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("%s: failed to remove transient media: %s", _PLUGIN_NAME, exc)
+
+
+async def _transcription_policy_decision(*, message: Any, bot: Any) -> _transcription_modes.PolicyDecision:
+    """Decide whether this Business media is transcribed under its chat's mode; fail open."""
+    try:
+        chat_id = _get(_get(message, "chat"), "id")
+        if chat_id is None:
+            return _transcription_modes.PolicyDecision(True, "both", "not_needed", "missing_chat")
+        store = _transcription_modes.default_store()
+        if not store.needs_owner_lookup(chat_id):
+            # Fast path: no owner set a non-default mode here, so no API calls.
+            return _transcription_modes.PolicyDecision(True, "both", "not_needed", "default_mode")
+        business_connection_id = _business_connection_id(message)
+        owner_id, owner_reason = await _history_support.resolve_business_owner(bot, business_connection_id)
+        if owner_id is None:
+            # Losing the live lookup must not turn a stored `off` into `both`,
+            # nor apply another owner's entry for the same contact: only the
+            # owner this connection was bound to counts, else fail open.
+            owner_id = store.connection_owner(business_connection_id)
+            if owner_id is None:
+                return _transcription_modes.PolicyDecision(True, "unknown", "unknown", f"owner_unknown:{owner_reason}")
+        elif store.connection_owner(business_connection_id) != owner_id:
+            await _bind_business_connection(store, business_connection_id, owner_id)
+        entry = store.get(owner_id, chat_id)
+        mode = entry.mode if entry is not None else _transcription_modes.DEFAULT_MODE
+        decision = await _mode_decision(mode, message=message, bot=bot)
+        if owner_reason not in ("cached", "lookup"):
+            return replace(decision, reason=f"{decision.reason}:owner_unknown:{owner_reason}")
+        return decision
+    except Exception as exc:  # noqa: BLE001 - a broken policy must never drop a transcript
+        return _transcription_modes.PolicyDecision(True, "unknown", "unknown", f"policy_error:{type(exc).__name__}")
+
+
+async def _bind_business_connection(store: Any, business_connection_id: Any, owner_id: str) -> None:
+    """Remember a connection's owner so a later failed lookup still finds its entries."""
+    try:
+        await asyncio.to_thread(store.bind_connection, business_connection_id, owner_id)
+    except Exception as exc:  # noqa: BLE001 - the binding only backs up a failed lookup
+        logger.warning("%s: could not record Business connection owner (%s)", _PLUGIN_NAME, type(exc).__name__)
+
+
+async def _mode_decision(mode: str, *, message: Any, bot: Any) -> _transcription_modes.PolicyDecision:
+    """Apply one stored mode; only own/peer need the message direction."""
+    if mode in ("own", "peer"):
+        resolved = await _history_support.resolve_business_direction(message, bot=bot)
+        decision = _transcription_modes.decide(mode, resolved.direction)
+        if resolved.direction == "unknown":
+            return replace(decision, reason=f"{decision.reason}:{resolved.reason}")
+        return decision
+    return _transcription_modes.decide(mode, "not_needed")
+
+
+def _log_policy_decision(message: Any, decision: _transcription_modes.PolicyDecision) -> None:
+    log = logger.debug if decision.reason == "default_mode" else logger.info
+    log(
+        "%s: transcription policy chat=%s message=%s mode=%s direction=%s decision=%s reason=%s",
+        _PLUGIN_NAME,
+        _safe_part(_get(_get(message, "chat"), "id", "")),
+        _safe_part(_get(message, "message_id", "")),
+        decision.mode,
+        decision.direction,
+        "transcribe" if decision.transcribe else "skip",
+        decision.reason,
+    )
+
+
+async def _confirm_transcribe_command(*, bot: Any, adapter: Any, message: Any, text: str) -> None:
+    """Edit the owner's command into a status line, or reply when the edit does not apply."""
+    chat_id = _get(_get(message, "chat"), "id")
+    message_id = _get(message, "message_id")
+    business_connection_id = _business_connection_id(message)
+    edit_text = getattr(bot, "edit_message_text", None)
+    outcome = CaptionEditAttemptOutcome.DEFINITE_REJECTION
+    if callable(edit_text) and chat_id is not None and message_id is not None and business_connection_id:
+        try:
+            outcome = _classify_caption_edit_result(
+                await _maybe_await(
+                    edit_text(
+                        text=text,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        business_connection_id=business_connection_id,
+                    )
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - every failed edit falls back to a reply
+            outcome = _classify_caption_edit_exception(exc)
+    if outcome is CaptionEditAttemptOutcome.APPLIED:
+        return
+    # Unlike transcript captions, a duplicate short status is harmless, so any
+    # unapplied or uncertain edit falls back to a Business reply.
+    try:
+        await _send_transcript_messages(bot=bot, adapter=adapter, message=message, texts=[text], collapsible=False)
+    except Exception as exc:  # noqa: BLE001 - confirmation is best effort
+        logger.warning("%s: transcribe command confirmation failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+
+
+async def _handle_transcribe_command_update(update: Any, *, bot: Any, adapter: Any) -> bool:
+    """Execute an owner `/transcribe` command; True means the update is claimed."""
+    if not _voice_module_enabled():
+        # With transcription disabled, `/transcribe` is ordinary text.
+        return False
+    edited = getattr(update, "edited_business_message", None)
+    payload = edited or getattr(update, "business_message", None)
+    if payload is None:
+        return False
+    text = _get(payload, "text")
+    if not _history_support.is_transcribe_control_message(payload, text):
+        # Ordinary text, a forwarded or inline-bot `/transcribe`, or bot-sent
+        # text that is not the plugin's own status line.
+        return False
+    business_connection_id = _business_connection_id(payload)
+    chat_id = _get(_get(payload, "chat"), "id")
+    if not business_connection_id or chat_id is None:
+        return False
+    resolved = await _history_support.resolve_business_direction(payload, bot=bot)
+    if resolved.direction != "own":
+        # A contact's command, or one whose owner cannot be verified, is ordinary text.
+        logger.debug("%s: transcribe command not from owner reason=%s", _PLUGIN_NAME, resolved.reason)
+        return False
+    if edited is not None or resolved.reason == "sender_business_bot" or resolved.owner_user_id is None:
+        # The bot's own status edit/reply, or an owner editing an old command:
+        # claim it so it never reaches history or core, but never execute it.
+        logger.debug("%s: transcribe command echo ignored", _PLUGIN_NAME)
+        return True
+
+    message_id = _get(payload, "message_id")
+    if not _mark_identity_seen(
+        ("transcribe-command", str(business_connection_id), str(chat_id), f"message:{message_id}")
+    ):
+        return True
+    try:
+        command = _transcription_modes.parse_command(text)
+        if command is None:
+            return True
+        store = _transcription_modes.default_store()
+        owner_id = resolved.owner_user_id
+        try:
+            if command.action == "show":
+                status = _transcription_modes.status_text(command, entry=store.get(owner_id, chat_id))
+            elif command.action == "set":
+                result = await asyncio.to_thread(
+                    store.set_mode,
+                    owner_id,
+                    str(chat_id),
+                    command.mode,
+                    via="chat",
+                    label=_transcription_modes.build_chat_label(_get(payload, "chat")),
+                    connection=str(business_connection_id),
+                )
+                status = _transcription_modes.status_text(command, entry=result.entry)
+            elif command.action == "reset":
+                await asyncio.to_thread(store.reset, owner_id, str(chat_id), connection=str(business_connection_id))
+                status = _transcription_modes.status_text(command, entry=None)
+            else:
+                status = _transcription_modes.status_text(command, entry=None)
+        except (_transcription_modes.ModeStoreError, OSError) as exc:
+            logger.warning("%s: could not save transcription mode (%s)", _PLUGIN_NAME, type(exc).__name__)
+            status = _transcription_modes.status_text(command, entry=None, error=True)
+        logger.info(
+            "%s: transcribe command chat=%s message=%s action=%s mode=%s",
+            _PLUGIN_NAME,
+            _safe_part(chat_id),
+            _safe_part(message_id),
+            command.action,
+            command.mode or "-",
+        )
+        await _confirm_transcribe_command(bot=bot, adapter=adapter, message=payload, text=status)
+    except Exception as exc:  # noqa: BLE001 - the owner's command must never reach core
+        logger.warning("%s: transcribe command failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+    return True
+
+
+def _setup_cli(subparser: Any) -> None:
+    subs = subparser.add_subparsers(dest="telegram_business_command")
+    _history_support.add_history_parser(subs)
+    _transcription_modes.add_mode_parser(subs)
+
+
+def _handle_cli(args: Any) -> int:
+    command = getattr(args, "telegram_business_command", None)
+    if getattr(args, "_mode_action", None) or command == "mode":
+        return _transcription_modes.handle_mode_cli(args)
+    if command is None:
+        print("Usage: hermes telegram-business <history|mode> ...")
+        return 1
+    return _history_support.handle_cli(args)
 
 
 def _voice_module_enabled() -> bool:
@@ -1990,10 +2182,10 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
     ctx.register_cli_command(
         name="telegram-business",
-        help="Read and maintain Telegram Business history",
-        setup_fn=_history_support.setup_cli,
-        handler_fn=_history_support.handle_cli,
-        description="Telegram Business history, verification, and maintenance",
+        help="Read Telegram Business history and manage transcription modes",
+        setup_fn=_setup_cli,
+        handler_fn=_handle_cli,
+        description="Telegram Business history, transcription modes, verification, and maintenance",
     )
     ctx.register_skill(
         "history",

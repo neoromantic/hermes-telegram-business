@@ -208,3 +208,99 @@ async def test_real_ptb_business_transcript_serialization(plugin, telegram_app, 
         entities = json.loads(params["entities"])
     assert entities[0]["type"] == "expandable_blockquote"
     assert entities[0]["length"] == len(f"🎙️ {transcript}".encode("utf-16-le")) // 2
+
+
+def _register_native(plugin, app, *, authorized=True):
+    adapter = SimpleNamespace(
+        platform="telegram", _bot=app.bot, _is_user_authorized_from_message=Mock(return_value=authorized),
+    )
+    plugin._register_telegram_handlers(app, adapter)
+    core = AsyncMock()
+    app.add_handler(TypeHandler(Update, core))
+    return core
+
+
+def _business_update(app, *, sender_id, update_id=42, **content):
+    return Update.de_json({"update_id": update_id, "business_message": {
+        "message_id": 77, "date": int(datetime.now(UTC).timestamp()),
+        "business_connection_id": "business-123", "chat": {"id": 991, "type": "private", "first_name": "Casey"},
+        "from": {"id": sender_id, "is_bot": False, "first_name": "Speaker"}, **content,
+    }}, app.bot)
+
+
+def _edited_text_result(text):
+    return (200, {"ok": True, "result": {
+        "message_id": 77, "date": 1, "chat": {"id": 991, "type": "private"}, "text": text,
+    }})
+
+
+@pytest.mark.asyncio
+async def test_real_ptb_off_chat_claims_voice_without_download_or_reply(plugin, telegram_app):
+    app, request = telegram_app
+    plugin._transcription_modes.default_store().set_mode("1000", "991", "off", via="cli")
+    core = _register_native(plugin, app)
+
+    await app.process_update(_business_update(
+        app, sender_id=2000, voice={"file_id": "v", "file_unique_id": "v", "duration": 3},
+    ))
+    if plugin._pending_tasks:
+        await asyncio.gather(*plugin._pending_tasks)
+
+    assert core.await_count == 0
+    endpoints = [method for method, _params in request.calls]
+    assert "getFile" not in endpoints
+    assert "sendMessage" not in endpoints
+    assert "getBusinessConnection" in endpoints
+
+
+@pytest.mark.asyncio
+async def test_real_ptb_owner_command_edits_status_and_skips_core(plugin, telegram_app):
+    app, request = telegram_app
+    status = "/transcribe off → Transcription: off"
+    request.responses["editMessageText"] = _edited_text_result(status)
+    core = _register_native(plugin, app, authorized=False)
+
+    await app.process_update(_business_update(app, sender_id=1000, text="/transcribe off"))
+
+    assert core.await_count == 0
+    method, params = request.calls[-1]
+    assert method == "editMessageText"
+    assert params["chat_id"] == "991"
+    assert params["message_id"] == "77"
+    assert params["business_connection_id"] == "business-123"
+    assert params["text"] == status
+    stored = json.loads(plugin._transcription_modes.modes_path().read_text(encoding="utf-8"))
+    assert stored["owners"]["1000"]["chats"]["991"]["mode"] == "off"
+
+
+@pytest.mark.asyncio
+async def test_real_ptb_contact_command_is_ordinary_text(plugin, telegram_app):
+    app, request = telegram_app
+    request.responses["editMessageText"] = _edited_text_result("unused")
+    core = _register_native(plugin, app)
+
+    await app.process_update(_business_update(app, sender_id=2000, text="/transcribe off"))
+
+    assert core.await_count == 1
+    assert "editMessageText" not in [method for method, _params in request.calls]
+    assert not plugin._transcription_modes.modes_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_real_ptb_owner_command_falls_back_to_business_reply(plugin, telegram_app):
+    app, request = telegram_app
+    request.responses["editMessageText"] = (400, {
+        "ok": False, "error_code": 400, "description": "Bad Request: message can't be edited",
+    })
+    core = _register_native(plugin, app)
+
+    await app.process_update(_business_update(app, sender_id=1000, text="/transcribe peer"))
+
+    assert core.await_count == 0
+    endpoints = [method for method, _params in request.calls]
+    assert endpoints[-2:] == ["editMessageText", "sendMessage"]
+    _method, params = request.calls[-1]
+    assert params["business_connection_id"] == "business-123"
+    assert params["text"] == "/transcribe peer → Transcription: peer"
+    assert json.loads(params["reply_parameters"])["message_id"] == 77
+    assert "entities" not in params

@@ -1,6 +1,6 @@
 # Persona-aware reply assistant
 
-Status: planned. History capture and transcription are implemented; dossiers, reply drafting, and automatic replies are not runtime features in 0.8.0. The linked [roadmap](ROADMAP.md) tracks their requirements.
+Status: planned. History capture and transcription are implemented; dossiers, reply drafting, and automatic replies are not runtime features in 0.9.0. The linked [roadmap](ROADMAP.md) tracks their requirements.
 
 ## Experience
 

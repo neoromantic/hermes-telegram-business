@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.8.0 - Unreleased
+## 0.9.0 - Unreleased
+
+- Add per-chat transcription modes (`both` default, `own`, `peer`, `off`) for voice messages, round videos, and attached audio, keyed by Business owner and chat ([#7](https://github.com/neoromantic/hermes-telegram-business/issues/7)).
+- Add the owner-only in-chat `/transcribe [both|own|peer|off|reset]` command. The bot edits the command into a short status, with a Business reply as fallback. Commands are kept out of history and away from the ordinary Hermes path, and a contact's, forwarded, or inline-bot `/transcribe` stays ordinary text. Only the plugin's own status line is kept out of history, not other bot-sent text that starts with `/transcribe`.
+- Add `hermes telegram-business mode list|get|set|reset` with numeric or history-resolved chat selectors. `--owner` is required only when more than one owner or history connection is known, and for the first write before any owner is known. The CLI reports an unreadable or corrupt modes file instead of the default.
+- Store modes in a private, atomically written `transcription-modes.json` that the gateway reloads on change without a restart. Entries hold no message text. A corrupt file is backed up on write, and transient read errors are retried instead of cached.
+- Check the mode once before any download or STT. Skipped media is claimed silently, and decisions are logged with a reason but no content. An unknown direction under `own`/`peer` transcribes as usual. A failed owner lookup uses the owner last recorded for that Business connection and otherwise transcribes, so one owner's mode never applies to another owner's chat. With `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` set, `/transcribe` stays ordinary text.
+- Share one Business owner/direction helper between transcription and history.
+
+## 0.8.0 - 2026-10-18
 
 - Finish opt-in Business text history with contact/date/text search, aliases, edits, preserved deletions, and correction classification in canonical JSONL.
 - Add the history CLI/skill, bounded verification/export, retention, and rebuildable contact catalog.
