@@ -1,17 +1,17 @@
 [project]
-name = "hermes-telegram-business"
+name = "telesec"
 version = "0.9.0"
-description = "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
+description = "Telesec — Telegram Business secretary for Hermes."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "neoromantic" }]
 
 [project.urls]
-Homepage = "https://github.com/neoromantic/hermes-telegram-business"
-Source = "https://github.com/neoromantic/hermes-telegram-business"
-Issues = "https://github.com/neoromantic/hermes-telegram-business/issues"
-Changelog = "https://github.com/neoromantic/hermes-telegram-business/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/neoromantic/telesec"
+Source = "https://github.com/neoromantic/telesec"
+Issues = "https://github.com/neoromantic/telesec/issues"
+Changelog = "https://github.com/neoromantic/telesec/blob/main/CHANGELOG.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

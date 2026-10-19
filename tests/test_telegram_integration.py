@@ -74,15 +74,15 @@ async def test_native_business_media_dispatch(
     plugin, telegram_app, monkeypatch, media, authorized, bypass, claimed, agent_enabled,
 ):
     app, _request = telegram_app
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH", str(int(bypass)))
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE", str(int(agent_enabled)))
+    monkeypatch.setenv("TELESEC_VOICE_BYPASS_AUTH", str(int(bypass)))
+    monkeypatch.setenv("TELESEC_AGENT_ENABLE", str(int(agent_enabled)))
     observe = AsyncMock(return_value=False)
     process = AsyncMock()
     monkeypatch.setattr(plugin._history_support, "observe_ptb_update", observe)
     monkeypatch.setattr(plugin, "_process_business_voice_event", process)
     adapter = SimpleNamespace(platform="telegram", _bot=app.bot, _is_user_authorized_from_message=Mock(return_value=authorized))
     ctx = SimpleNamespace(llm=None, register_telegram_handler=Mock(), register_hook=Mock(),
-                          register_cli_command=Mock(), register_skill=Mock())
+                          get_config={}.get, register_cli_command=Mock(), register_skill=Mock())
     plugin.register(ctx)
     factory, = ctx.register_telegram_handler.call_args.args
     factory(app, adapter)
@@ -116,7 +116,7 @@ async def test_native_business_updates_stop_after_history(
     plugin, telegram_app, monkeypatch, history_fails, agent_enabled, kind, sender_id,
 ):
     app, _request = telegram_app
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE", str(int(agent_enabled)))
+    monkeypatch.setenv("TELESEC_AGENT_ENABLE", str(int(agent_enabled)))
     calls = []
 
     async def observe(update, *, bot):
@@ -151,7 +151,7 @@ async def test_native_business_updates_stop_after_history(
 @pytest.mark.asyncio
 async def test_native_history_persists_real_ptb_updates_and_leaves_bot_chats_alone(plugin, telegram_app, monkeypatch):
     app, _request = telegram_app
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     adapter = SimpleNamespace(platform="telegram", _bot=app.bot)
     plugin._register_telegram_handlers(app, adapter)
     core = AsyncMock()
@@ -255,7 +255,7 @@ def _business_update(app, *, sender_id, update_id=42, **content):
 ])
 async def test_disabled_transcription_still_consumes_business_updates(plugin, telegram_app, monkeypatch, content):
     app, request = telegram_app
-    monkeypatch.setenv("TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_DISABLE", "1")
     core = _register_native(plugin, app)
 
     await app.process_update(_business_update(app, sender_id=2000, **content))
@@ -299,7 +299,7 @@ async def test_real_ptb_transcribe_text_is_ordinary_business_text(plugin, telegr
 @pytest.mark.asyncio
 async def test_real_ptb_off_then_both_gates_media_download(plugin, telegram_app, monkeypatch):
     app, request = telegram_app
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     core = _register_native(plugin, app)
     download = AsyncMock(side_effect=RuntimeError("stop at download"))
     monkeypatch.setattr(plugin, "_download_voice", download)

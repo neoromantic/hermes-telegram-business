@@ -46,7 +46,7 @@ from dossier_helpers import (
 
 CONTACT = "contact_dossier"
 PERSONA = "owner_persona"
-RETENTION_ENV = "HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS"
+RETENTION_ENV = "TELESEC_HISTORY_RETENTION_DAYS"
 
 ALICE = 991
 BOB = 992
@@ -137,7 +137,7 @@ EDIT_DONE = {"correct": "Corrected", "pin": "Pinned", "unpin": "Unpinned", "note
 
 def owner_edit(plugin: Any, ds: Any, entry: dict[str, Any], via: str, action: str, *, fact_id: str | None = None,
                text: str | None = None, section: str | None = None, now: datetime | None = None) -> str | None:
-    """One owner edit on alice through the API or ``hermes telegram-business dossier``; returns the fact id."""
+    """One owner edit on alice through the API or ``hermes telesec dossier``; returns the fact id."""
     if via == "api":
         _, op = ds.apply_owner_edit(("contact", entry), action, fact_id=fact_id, text=text, section=section,
                                     now=now)
@@ -515,7 +515,7 @@ async def test_show_fact_follows_source_to_canonical_history(dossier_plugin, dos
     assert "source gone" in out
     hint = next(line for line in out.splitlines() if "history show" in line)
     assert f"--connection {BUSINESS_ID} --chat {ALICE}" in hint
-    argv = shlex.split(hint.split("hermes telegram-business", 1)[1])
+    argv = shlex.split(hint.split("hermes telesec", 1)[1])
     code, history_out, err = cli(dossier_plugin, *argv)
     assert code == 0, (history_out, err)
     assert any(text in history_out for text in ("prefer email for invoices", "prefer phone calls",
@@ -1215,8 +1215,8 @@ async def test_provider_model_defaults_overrides_and_call_kwargs(dossier_plugin,
     ds = dossiers
     cfg = ds.load_config()
     assert (cfg.provider, cfg.model) == ("gemini", "gemini-3.8-flash")
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_PROVIDER", "openrouter")
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_MODEL", "cleanup-model")
+    monkeypatch.setenv("TELESEC_CLEANUP_PROVIDER", "openrouter")
+    monkeypatch.setenv("TELESEC_CLEANUP_MODEL", "cleanup-model")
     cfg = ds.load_config()
     assert (cfg.provider, cfg.model) == ("openrouter", "cleanup-model")
     dossier_env(PROVIDER="dossier-provider", MODEL="dossier-model")

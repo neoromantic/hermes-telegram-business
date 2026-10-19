@@ -40,7 +40,7 @@ SKILL_DOC = ROOT / "skills" / "history" / "SKILL.md"
 _FENCED_BLOCK_RE = re.compile(r"^```(\w+)\n(.*?)\n```$", flags=re.MULTILINE | re.DOTALL)
 
 NOW = datetime(2026, 10, 19, 11, 32, tzinfo=UTC)
-TIMEZONE_ENV = "HERMES_TELEGRAM_BUSINESS_TIMEZONE"
+TIMEZONE_ENV = "TELESEC_TIMEZONE"
 ALICE = {"id": 991, "type": "private", "username": "alice", "first_name": "Alice", "last_name": "Example"}
 BOB = {"id": 992, "type": "private", "username": "bob", "first_name": "Bob", "last_name": "Builder"}
 CAROL = {"id": 994, "type": "private", "first_name": "Carol"}
@@ -59,7 +59,7 @@ Alice Example (@alice) connection=business-123 chat=991
   sessions 4 (gap 6h): started by contact 2, by owner 2; ended on received 2
   deletions 4: unexplained 1 (received 1, sent 0), likely correction 1, likely duplicate 1, pending 1
   missing history: retained from 2026-10-03 (range is partial); 1 deletion of a message not in history; 1 message known only from an edit
-  deletion details: hermes telegram-business history deletions --connection business-123 --chat 991 --status unexplained
+  deletion details: hermes telesec history deletions --connection business-123 --chat 991 --status unexplained
 """.strip("\n")
 
 OVERVIEW_MOSCOW = """
@@ -70,7 +70,7 @@ latest            last      msgs  recv  sent  unk  days  sess  del  unexpl  part
 -                 -            0     0     0    0     0     0    1       0  no       business-456  994   Carol
 shown 3 of 4 contacts; not shown: 1 with no activity in range
 missing history in shown contacts: 1 deletion of a message not in history; 1 message known only from an edit; use --contact for details
-deletion details: hermes telegram-business history deletions --status unexplained
+deletion details: hermes telesec history deletions --status unexplained
 """.strip("\n")
 
 OVERVIEW_MOSCOW_LIMIT_1 = """
@@ -345,14 +345,14 @@ def _fenced_blocks(text: str) -> list[tuple[str, str]]:
 
 
 def _documented_stats_commands(text: str) -> list[list[str]]:
-    """Every documented `hermes telegram-business stats ...` line, as CLI argv after the program name."""
+    """Every documented `hermes telesec stats ...` line, as CLI argv after the program name."""
     commands = []
     for language, body in _fenced_blocks(text):
         if language != "bash":
             continue
         for line in body.splitlines():
             argv = shlex.split(line, comments=True)
-            if argv[:3] == ["hermes", "telegram-business", "stats"]:
+            if argv[:3] == ["hermes", "telesec", "stats"]:
                 commands.append(argv[2:])
     return commands
 
@@ -452,7 +452,7 @@ def test_worked_example_json(plugin):
         "unclassifiable": 0,
         "pending": 1,
         "details_command": (
-            "hermes telegram-business history deletions --connection business-123 --chat 991 --status unexplained"
+            "hermes telesec history deletions --connection business-123 --chat 991 --status unexplained"
         ),
     }
     assert alice["deletions"]["details_command"] in ALICE_MOSCOW
@@ -519,7 +519,7 @@ def test_docs_examples_match_output(plugin):
     for (language, command), (output_language, documented) in zip(blocks[::2], blocks[1::2], strict=True):
         assert language == "bash"
         argv = shlex.split(command)
-        assert argv[:3] == ["hermes", "telegram-business", "stats"]
+        assert argv[:3] == ["hermes", "telesec", "stats"]
         exit_code, output = _run_history_cli(plugin, *argv[2:])
         assert exit_code == 0, output
         if output_language == "text":
@@ -545,7 +545,7 @@ def test_docs_cover_options_keys_and_commands(plugin):
     options = vars(_build_history_parser(plugin).parse_args(["stats"]))
 
     for dest in options:
-        if dest.startswith(("_", "telegram_business_")):
+        if dest.startswith(("_", "telesec_")):
             continue
         # Every real option has a row in the options table.
         assert f"\n| `--{dest.replace('_', '-')}` |" in stats_doc, dest
@@ -867,7 +867,7 @@ _CLASSIFICATION_REASONS = {
     "unexplained": "no_strong_match",
     "unclassifiable": "missing_text",
 }
-_DETAILS_991 = "hermes telegram-business history deletions --connection business-123 --chat 991 --status unexplained"
+_DETAILS_991 = "hermes telesec history deletions --connection business-123 --chat 991 --status unexplained"
 
 
 # Every adjacent pair of likely_duplicate > likely_correction > unexplained >
@@ -1225,7 +1225,7 @@ def test_real_prune(plugin, monkeypatch: pytest.MonkeyPatch):
         _tomb(plugin, 2, _utc(2026, 10, 7, 9, 0), "outbound", message_at=august),
         _tomb(plugin, 99, _utc(2026, 10, 8, 9, 0), "unknown"),
     )
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "30")
+    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "30")
 
     result = history.maintain_history(now=NOW)
 
@@ -1872,7 +1872,7 @@ def test_same_chat_two_connections(plugin):
     assert lines[3] == "shown 1 of 1 contacts"
     assert (
         lines[4]
-        == "deletion details: hermes telegram-business history deletions --connection business-456 --status unexplained"
+        == "deletion details: hermes telesec history deletions --connection business-456 --status unexplained"
     )
 
 
@@ -1921,8 +1921,8 @@ def test_details_command_runs_for_dash_leading_connection(plugin, cs):
         tomb,
         _cls(plugin, tomb, "unexplained", sent + timedelta(minutes=5), "no_strong_match"),
     )
-    contact_command = f"hermes telegram-business history deletions --connection={conn} --chat 992 --status unexplained"
-    overview_command = f"hermes telegram-business history deletions --connection={conn} --status unexplained"
+    contact_command = f"hermes telesec history deletions --connection={conn} --chat 992 --status unexplained"
+    overview_command = f"hermes telesec history deletions --connection={conn} --status unexplained"
 
     exit_code, output = _stats(plugin, "--contact", "@bob")
     assert exit_code == 0
@@ -1934,7 +1934,7 @@ def test_details_command_runs_for_dash_leading_connection(plugin, cs):
 
     for command in (contact_command, overview_command):
         argv = shlex.split(command)
-        assert argv[:2] == ["hermes", "telegram-business"]
+        assert argv[:2] == ["hermes", "telesec"]
         exit_code, listed = _run_history_cli(plugin, *argv[2:])
         assert exit_code == 0, listed
         assert listed != "No matching deletions found."
@@ -1942,7 +1942,7 @@ def test_details_command_runs_for_dash_leading_connection(plugin, cs):
 
     # Quoting still applies, and a negative chat id is attached the same way.
     odd = cs._details_command("-a b", -100)
-    assert odd == "hermes telegram-business history deletions --connection='-a b' --chat=-100 --status unexplained"
+    assert odd == "hermes telesec history deletions --connection='-a b' --chat=-100 --status unexplained"
     parsed = _build_history_parser(plugin).parse_args(shlex.split(odd)[2:])
     assert (parsed.connection, parsed.chat, parsed.status) == ("-a b", "-100", "unexplained")
 
@@ -2086,13 +2086,13 @@ def test_read_only(plugin, monkeypatch: pytest.MonkeyPatch):
 
 def _break_history(plugin, case: str) -> str:
     history = plugin._history_support
-    stale = "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'"
+    stale = "error: history contact catalog is stale; run 'hermes telesec history catalog --rebuild'"
     if case == "stale":
         append_raw_history_records(plugin, _msg(plugin, 999, _utc(2026, 10, 18, 22, 0), "inbound"))
         return stale
     if case == "dirty":
         catalog_dirty_path(plugin).write_text("{}", encoding="utf-8")
-        return "error: history contact catalog is dirty; run 'hermes telegram-business history catalog --rebuild'"
+        return "error: history contact catalog is dirty; run 'hermes telesec history catalog --rebuild'"
     if case == "root_lock":
         history._root_lock_path().unlink()
         return "error: history root lock is uninitialized; "
@@ -2269,7 +2269,7 @@ def test_cli_wiring(plugin):
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
         assert history.handle_cli(argparse.Namespace()) == 1
-    assert buffer.getvalue().startswith("Usage: hermes telegram-business history <")
+    assert buffer.getvalue().startswith("Usage: hermes telesec history <")
 
 
 @pytest.mark.asyncio
@@ -2313,7 +2313,7 @@ async def test_capture_end_to_end(enabled_history):
     assert "  messages 3: received 1, sent 1, unknown direction 1" in lines
     assert "  deletions 1: unexplained 1 (received 1, sent 0)" in lines
     assert (
-        "  deletion details: hermes telegram-business history deletions --connection business-123 --chat 991 "
+        "  deletion details: hermes telesec history deletions --connection business-123 --chat 991 "
         "--status unexplained"
     ) in lines
     for text in ("hello there", "owner reply", "no owner lookup"):
@@ -2325,8 +2325,8 @@ def test_skill_has_stats_recipe(plugin):
     skill = SKILL_DOC.read_text(encoding="utf-8")
     section = _doc_section(skill, "Stats Recipes")
 
-    assert "hermes telegram-business stats --contact" in section
-    assert "HERMES_TELEGRAM_BUSINESS_TIMEZONE" in skill
+    assert "hermes telesec stats --contact" in section
+    assert "TELESEC_TIMEZONE" in skill
     assert "history stats   # storage stats" in skill
     assert "Do not over-interpret" in section and "no observed reply after it" in section
 

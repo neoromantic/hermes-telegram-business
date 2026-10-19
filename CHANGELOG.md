@@ -2,7 +2,14 @@
 
 ## Unreleased
 
-- Consume all Business message, edit, and deletion updates after history capture and transcription routing so ordinary contact/owner text cannot start an agent turn. Set `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE=1` to allow unhandled updates through the ordinary Hermes auth/agent path. Bot DMs and the owner panel keep their existing routing.
+### 0.10.0 — Renamed to Telesec
+
+- Rename the product, runtime plugin ID, catalog key, CLI, skills, and repository to Telesec.
+- Automatically migrate history, the contact catalog, transcription modes, dossiers, plugin state/cache, and Hermes config entries without changing content or private permissions. See the README upgrade script for the required name-based reinstall.
+- Use `TELESEC_*` environment variables; old names and `hermes telegram-business` remain deprecated aliases for this release.
+- Expose history, dossiers, cleanup style, timezone, and agent passthrough in Hermes Desktop settings, with environment overrides.
+
+- Consume all Business message, edit, and deletion updates after history capture and transcription routing so ordinary contact/owner text cannot start an agent turn. Set `TELESEC_AGENT_ENABLE=1` to allow unhandled updates through the ordinary Hermes auth/agent path. Bot DMs and the owner panel keep their existing routing.
 - Prepare manifest v2 metadata with a tested Hermes 0.21.6 minimum and catalog submission notes; disclose network calls, local processes, background work, storage, retention, and the absence of telemetry.
 - Allow the catalog validator's recording context to register the plugin without its missing `llm` property; real Hermes continues to supply `ctx.llm`.
 - Add the owner panel: Telegram's "Manage Bot" button in a Business chat opens the owner's private chat with the bot, which answers `/start bizChat<id>` with that chat's transcription mode as buttons (`both`, `own`, `peer`, `off`, reset). Only a verified Business owner gets it, nothing is visible to the contact, and changes are stored like the chat command's (`updated_via: chat`, readable by 0.9.0).
@@ -12,24 +19,24 @@
 - Never guess a chat's Business connection in the panel: sections get one only when history lists it for the chat or a message was seen on it.
 - Show the owner panel in Russian to a Telegram client set to Russian (`ru*`) and in English otherwise. All panel strings live in one catalog in `owner_panel.py`; sections get `PanelContext.language_code` and add their own strings with `owner_panel.register_strings`, and a `section.<key>` string localizes a section's button.
 - Always end the panel header with `chat <id>`, so a reply to a panel message tells the agent which chat it is about.
-- Add `--format json` to `hermes telegram-business mode list` and `mode get`, with `mode`, `effective_mode`, and `source` (`stored`, `default`, or `disabled`).
-- Add a neutral system prompt section (`telegram-business.reference`, Hermes 0.21.5+) that points the agent to the `mode` and `stats` JSON commands and the bundled skills, and tells it that a reply to a panel message is about the panel's `chat <id>`.
+- Add `--format json` to `hermes telesec mode list` and `mode get`, with `mode`, `effective_mode`, and `source` (`stored`, `default`, or `disabled`).
+- Add a neutral system prompt section (`telesec.reference`, Hermes 0.21.5+) that points the agent to the `mode` and `stats` JSON commands and the bundled skills, and tells it that a reply to a panel message is about the panel's `chat <id>`.
 - Ignore the Business copies of the owner's own chat with the bot (the panel and the agent chat): they are no longer captured into history, transcribed, or counted, and history, stats, dossiers, and the panel skip such a chat that an older version captured. The bot's id comes from the running bot or from `TELEGRAM_BOT_TOKEN`.
-- Add a 📊 Stats view to the owner panel: the one-chat `stats` report for the last 7, 30, or 90 days or all history, shown only in the owner's private chat with the bot. Read-only, no LLM, nothing stored ([#4](https://github.com/neoromantic/hermes-telegram-business/issues/4)).
+- Add a 📊 Stats view to the owner panel: the one-chat `stats` report for the last 7, 30, or 90 days or all history, shown only in the owner's private chat with the bot. Read-only, no LLM, nothing stored ([#4](https://github.com/neoromantic/telesec/issues/4)).
 
 ## 0.9.0 - 2026-10-19
 
-- Add per-chat transcription modes (`both` default, `own`, `peer`, `off`) for voice messages, round videos, and attached audio, keyed by Business owner and chat ([#7](https://github.com/neoromantic/hermes-telegram-business/issues/7)).
+- Add per-chat transcription modes (`both` default, `own`, `peer`, `off`) for voice messages, round videos, and attached audio, keyed by Business owner and chat ([#7](https://github.com/neoromantic/telesec/issues/7)).
 - Add the owner-only in-chat `/transcribe [both|own|peer|off|reset]` command. The bot edits the command into a short status, with a Business reply as fallback, and deletes the command and its status about 5 seconds later (needs the bot's "Delete messages" Business permission; without it the status stays and a hint is logged). Commands are kept out of history and away from the ordinary Hermes path, and a contact's, forwarded, or inline-bot `/transcribe` stays ordinary text. Only the plugin's own status line is kept out of history, not other bot-sent text that starts with `/transcribe`.
-- Add `hermes telegram-business mode list|get|set|reset` with numeric or history-resolved chat selectors. Without `--owner`, a chat on a connection with a recorded owner (from `--connection`, or from history for a named chat or a numeric `chat_id` that one connection lists) uses that owner, and otherwise the one known owner is used only when every Business connection in history is recorded for it (or history has just one); the first write before any owner is known needs `--owner` or an in-chat `/transcribe <mode>` or `reset`. The CLI reports an unreadable or corrupt modes file instead of the default.
+- Add `hermes telesec mode list|get|set|reset` with numeric or history-resolved chat selectors. Without `--owner`, a chat on a connection with a recorded owner (from `--connection`, or from history for a named chat or a numeric `chat_id` that one connection lists) uses that owner, and otherwise the one known owner is used only when every Business connection in history is recorded for it (or history has just one); the first write before any owner is known needs `--owner` or an in-chat `/transcribe <mode>` or `reset`. The CLI reports an unreadable or corrupt modes file instead of the default.
 - Store modes in a private, atomically written `transcription-modes.json` that the gateway reloads on change without a restart. Entries hold no message text. An empty file reads as no modes. A corrupt or unreadable file keeps the last valid modes in the gateway, transient read errors are retried instead of cached, an in-chat `/transcribe <mode>` or `reset` never overwrites a corrupt file (a bare `/transcribe` shows the mode in effect), the gateway stops recording connection owners while it is corrupt or unreadable, and only an explicit CLI `set`/`reset --owner` backs it up and starts fresh.
-- Check the mode once before any download or STT. Skipped media is claimed silently, and decisions are logged with a reason but no content. An unknown direction under `own`/`peer` transcribes as usual. A failed owner lookup uses the owner last recorded for that Business connection, for the mode, own/peer direction, and owner `/transcribe` authorization, and otherwise transcribes, so one owner's mode never applies to another owner's chat. With `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` set, `/transcribe` stays ordinary text.
+- Check the mode once before any download or STT. Skipped media is claimed silently, and decisions are logged with a reason but no content. An unknown direction under `own`/`peer` transcribes as usual. A failed owner lookup uses the owner last recorded for that Business connection, for the mode, own/peer direction, and owner `/transcribe` authorization, and otherwise transcribes, so one owner's mode never applies to another owner's chat. With `TELESEC_DISABLE` set, `/transcribe` stays ordinary text.
 - Share one Business owner/direction helper between transcription and history.
-- Add `hermes telegram-business stats`: deterministic per-contact text-message counts, active days, sessions, latest activity, deletions, and missing-history notes over retained history, by Telegram send time, as text or JSON. No LLM and no new stored state.
-- Add `HERMES_TELEGRAM_BUSINESS_TIMEZONE` as the default `--tz` for `stats`; `history stats` is now described as storage stats.
+- Add `hermes telesec stats`: deterministic per-contact text-message counts, active days, sessions, latest activity, deletions, and missing-history notes over retained history, by Telegram send time, as text or JSON. No LLM and no new stored state.
+- Add `TELESEC_TIMEZONE` as the default `--tz` for `stats`; `history stats` is now described as storage stats.
 - Document stats in `docs/STATS.md` and add stats recipes to the bundled `history` skill.
-- Add opt-in contact dossiers for private Business chats and an owner writing persona, built and refreshed incrementally by a gateway-only background worker through the host LLM facade (`HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1`).
-- Add `hermes telegram-business dossier` commands to inspect, trace facts to source messages, preview, correct, pin, remove, note, review changes, export, run and forget dossiers; owner edits survive refreshes.
+- Add opt-in contact dossiers for private Business chats and an owner writing persona, built and refreshed incrementally by a gateway-only background worker through the host LLM facade (`TELESEC_DOSSIER_ENABLE=1`).
+- Add `hermes telesec dossier` commands to inspect, trace facts to source messages, preview, correct, pin, remove, note, review changes, export, run and forget dossiers; owner edits survive refreshes.
 - Validate model output deterministically (chat-local references, exact quotes of at most 200 characters, fixed sections, caps) and track edits, deletions and retention pruning as source changes; keep message content out of logs.
 - Add the bundled `dossiers` skill and docs/DOSSIERS.md with a synthetic example.
 
@@ -101,14 +108,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
-- Rebranded the public product, repository, and package metadata as **Hermes Telegram Business** / `hermes-telegram-business`.
+- Rebranded the public product, repository, and package metadata as **Telesec** / `telesec`.
 - Positioned voice and video-note transcription with Business-scoped replies as the first currently shipped module rather than the product boundary.
 - Updated installation examples, badges, source/homepage links, and release references to the canonical repository URL.
 
 ### Compatibility
 
-- Retained `telegram-business-voice-transcriber` as the legacy-stable Hermes runtime plugin ID, including existing config keys, update/remove commands, and cache paths.
-- Retained all existing `TG_BUSINESS_VOICE_*` environment-variable namespaces.
+- Kept the runtime plugin ID, config keys, update/remove commands, and cache paths unchanged during the 0.5.0 rebrand.
+- Kept existing environment-variable namespaces during the 0.5.0 rebrand.
 - Existing installations that use the old GitHub URL continue through GitHub's repository redirect; no reinstall is required.
 
 ## [0.4.1] - 2026-07-17
@@ -135,6 +142,6 @@ All notable changes to this project are documented here.
 - Delete each transiently downloaded media file after the transcription attempt.
 - Keep cleanup failures fail-safe: the raw transcript is posted rather than dropped.
 
-[0.5.0]: https://github.com/neoromantic/hermes-telegram-business/releases/tag/v0.5.0
-[0.4.1]: https://github.com/neoromantic/hermes-telegram-business/releases/tag/v0.4.1
-[0.4.0]: https://github.com/neoromantic/hermes-telegram-business/releases/tag/v0.4.0
+[0.5.0]: https://github.com/neoromantic/telesec/releases/tag/v0.5.0
+[0.4.1]: https://github.com/neoromantic/telesec/releases/tag/v0.4.1
+[0.4.0]: https://github.com/neoromantic/telesec/releases/tag/v0.4.0

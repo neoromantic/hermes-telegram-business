@@ -40,7 +40,7 @@ SCHEMA_VERSION = 1
 MODES_FILENAME = "transcription-modes.json"
 MAX_LABEL_CHARS = 128
 MAX_CHATS_PER_OWNER = 5000
-MODE_USAGE = "Usage: hermes telegram-business mode <list|get|set|reset>"
+MODE_USAGE = "Usage: hermes telesec mode <list|get|set|reset>"
 
 _OWNER_KEY_RE = re.compile(r"^\d+$")
 _CHAT_KEY_RE = re.compile(r"^-?\d+$")
@@ -52,7 +52,7 @@ _WRITE_LOCK = threading.Lock()
 
 
 def modes_path() -> Path:
-    return _history.get_hermes_home() / "data" / "telegram-business" / MODES_FILENAME
+    return _history.get_hermes_home() / "data" / "telesec" / MODES_FILENAME
 
 
 def _lock_path(path: Path) -> Path:

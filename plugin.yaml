@@ -1,16 +1,18 @@
 manifest_version: 2
-# Legacy-stable runtime identity: changing this would break existing Hermes
-# install directories, config keys, and update/remove commands.
-name: telegram-business-voice-transcriber
+name: telesec
 version: 0.9.0
-description: "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
+description: "Telesec — Telegram Business secretary for Hermes."
 author: neoromantic
 license: MIT
-homepage: https://hermes.sergeybaus.com
+homepage: https://telesec.sergeybaus.com
 tags: [telegram, business, voice, history]
 requires_hermes: ">=0.21.6"
-# Existing settings are environment variables, not ctx.get_config() settings.
-config_schema: {}
 kind: standalone
 provides_hooks:
   - pre_gateway_dispatch
+config_schema:
+  history_enable: {type: bool, default: false, description: "Capture Business text history."}
+  dossier_enable: {type: bool, default: false, description: "Build contact dossiers using the configured model; restart the gateway after enabling."}
+  cleanup_style: {type: str, default: conservative, choices: [conservative, enriched], description: "Voice transcript cleanup style."}
+  timezone: {type: str, default: UTC, description: "IANA timezone for correspondence statistics."}
+  agent_enable: {type: bool, default: false, description: "Pass unhandled Business updates to the Hermes agent."}

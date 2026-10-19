@@ -1,13 +1,13 @@
-# Telegram Business for Hermes
+# Telesec
 
-[![test](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml/badge.svg)](https://github.com/neoromantic/hermes-telegram-business/actions/workflows/test.yml)
+[![test](https://github.com/neoromantic/telesec/actions/workflows/test.yml/badge.svg)](https://github.com/neoromantic/telesec/actions/workflows/test.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A Telegram Business integration for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Voice messages, round video notes, and conservatively recognized attached audio files become readable text without a full agent turn. Optional correspondence history preserves text, edits, and deletions for contact-based search.
+**Telesec — Telegram Business secretary for [Hermes](https://github.com/NousResearch/hermes-agent).** Voice messages, round video notes, and conservatively recognized attached audio files become readable text without a full agent turn. Optional correspondence history preserves text, edits, and deletions for contact-based search.
 
-[Product demonstration and setup](https://hermes.sergeybaus.com)
+[Product demonstration and setup](https://telesec.sergeybaus.com)
 
-![A Telegram Business chat: a client's 0:34 voice message gets a reply with its transcript as an expandable quote, split into paragraphs and a dash list; the owner's own 5-second voice message gets its transcript appended to its caption as a quote and is marked edited.](docs/images/hermes-telegram-business@2x.png)
+![Telesec in a Telegram Business chat: a client's 0:34 voice message gets a reply with its transcript as an expandable quote, split into paragraphs and a dash list; the owner's own 5-second voice message gets its transcript appended to its caption as a quote and is marked edited.](docs/images/telesec@2x.png)
 
 ## Current module: voice transcription
 
@@ -45,7 +45,7 @@ Transcription: off
 
 Tap a mode to set it, or Reset to return to the default; the panel message updates in place. The header always ends with `chat <id>`, so when you reply to a panel message to ask the agent about that chat, the reply names the chat. The panel speaks Russian when your Telegram app is set to Russian (`Панель владельца`, `Расшифровка: выкл`, mode buttons `все`, `мои`, `собеседника`, `выкл`) and English otherwise; modes are still stored as `both`, `own`, `peer`, and `off`. Only you see the panel: it lives in your private chat with the bot and the contact sees nothing. Only a verified owner gets the panel. Anyone else's `/start bizChat…` is treated as an ordinary message, and a panel button pressed by anyone else gets a short "Not allowed" alert.
 
-To confirm you are the owner, the bot asks Telegram who owns the Business connections it knows: ones Telegram reported connecting since the gateway started, ones with any Business message since the gateway started (both kept in memory only), ones whose owner the modes file records, ones it already looked up the owner for, and, with history on, the connections in the history catalog. So any message in the chat, yours or the contact's, is enough; no command is needed. While the gateway knows no Business connection at all, Manage Bot answers with a hint to send any message in that chat and tap Manage Bot again. Once it knows one, the `/start` of someone whose connection it does not know yet is handled as an ordinary message. The panel reads and shows per-chat data (such as stats) only for a connection that history lists for the chat or that a message was seen on; otherwise a section says the connection is not known yet. Mode buttons work for the chat right away, even after a restart and before the contact writes again; modes are stored per owner, so your change never touches another owner's chat with the same contact. With `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` set, the panel says so and shows no mode buttons. Other features add their own panel sections.
+To confirm you are the owner, the bot asks Telegram who owns the Business connections it knows: ones Telegram reported connecting since the gateway started, ones with any Business message since the gateway started (both kept in memory only), ones whose owner the modes file records, ones it already looked up the owner for, and, with history on, the connections in the history catalog. So any message in the chat, yours or the contact's, is enough; no command is needed. While the gateway knows no Business connection at all, Manage Bot answers with a hint to send any message in that chat and tap Manage Bot again. Once it knows one, the `/start` of someone whose connection it does not know yet is handled as an ordinary message. The panel reads and shows per-chat data (such as stats) only for a connection that history lists for the chat or that a message was seen on; otherwise a section says the connection is not known yet. Mode buttons work for the chat right away, even after a restart and before the contact writes again; modes are stored per owner, so your change never touches another owner's chat with the same contact. With `TELESEC_DISABLE` set, the panel says so and shows no mode buttons. Other features add their own panel sections.
 
 Panel taps and all Business message updates stop update propagation before Hermes' group-99 dispatch counter, so after a quiet period the core "Telegram ingress is healthy but deaf" warning can report a stale gap. The gap resets on reconnect and needs no action.
 
@@ -54,20 +54,20 @@ There is no in-chat command. Text you type in a Business chat, including `/trans
 The same modes are available from the CLI:
 
 ```bash
-hermes telegram-business mode list
-hermes telegram-business mode get 991
-hermes telegram-business mode set @alice off
-hermes telegram-business mode reset 991
-hermes telegram-business mode get 991 --format json
+hermes telesec mode list
+hermes telesec mode get 991
+hermes telesec mode set @alice off
+hermes telesec mode reset 991
+hermes telesec mode get 991 --format json
 ```
 
-`mode list` and `mode get` take `--format json`. Each chat has `mode` (the stored mode, or `null`), `effective_mode` (what the next voice note gets), and `source`: `stored`, `default`, or `disabled` when `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` turns transcription off.
+`mode list` and `mode get` take `--format json`. Each chat has `mode` (the stored mode, or `null`), `effective_mode` (what the next voice note gets), and `source`: `stored`, `default`, or `disabled` when `TELESEC_DISABLE` turns transcription off.
 
 The agent knows these commands too. On Hermes with plugin system prompt sections, the plugin adds a short neutral reference to each new session: the `mode` and `stats` commands with `--format json`, the `history` and `dossiers` skills, and the rule that a reply to a panel message is about the panel's `chat <id>`. So you can reply to a panel message with a question like "how much did we talk this month?".
 
 A chat is a numeric `chat_id` or, with history enabled, a `@username` or name resolved through the history contact catalog. Ambiguous names need the numeric `chat_id` or `--connection`. Without `--owner USER_ID`, a chat on a Business connection whose owner the modes file records belongs to that owner. The connection comes from `--connection`, from the history entry of a chat named by `@username` or name, or, for a numeric `chat_id`, from history when exactly one connection lists that chat. Otherwise the CLI uses the only known owner, where an owner is known once the modes file stores a mode for them or records them as a connection's owner. It does so only when history lists at most one Business connection, or only connections recorded for that owner, since a connection with no recorded owner may belong to another Business account; in every other case pass `--owner`. History does not record owner ids, so on a fresh install the first `set` or `reset` needs `--owner USER_ID`, or one mode change in the owner panel first (Refresh records nothing); `list` and `get` report the default. `set` warns about an `--owner` it has not seen before. If the modes file cannot be read or is corrupt, the CLI reports an error instead of the default; only `set` or `reset` with `--owner` backs a corrupt file up and starts a new one.
 
-Modes are stored per (owner, chat) in `$HERMES_HOME/data/telegram-business/transcription-modes.json` with `0600` permissions and atomic writes. Each entry holds only the mode, when and how (`chat` or `cli`; a panel change is stored as `chat` so 0.9.0 can still read it) it was set, and a display label for the chat. The file also records which owner each Business connection belongs to: a panel change records it when the panel knows the chat's connection (from history or a message seen since the gateway started), and so does the gateway when it looks up the owner for media in a chat with a non-default mode. The gateway's own lookup never records a connection whose chats all use the default, and a recorded connection stays recorded after its chats return to the default. Telegram's report that the bot was connected is never recorded, since any Business account can connect the bot. It never holds message text or transcripts. The gateway re-reads the file when it changes, so a CLI change applies to the next message without a restart.
+Modes are stored per (owner, chat) in `$HERMES_HOME/data/telesec/transcription-modes.json` with `0600` permissions and atomic writes. Each entry holds only the mode, when and how (`chat` or `cli`; a panel change is stored as `chat` so 0.9.0 can still read it) it was set, and a display label for the chat. The file also records which owner each Business connection belongs to: a panel change records it when the panel knows the chat's connection (from history or a message seen since the gateway started), and so does the gateway when it looks up the owner for media in a chat with a non-default mode. The gateway's own lookup never records a connection whose chats all use the default, and a recorded connection stays recorded after its chats return to the default. Telegram's report that the bot was connected is never recorded, since any Business account can connect the bot. It never holds message text or transcripts. The gateway re-reads the file when it changes, so a CLI change applies to the next message without a restart.
 
 The mode is checked once, before any download, speech recognition, or cleanup. A skipped note is still consumed silently: nothing is posted and the ordinary Hermes path does not see it. Logs record the decision and its reason, never content. When something is uncertain the plugin errs toward transcribing:
 
@@ -80,16 +80,16 @@ The mode is checked once, before any download, speech recognition, or cleanup. A
 Add this to the active Hermes profile's `.env`, then restart the gateway to enable text history for private Business chats:
 
 ```bash
-HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE=1
+TELESEC_HISTORY_ENABLE=1
 ```
 
 Restart the gateway, then search by contact:
 
 ```bash
-hermes telegram-business history contacts --search alice --limit 20
-hermes telegram-business history show --contact @alice --since 7d --limit 100
-hermes telegram-business history search --contact @alice --text estimate --since 30d --limit 100
-hermes telegram-business history deletions --status unexplained --limit 20
+hermes telesec history contacts --search alice --limit 20
+hermes telesec history show --contact @alice --since 7d --limit 100
+hermes telesec history search --contact @alice --text estimate --since 30d --limit 100
+hermes telesec history deletions --status unexplained --limit 20
 ```
 
 History captures new text messages, edits, and deletions as Telegram delivers them. It preserves deleted text and distinguishes likely corrections, duplicates, unexplained deletions, and missing originals. It does not import old conversations. Contact names and observed aliases are searchable; ambiguous names require an explicit choice.
@@ -101,9 +101,9 @@ Canonical storage is profile-local JSONL with a rebuildable contact catalog. Cap
 `stats` counts, per contact, text messages received and sent, active days, conversation sessions, latest activity, and deletions over retained history:
 
 ```bash
-hermes telegram-business stats --since 30d
-hermes telegram-business stats --contact @alice --since 2026-10-01 --tz Europe/Moscow
-hermes telegram-business stats --contact @alice --format json
+hermes telesec stats --since 30d
+hermes telesec stats --contact @alice --since 2026-10-01 --tz Europe/Moscow
+hermes telesec stats --contact @alice --format json
 ```
 
 Messages are placed by Telegram send time. Only text messages are counted. The report needs no LLM, stores nothing new, and never prints message text. [Counting rules, options, and a synthetic example](docs/STATS.md).
@@ -112,12 +112,12 @@ The same report for one chat is in Telegram: tap **Manage Bot** in a Business ch
 
 ## Contact dossiers (opt-in)
 
-With history enabled, add `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE=1` to the profile's `.env` and restart the gateway. A gateway-only background worker then builds an evidence-backed dossier for every private Business contact, plus one owner writing persona, and refreshes them incrementally through the host `ctx.llm` facade. Every fact cites its source messages. You can trace, correct, pin, or remove facts, and owner edits survive refreshes.
+With history enabled, add `TELESEC_DOSSIER_ENABLE=1` to the profile's `.env` and restart the gateway. A gateway-only background worker then builds an evidence-backed dossier for every private Business contact, plus one owner writing persona, and refreshes them incrementally through the host `ctx.llm` facade. Every fact cites its source messages. You can trace, correct, pin, or remove facts, and owner edits survive refreshes.
 
 ```bash
-hermes telegram-business dossier list
-hermes telegram-business dossier show --contact @alice --fact f3
-hermes telegram-business dossier correct --contact @alice --fact f3 --text "Prefers calls after 18:00."
+hermes telesec dossier list
+hermes telesec dossier show --contact @alice --fact f3
+hermes telesec dossier correct --contact @alice --fact f3 --text "Prefers calls after 18:00."
 ```
 
 Enabling dossiers sends private chat text to the configured model provider; history capture alone never does. Nothing is sent to contacts. [Dossiers, privacy, and a synthetic example](docs/DOSSIERS.md).
@@ -139,26 +139,34 @@ See the [roadmap](docs/ROADMAP.md) and [assistant design](docs/ASSISTANT.md).
 Telegram Business voice/video notes can originate from users outside the ordinary DM allowlist. Enable the plugin's narrowly scoped Business-media authorization bypass in the active profile's `.env` so its native handler can transcribe them:
 
 ```bash
-HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH=1
+TELESEC_VOICE_BYPASS_AUTH=1
 ```
 
 The plugin registers native Telegram handlers in group `-100`, before ordinary Hermes handlers. After history capture and transcription routing, every `business_message`, `edited_business_message`, and `deleted_business_messages` update is consumed with `ApplicationHandlerStop`. Ordinary Business text from either the owner or a contact never becomes an agent turn, even with history or transcription disabled or after a history-write failure. Normal bot DMs, including the owner panel, keep their existing routing. The bypass above applies only to Business media transcription; it does not authorize ordinary bot messages.
 
-Owners who deliberately want unhandled Business updates to continue into Hermes can set `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE=1` in the active profile's `.env` and restart the gateway. The ordinary core auth/agent rules then apply; handled media and owner controls remain consumed.
+Owners who deliberately want unhandled Business updates to continue into Hermes can set `TELESEC_AGENT_ENABLE=1` in the active profile's `.env` and restart the gateway. The ordinary core auth/agent rules then apply; handled media and owner controls remain consumed.
 
 History has its own explicit enable switch and records eligible Business text updates independently of the ordinary DM allowlist. Telegram's selected Business-chat scope and the optional history filters determine what is captured.
 
-## Compatibility and identity
+## Upgrade from 0.9.x
 
-- The public product and repository are **Telegram Business for Hermes** / `hermes-telegram-business`.
-- The Hermes runtime plugin ID remains `telegram-business-voice-transcriber`. It is a legacy-stable internal ID used by existing install directories, enablement/config keys, update/remove commands, and cache paths.
-- Existing environment-variable namespaces remain unchanged.
-- Existing Git installations that retain the [old repository URL](https://github.com/neoromantic/hermes-telegram-business-voice-transcriber) continue to update through GitHub's redirect. No reinstall or config migration is required for this rebrand.
+The runtime ID and catalog key are now `telesec`; the repository is `neoromantic/telesec`. GitHub redirects old repository URLs.
+
+Hermes keys installation directories by plugin name. Stop the gateway and run the upgrade script from a checkout of this version with the gateway's `HERMES_HOME` and Python environment:
+
+```bash
+bash scripts/upgrade-telesec.sh
+hermes gateway restart
+```
+
+The script migrates data and configuration before removing the old installation, then runs `hermes plugins remove telegram-business-voice-transcriber` and `hermes plugins install neoromantic/telesec --enable`. First startup also performs the same idempotent migration: `data/telegram-business`, the old plugin cache and plugin state directories, `plugins.entries.telegram-business-voice-transcriber`, and enabled/disabled lists move to `telesec`. History, the contact catalog, transcription modes, and dossiers retain their contents; files remain private (`0600`). A conflicting destination is preserved and reported rather than overwritten. Keep the gateway stopped while resolving a conflict.
+
+For 0.10.x, `hermes telegram-business` remains a deprecated CLI alias. Old `HERMES_TELEGRAM_BUSINESS_*` and `TG_BUSINESS_*` variables are accepted at startup with one deprecation warning; `TELESEC_*` values take precedence. Update your profile environment or systemd drop-ins to the names below. These aliases are removed in the next release.
 
 ## Install
 
 ```bash
-hermes plugins install neoromantic/hermes-telegram-business --enable
+hermes plugins install neoromantic/telesec --enable
 hermes gateway restart
 ```
 
@@ -173,49 +181,63 @@ Plugins are profile-scoped. Set `HERMES_HOME` or use the appropriate Hermes prof
 ## Update and remove
 
 ```bash
-hermes plugins update telegram-business-voice-transcriber
+hermes plugins update telesec
 hermes gateway restart
 ```
 
 ```bash
-hermes plugins remove telegram-business-voice-transcriber
+hermes plugins remove telesec
 hermes gateway restart
 ```
 
 `hermes plugins update` uses the Git remote retained by the installer. Both the old redirected source URL and the canonical repository URL remain supported; do not copy the directory manually if you want supported updates. Hermes core updates and this plugin's updates are independent: the installed plugin persists across a core update, while the command above advances the plugin itself.
 
-Removing the plugin leaves its data under `$HERMES_HOME/data/telegram-business/`: history, dossiers, and transcription modes. To erase it, stop the gateway, remove that directory and any backups or exports you own, then restart. Remove the plugin's environment settings from the active profile too.
+Removing the plugin leaves its data under `$HERMES_HOME/data/telesec/`: history, dossiers, and transcription modes. To erase it, stop the gateway, remove that directory and any backups or exports you own, then restart. Remove the plugin's environment settings from the active profile too.
 
 ## Configuration
 
-All plugin variables are optional. Settings are read from the active profile's environment. `config_schema` is empty because Hermes's Desktop settings form writes `plugins.entries.<id>.settings`, which these readers do not use; ordinary fields have no automatic environment binding. Use the variables below and the [history settings](docs/HISTORY.md#configuration), including `HERMES_TELEGRAM_BUSINESS_TIMEZONE` for stats. Restart the gateway after changing the profile's `.env`.
+All plugin variables are optional. Hermes Desktop's plugin settings form exposes `history_enable`, `dossier_enable`, `cleanup_style`, `timezone`, and `agent_enable`. They are read through `ctx.get_config` under `plugins.entries.telesec.settings`; environment variables override the form. Settings are re-read when used. Restart the gateway after changing settings or environment variables, including dossier enablement, so the background worker starts with the selected state.
+
+```yaml
+plugins:
+  entries:
+    telesec:
+      settings:
+        history_enable: false
+        dossier_enable: false
+        cleanup_style: conservative
+        timezone: UTC
+        agent_enable: false
+```
+
+See the [Hermes plugin settings API](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins#store-settings-and-runtime-state).
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` | false | Allow unhandled Business updates into the ordinary Hermes auth/agent path. By default all Business message updates are consumed after history capture and transcription routing. |
-| `TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE` | false | Disable voice/audio transcription. The owner panel then says so and shows no mode buttons. |
-| `TG_BUSINESS_VOICE_TRANSCRIBER_SEND_ERRORS` | false | Reply with a short STT error notice. |
-| `TG_BUSINESS_VOICE_CLEANUP_DISABLE` | false | Skip LLM cleanup and post raw STT text. |
-| `TG_BUSINESS_VOICE_CLEANUP_PROVIDER` | `gemini` | Host provider requested for cleanup. |
-| `TG_BUSINESS_VOICE_CLEANUP_MODEL` | `gemini-3.8-flash` | Host model requested for cleanup. |
-| `TG_BUSINESS_VOICE_CLEANUP_STYLE` | `conservative` | Use `enriched` for filler removal, active editing, paragraph/list structure, and long-note titles. |
-| `TG_BUSINESS_VOICE_CLEANUP_TIMEOUT` | `45` | Cleanup timeout in seconds. |
-| `TG_BUSINESS_VOICE_CLEANUP_MIN_CHARS` | `81` | Minimum transcript length for cleanup. |
-| `TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS` | `1` | Minimum word count for cleanup. |
-| `TG_BUSINESS_VOICE_TITLE_MIN_CHARS` | `700` | Add an enriched-mode title at this transcript length. |
-| `TG_BUSINESS_VOICE_TITLE_MIN_WORDS` | `120` | Add an enriched-mode title at this word count. |
-| `TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS` | `300` | Maximum attached-audio duration; bounded to 1–3600 seconds. |
-| `TG_BUSINESS_AUDIO_FILE_MAX_BYTES` | `20971520` | Maximum attached-audio size; bounded to 1024–104857600 bytes. Missing or zero metadata is rejected before download. |
-| `TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS` | `10` | Prefix duration extracted locally for speech probing; bounded to 1–60 seconds and capped at the configured maximum duration. |
-| `TG_BUSINESS_AUDIO_FILE_MIN_WORDS` | `3` | Minimum lexical words in the probe transcript; bounded to 1–20. Continuous-script text uses an equivalent conservative letter threshold. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE` | false | Turn on [contact dossiers](docs/DOSSIERS.md) and the owner persona. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_INTERVAL_MINUTES` | `30` | Pause between dossier cycles; bounded to 5–1440. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_QUIET_MINUTES` | `10` | Minutes a chat must be quiet before a dossier refresh; bounded to 0–1440. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_BACKFILL_DAYS` | `90` | First-pass and tracking window for dossiers, in days; bounded to 1–3650. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_BACKFILL_MESSAGES` | `500` | First-pass message cap per contact (for the persona, across all chats); bounded to 10–5000. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_MAX_CALLS_PER_MINUTE` | `20` | Dossier model calls per minute; bounded to 1–600. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_PROVIDER` | cleanup provider | Host provider for dossiers; falls back to `TG_BUSINESS_VOICE_CLEANUP_PROVIDER`, then `gemini`. |
-| `HERMES_TELEGRAM_BUSINESS_DOSSIER_MODEL` | cleanup model | Host model for dossiers; falls back to `TG_BUSINESS_VOICE_CLEANUP_MODEL`, then `gemini-3.8-flash`. |
+| `TELESEC_AGENT_ENABLE` | false | Allow unhandled Business updates into the ordinary Hermes auth/agent path. By default all Business message updates are consumed after history capture and transcription routing. |
+| `TELESEC_DISABLE` | false | Disable voice/audio transcription. The owner panel then says so and shows no mode buttons. |
+| `TELESEC_SEND_ERRORS` | false | Reply with a short STT error notice. |
+| `TELESEC_CLEANUP_DISABLE` | false | Skip LLM cleanup and post raw STT text. |
+| `TELESEC_CLEANUP_PROVIDER` | `gemini` | Host provider requested for cleanup. |
+| `TELESEC_CLEANUP_MODEL` | `gemini-3.8-flash` | Host model requested for cleanup. |
+| `TELESEC_CLEANUP_STYLE` | `conservative` | Use `enriched` for filler removal, active editing, paragraph/list structure, and long-note titles. |
+| `TELESEC_CLEANUP_TIMEOUT` | `45` | Cleanup timeout in seconds. |
+| `TELESEC_CLEANUP_MIN_CHARS` | `81` | Minimum transcript length for cleanup. |
+| `TELESEC_CLEANUP_MIN_WORDS` | `1` | Minimum word count for cleanup. |
+| `TELESEC_TITLE_MIN_CHARS` | `700` | Add an enriched-mode title at this transcript length. |
+| `TELESEC_TITLE_MIN_WORDS` | `120` | Add an enriched-mode title at this word count. |
+| `TELESEC_AUDIO_FILE_MAX_DURATION_SECONDS` | `300` | Maximum attached-audio duration; bounded to 1–3600 seconds. |
+| `TELESEC_AUDIO_FILE_MAX_BYTES` | `20971520` | Maximum attached-audio size; bounded to 1024–104857600 bytes. Missing or zero metadata is rejected before download. |
+| `TELESEC_AUDIO_FILE_PROBE_SECONDS` | `10` | Prefix duration extracted locally for speech probing; bounded to 1–60 seconds and capped at the configured maximum duration. |
+| `TELESEC_AUDIO_FILE_MIN_WORDS` | `3` | Minimum lexical words in the probe transcript; bounded to 1–20. Continuous-script text uses an equivalent conservative letter threshold. |
+| `TELESEC_DOSSIER_ENABLE` | false | Turn on [contact dossiers](docs/DOSSIERS.md) and the owner persona. |
+| `TELESEC_DOSSIER_INTERVAL_MINUTES` | `30` | Pause between dossier cycles; bounded to 5–1440. |
+| `TELESEC_DOSSIER_QUIET_MINUTES` | `10` | Minutes a chat must be quiet before a dossier refresh; bounded to 0–1440. |
+| `TELESEC_DOSSIER_BACKFILL_DAYS` | `90` | First-pass and tracking window for dossiers, in days; bounded to 1–3650. |
+| `TELESEC_DOSSIER_BACKFILL_MESSAGES` | `500` | First-pass message cap per contact (for the persona, across all chats); bounded to 10–5000. |
+| `TELESEC_DOSSIER_MAX_CALLS_PER_MINUTE` | `20` | Dossier model calls per minute; bounded to 1–600. |
+| `TELESEC_DOSSIER_PROVIDER` | cleanup provider | Host provider for dossiers; falls back to `TELESEC_CLEANUP_PROVIDER`, then `gemini`. |
+| `TELESEC_DOSSIER_MODEL` | cleanup model | Host model for dossiers; falls back to `TELESEC_CLEANUP_MODEL`, then `gemini-3.8-flash`. |
 
 Boolean values accept `1`, `true`, `yes`, or `on` (case-insensitive).
 
@@ -228,7 +250,7 @@ Cleanup uses Hermes's host-owned `ctx.llm`; no provider key belongs in this repo
 ```yaml
 plugins:
   entries:
-    telegram-business-voice-transcriber:
+    telesec:
       llm:
         allow_provider_override: true
         allowed_providers: [gemini]
@@ -236,17 +258,17 @@ plugins:
         allowed_models: [gemini-3.8-flash]
 ```
 
-The default is [Gemini 3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash). Cleanup does not pass sampling parameters, following [current Gemini guidance](https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.8). Select another model through `TG_BUSINESS_VOICE_CLEANUP_MODEL` and update the allowlist to match; there is no automatic provider/model switch.
+The default is [Gemini 3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash). Cleanup does not pass sampling parameters, following [current Gemini guidance](https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.8). Select another model through `TELESEC_CLEANUP_MODEL` and update the allowlist to match; there is no automatic provider/model switch.
 
-If the trust gate, provider, or model is unavailable, the plugin logs the cleanup failure and posts the raw STT transcript. To use different environment values, update the allowlists to match. To avoid any cleanup LLM call, set `TG_BUSINESS_VOICE_CLEANUP_DISABLE=1`.
+If the trust gate, provider, or model is unavailable, the plugin logs the cleanup failure and posts the raw STT transcript. To use different environment values, update the allowlists to match. To avoid any cleanup LLM call, set `TELESEC_CLEANUP_DISABLE=1`.
 
-Contact dossiers use the same facade and allowlist. By default they request the cleanup provider and model, so the allowlist above covers them; if you set `HERMES_TELEGRAM_BUSINESS_DOSSIER_PROVIDER` or `HERMES_TELEGRAM_BUSINESS_DOSSIER_MODEL`, allow those values too. A trust-gate denial stops the dossier cycle, and `hermes telegram-business dossier status` reports it. `TG_BUSINESS_VOICE_CLEANUP_DISABLE` does not affect dossiers; they make model calls only while `HERMES_TELEGRAM_BUSINESS_DOSSIER_ENABLE` is set.
+Contact dossiers use the same facade and allowlist. By default they request the cleanup provider and model, so the allowlist above covers them; if you set `TELESEC_DOSSIER_PROVIDER` or `TELESEC_DOSSIER_MODEL`, allow those values too. A trust-gate denial stops the dossier cycle, and `hermes telesec dossier status` reports it. `TELESEC_CLEANUP_DISABLE` does not affect dossiers; they make model calls only while `TELESEC_DOSSIER_ENABLE` is set.
 
 `conservative` preserves conversational wording and accepts almost exclusively punctuation, paragraphing, and obvious ASR fixes. `enriched` actively edits ASR errors and filler, structures topics into paragraphs or real enumerations into lists, and adds a short title to long notes. Its prompt asks the model to preserve the complete meaning, but the runtime deliberately does not attempt token-level semantic proof: any non-empty result between 20% and 200% of the source word count is usable. Output outside that broad structural range gets one feedback retry; raw STT is used only when both candidates are structurally unusable or the cleanup call fails.
 
 ## Current module architecture
 
-The plugin registers native Telegram handlers, a `pre_gateway_dispatch` hook, the `telegram-business` CLI, and the `history` and `dossiers` skills. Business text observations are persisted before normal dispatch; supported media is consumed directly before Hermes downloads it. The voice pipeline normalizes Telegram Business updates before its module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. Direction remains `unknown` when Telegram supplies no outgoing marker; the voice module retains its existing asynchronous Business-owner lookup before editing a caption.
+The plugin registers native Telegram handlers, a `pre_gateway_dispatch` hook, the `telesec` CLI, and the `history` and `dossiers` skills. Business text observations are persisted before normal dispatch; supported media is consumed directly before Hermes downloads it. The voice pipeline normalizes Telegram Business updates before its module sees them. The immutable event includes stable identity, Business connection, chat/user/message/update identifiers, known direction, message/edit timestamps, reply/edit/delete relationships, and provider-neutral media metadata. Direction remains `unknown` when Telegram supplies no outgoing marker; the voice module retains its existing asynchronous Business-owner lookup before editing a caption.
 
 All three native PTB handlers use group `-100`, before Hermes's ordinary Telegram handlers. PTB runs only the first matching handler in a group:
 
@@ -296,7 +318,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - **Local processes.** Attached-audio checks run `ffprobe` for duration and `ffmpeg` for prefix extraction and normalization, using argument lists without a shell. They operate on transient media in the active profile's cache.
 - **Background work.** Claimed transcription runs asynchronously. Opt-in history schedules deletion classification and maintenance; opt-in dossiers run a gateway background thread, starting 3 minutes after connection and normally waiting 30 minutes between cycles. It sends eligible private-chat text to the configured LLM without another prompt; disable dossiers to stop new cycles.
 - **The owner's chat with the bot.** Telegram delivers your own chat with the bot (the owner panel and your agent chat) as Business updates too. The plugin ignores those copies: they are not captured, transcribed, counted, or used for dossiers, and the ordinary update for the same message still reaches Hermes.
-- **Stored data and retention.** `$HERMES_HOME/data/telegram-business/` holds owner/chat modes and connection-owner mappings, opt-in history JSONL and its contact catalog, and opt-in dossier facts, source quotes, persona, revisions, and worker state. Modes and dossiers remain until explicitly removed. History defaults to no age pruning and a 1 GiB size target; pruning removes closed monthly partitions, so the current month and pending classifications can exceed the target. See [history removal](docs/HISTORY.md#retention-and-removal), [dossier removal](docs/DOSSIERS.md#storage-and-privacy), and [Update and remove](#update-and-remove).
+- **Stored data and retention.** `$HERMES_HOME/data/telesec/` holds owner/chat modes and connection-owner mappings, opt-in history JSONL and its contact catalog, and opt-in dossier facts, source quotes, persona, revisions, and worker state. Modes and dossiers remain until explicitly removed. History defaults to no age pruning and a 1 GiB size target; pruning removes closed monthly partitions, so the current month and pending classifications can exceed the target. See [history removal](docs/HISTORY.md#retention-and-removal), [dossier removal](docs/DOSSIERS.md#storage-and-privacy), and [Update and remove](#update-and-remove).
 - Voice/video/audio data is written only to the active Hermes profile's cache while it is processed. The newly created download, attached-audio probe, and any normalized full-file WAV are deleted in a `finally` block after success or failure.
 - The configured STT backend receives the media. Depending on your Hermes configuration, that backend may be local or external.
 - When cleanup is enabled, the configured host LLM receives the transcript. The system prompt treats transcript contents as untrusted data and forbids following embedded instructions.

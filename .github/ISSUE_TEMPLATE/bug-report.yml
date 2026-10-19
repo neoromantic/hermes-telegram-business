@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thanks for the report. This issue is public, so use synthetic or redacted details only.
-        Security problems go through a [private report](https://github.com/neoromantic/hermes-telegram-business/security/advisories/new), not here.
+        Security problems go through a [private report](https://github.com/neoromantic/telesec/security/advisories/new), not here.
   - type: checkboxes
     id: privacy
     attributes:
@@ -70,7 +70,7 @@ body:
       options:
         - conservative (default)
         - enriched
-        - disabled (TG_BUSINESS_VOICE_CLEANUP_DISABLE=1)
+        - disabled (TELESEC_CLEANUP_DISABLE=1)
         - Not sure or not relevant
     validations:
       required: false

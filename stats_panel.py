@@ -114,7 +114,7 @@ def render_report(stats: _stats.ContactStats, window: _stats.StatsWindow, *, per
 def _read_error_text(chat_id: Any, business_connection_id: str) -> str:
     command = " ".join(
         (
-            "hermes telegram-business stats",
+            "hermes telesec stats",
             _stats._cli_option("--chat", chat_id),
             _stats._cli_option("--connection", business_connection_id),
         )
@@ -163,7 +163,7 @@ def build_stats_view(
         return render_report(_stats.collect_contact_stats(entries[0], window), window, period=sub)
     except (OSError, ValueError, OverflowError) as exc:
         # Exception text can carry contact names and paths, so only its type is logged.
-        logger.warning("telegram-business stats panel: history could not be read (%s)", type(exc).__name__)
+        logger.warning("telesec stats panel: history could not be read (%s)", type(exc).__name__)
         return StatsPanelView(_read_error_text(chat_id, str(business_connection_id)), period_buttons(sub))
 
 

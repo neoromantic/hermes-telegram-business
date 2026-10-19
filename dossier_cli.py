@@ -1,4 +1,4 @@
-"""``hermes telegram-business dossier ...``: inspect and correct contact dossiers and the owner persona.
+"""``hermes telesec dossier ...``: inspect and correct contact dossiers and the owner persona.
 
 Every text line goes through ``history_support._escape_terminal_text``: dossier text is derived
 from chat messages and must never drive the terminal. ``preview`` prints the payload bytes as
@@ -24,7 +24,7 @@ Target = tuple[str, Any]
 
 COMMANDS = ("status", "list", "show", "preview", "correct", "pin", "unpin", "remove",
             "note", "changes", "export", "forget", "run")
-USAGE = "Usage: hermes telegram-business dossier <" + "|".join(COMMANDS) + ">"
+USAGE = "Usage: hermes telesec dossier <" + "|".join(COMMANDS) + ">"
 MAX_CHANGES_LIMIT = 500
 DISABLED_RUN = (f"error: dossiers are disabled; set {_dossier.ENABLE_ENV}=1 "
                 "(the gateway worker also needs a restart)")
@@ -48,7 +48,7 @@ _C1_RE = re.compile(r"[\x7f-\x9f]")
 
 
 def add_parser(subs: Any) -> None:
-    """Add ``dossier`` to the ``telegram-business`` subparsers."""
+    """Add ``dossier`` to the ``telesec`` subparsers."""
     parser = subs.add_parser(
         "dossier", help="Inspect and correct Telegram Business contact dossiers and the owner persona")
     parser.set_defaults(_dossier_action="usage")
@@ -561,7 +561,7 @@ def _fact_lines(target: Target, dossier: dict[str, Any], fact: dict[str, Any], v
     for (connection, chat), times in spans.items():
         since = _history._isoformat_utc(min(times) - timedelta(minutes=1))
         until = _history._isoformat_utc(max(times) + timedelta(minutes=1))
-        lines.append("History: hermes telegram-business history show --connection "
+        lines.append("History: hermes telesec history show --connection "
                      f"{shlex.quote(connection)} --chat {shlex.quote(chat)} --since {since} --until {until}")
     return lines
 
@@ -635,7 +635,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 1
     if report.outcome == "catalog_unavailable":
         print("error: the contact catalog is unavailable; check it with "
-              "'hermes telegram-business history catalog'")
+              "'hermes telesec history catalog'")
         return 1
     if report.outcome == "no_history":
         print("No Telegram Business history found; nothing to do.")
@@ -798,7 +798,7 @@ def _cmd_forget(args: argparse.Namespace) -> int:
             lines = [(f"Forgot {_plural(result['contacts'], 'contact dossier')} and {persona}. "
                       "Canonical history was not changed.")]
         lines.append(f"To stop processing: unset {_dossier.ENABLE_ENV}, restart the gateway, then run "
-                     "'hermes telegram-business dossier forget --all'." if enabled
+                     "'hermes telesec dossier forget --all'." if enabled
                      else "Dossiers are disabled; nothing will be rebuilt.")
         _emit(lines)
         return 0

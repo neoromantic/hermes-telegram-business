@@ -56,8 +56,8 @@ def plugin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 @pytest.fixture
 def enabled_history(monkeypatch: pytest.MonkeyPatch, plugin):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     plugin._history_support.reset_in_memory_caches()
     return plugin
 
@@ -568,7 +568,7 @@ async def test_history_is_fail_closed_when_disabled_or_missing_chat_type(plugin,
     await plugin._history_support.observe_ptb_update(update, bot=FakeBot())
     assert not load_records(plugin, chat_id=991)
 
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     await plugin._history_support.observe_ptb_update(update, bot=FakeBot())
     assert not load_records(plugin, chat_id=991)
 
@@ -624,7 +624,7 @@ async def test_absent_history_unknown_type_probe_rejects_without_side_effects(en
 
 @pytest.mark.asyncio
 async def test_enable_only_private_capture_spans_multiple_connections_and_chats(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(business_id="business-123", chat_id=991, text="alpha"),
@@ -641,8 +641,8 @@ async def test_enable_only_private_capture_spans_multiple_connections_and_chats(
 
 @pytest.mark.asyncio
 async def test_connection_filter_still_narrows_capture(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(business_id="business-123", chat_id=991, text="kept"),
@@ -660,7 +660,7 @@ async def test_connection_filter_still_narrows_capture(plugin, monkeypatch: pyte
 @pytest.mark.asyncio
 @pytest.mark.parametrize("chat_type", ["group", "supergroup", "channel"])
 async def test_history_skips_non_private_chat_types_by_default(plugin, monkeypatch: pytest.MonkeyPatch, chat_type: str):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
 
     wrote = await plugin._history_support.observe_ptb_update(
         make_business_text_update(chat_type=chat_type, chat_title=f"{chat_type} room", chat_first_name=None, chat_last_name=None),
@@ -678,8 +678,8 @@ async def test_history_chat_type_opt_in_allows_additional_chat_types(
     monkeypatch: pytest.MonkeyPatch,
     chat_type: str,
 ):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES", f"private,{chat_type}")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", f"private,{chat_type}")
 
     wrote = await plugin._history_support.observe_ptb_update(
         make_business_text_update(chat_type=chat_type, chat_title=f"{chat_type} room", chat_first_name=None, chat_last_name=None),
@@ -692,8 +692,8 @@ async def test_history_chat_type_opt_in_allows_additional_chat_types(
 
 @pytest.mark.asyncio
 async def test_exact_chat_id_opt_in_allows_group_chat_even_without_chat_type_opt_in(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
 
     wrote = await plugin._history_support.observe_ptb_update(
         make_business_text_update(chat_type="group", chat_title="support room", chat_first_name=None, chat_last_name=None),
@@ -706,7 +706,7 @@ async def test_exact_chat_id_opt_in_allows_group_chat_even_without_chat_type_opt
 
 @pytest.mark.asyncio
 async def test_delete_updates_follow_same_chat_boundary_and_known_type_fallback(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
 
     skipped = await plugin._history_support.observe_ptb_update(
         make_deleted_update(chat_type="group", message_ids=(77,), update_id=1),
@@ -736,9 +736,9 @@ def test_history_config_defaults_and_env_overrides(plugin, monkeypatch: pytest.M
     assert config.retention_days == 0
     assert config.max_bytes == 1024 * 1024 * 1024
 
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS", "7")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES", "private,group")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "0")
+    monkeypatch.setenv("TELESEC_HISTORY_NEARBY_BEFORE_SECONDS", "7")
+    monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", "private,group")
+    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "0")
     config = plugin._history_support.history_config_from_env()
     assert config.chat_types == {"group", "private"}
     assert config.nearby_before_seconds == 7
@@ -806,10 +806,10 @@ async def test_raw_history_records_create_edit_delete_without_needing_gateway_di
     assert len(load_records(plugin)) == 3
 
     reloaded = _load_plugin_module(monkeypatch, tmp_path)
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
+    monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     await reloaded._history_support.observe_ptb_update(
         make_business_text_update(text="hello", message_id=77, update_id=1, date=base),
         bot=bot,
@@ -1130,7 +1130,7 @@ async def test_missing_chat_lock_fails_closed_without_mutation(
 
 
 def test_catalog_rebuild_supports_old_jsonl_without_profile_snapshots(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     append_raw_history_records(
         plugin,
         make_history_record(
@@ -1373,27 +1373,27 @@ async def test_verify_repair_reinitializes_missing_locks_and_restores_normal_ver
         (
             ["history", "contacts"],
             1,
-            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
+            "error: history contact catalog is stale; run 'hermes telesec history catalog --rebuild'",
         ),
         (
             ["history", "show", "--contact", "@customer991", "--limit", "1"],
             1,
-            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
+            "error: history contact catalog is stale; run 'hermes telesec history catalog --rebuild'",
         ),
         (
             ["history", "search", "--contact", "@customer991", "--text", "hello", "--limit", "1"],
             1,
-            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
+            "error: history contact catalog is stale; run 'hermes telesec history catalog --rebuild'",
         ),
         (
             ["history", "export", "--contact", "@customer991", "--format", "text", "--limit", "1"],
             1,
-            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
+            "error: history contact catalog is stale; run 'hermes telesec history catalog --rebuild'",
         ),
         (
             ["history", "search", "--text", "hello", "--limit", "1"],
             1,
-            "error: history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'",
+            "error: history contact catalog is stale; run 'hermes telesec history catalog --rebuild'",
         ),
     ],
 )
@@ -1841,7 +1841,7 @@ async def test_streamed_read_waits_for_concurrent_prune_and_keeps_selected_parti
         return original_open(path_obj, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", _blocking_open)
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
 
     def _reader() -> None:
         try:
@@ -2162,7 +2162,7 @@ async def test_direction_resolution_accepts_sender_business_bot_and_owner_lookup
 ):
     plugin = enabled_history
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "*")
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "*")
 
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(text="bot", message_id=77, update_id=1, date=base, sender_business_bot_id=9),
@@ -2207,7 +2207,7 @@ async def test_deletion_timer_preserves_active_profile_context(enabled_history, 
     history = enabled_history._history_support
     profile_home = ContextVar("history_test_home", default=tmp_path / "default")
     monkeypatch.setattr(history, "get_hermes_home", profile_home.get)
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "1")
     assert await history.observe_ptb_update(
         make_business_text_update(business_id="default-business", chat_id=41), bot=FakeBot(),
     )
@@ -2275,7 +2275,7 @@ async def test_deletion_retry_after_original_partition_is_pruned_keeps_one_tombs
     deletion = make_deleted_update(update_id=2)
     assert await history.observe_ptb_update(deletion, bot=FakeBot(), now=deleted_at)
     assert history.maintain_history(now=deleted_at + timedelta(seconds=20)).classified == 1
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "1")
     assert history.maintain_history(now=deleted_at + timedelta(seconds=21)).pruned_files == 1
 
     reloaded = _load_plugin_module(monkeypatch, tmp_path)
@@ -2327,10 +2327,10 @@ async def _delete_and_classify(
     reload_after_delete: bool = False,
 ):
     base = base or datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
+    monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
 
     if original_text is not None:
         await plugin._history_support.observe_ptb_update(
@@ -2549,10 +2549,10 @@ async def test_identical_pre_delete_message_outside_nearby_before_window_is_unex
 
 @pytest.mark.asyncio
 async def test_deleted_message_classification_survives_restart(plugin, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
+    monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
 
     await plugin._history_support.observe_ptb_update(
@@ -2615,10 +2615,10 @@ async def test_idle_deletion_is_classified_by_scheduler_without_manual_maintain(
 
 @pytest.mark.asyncio
 async def test_startup_maintenance_classifies_overdue_deletions(plugin, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
+    monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
     timers = TimerHarness()
     monkeypatch.setattr(plugin._history_support.threading, "Timer", timers.timer)
@@ -2646,10 +2646,10 @@ async def test_startup_maintenance_classifies_overdue_deletions(plugin, monkeypa
 
 @pytest.mark.asyncio
 async def test_startup_maintenance_recovers_pending_timer_before_window(plugin, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
+    monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
     first_timers = TimerHarness()
     monkeypatch.setattr(plugin._history_support.threading, "Timer", first_timers.timer)
@@ -2689,10 +2689,10 @@ async def test_month_boundary_pending_deletion_protects_closed_partition_until_c
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CONNECTIONS", "business-123")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CHATS", "991")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_CORRECTION_WINDOW", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_CONNECTIONS", "business-123")
+    monkeypatch.setenv("TELESEC_HISTORY_CHATS", "991")
+    monkeypatch.setenv("TELESEC_HISTORY_CORRECTION_WINDOW", "10")
     june_message_at = datetime(2026, 6, 30, 23, 59, 50, tzinfo=timezone.utc)
     deleted_at = datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
     replacement_at = datetime(2026, 7, 1, 0, 0, 5, tzinfo=timezone.utc)
@@ -2730,7 +2730,7 @@ async def test_month_boundary_pending_deletion_protects_closed_partition_until_c
     june_file = load_history_file(plugin, month="2026-06.jsonl")
     july_file = load_history_file(plugin, month="2026-07.jsonl")
     total_before = june_file.stat().st_size + july_file.stat().st_size
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES", str(total_before - 1))
+    monkeypatch.setenv("TELESEC_HISTORY_MAX_BYTES", str(total_before - 1))
 
     plugin._history_support.reset_in_memory_caches()
     reloaded = _load_plugin_module(monkeypatch, tmp_path)
@@ -2811,8 +2811,8 @@ async def test_retention_and_size_prune_closed_partitions_but_preserve_active(en
 
     old_file = load_history_file(plugin, month="2026-06.jsonl")
     current_file = load_history_file(plugin, month="2026-07.jsonl")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "20")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES", str(current_file.stat().st_size + 1))
+    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "20")
+    monkeypatch.setenv("TELESEC_HISTORY_MAX_BYTES", str(current_file.stat().st_size + 1))
 
     result = plugin._history_support.maintain_history(now=current_time)
 
@@ -2875,7 +2875,7 @@ async def test_retention_prune_rebuilds_catalog_from_remaining_canonical_history
         now=june_time + timedelta(seconds=1),
     )
 
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
     result = plugin._history_support.maintain_history(now=july_time)
     catalog = load_catalog(plugin)
     entries = {int(entry["chat_id"]): entry for entry in catalog["contacts"]}
@@ -2916,7 +2916,7 @@ async def test_post_prune_catalog_rebuild_failure_marks_dirty_until_explicit_reb
 
     old_file = load_history_file(plugin, month="2026-06.jsonl")
     original_write_catalog = history._write_catalog_locked
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
     monkeypatch.setattr(
         history,
         "_write_catalog_locked",
@@ -2956,7 +2956,7 @@ async def test_active_month_cap_failure_is_explicit(enabled_history, monkeypatch
         now=current_time,
     )
     current_file = load_history_file(plugin, month="2026-07.jsonl")
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES", str(max(1, current_file.stat().st_size - 10)))
+    monkeypatch.setenv("TELESEC_HISTORY_MAX_BYTES", str(max(1, current_file.stat().st_size - 10)))
 
     result = plugin._history_support.maintain_history(now=current_time)
 
@@ -2989,7 +2989,7 @@ async def test_verify_warns_not_errors_when_retention_prunes_old_delete_tombston
     )
     plugin._history_support.maintain_history(now=classified_time)
 
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
     result = plugin._history_support.maintain_history(now=verify_time)
 
     june_file = load_history_file(plugin, month="2026-06.jsonl")
@@ -3116,7 +3116,7 @@ def test_collect_history_stats_streams_bounded_snapshot_without_full_load(plugin
         load_history_file(plugin, business_id="business-123", chat_id=991).stat().st_size
         + load_history_file(plugin, business_id="business-456", chat_id=992).stat().st_size
     )
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES", str(total_bytes - 7))
+    monkeypatch.setenv("TELESEC_HISTORY_MAX_BYTES", str(total_bytes - 7))
 
     monkeypatch.setattr(
         history,
@@ -3183,7 +3183,7 @@ async def test_collect_history_stats_holds_root_snapshot_against_concurrent_capt
     prune_done = threading.Event()
     results: dict[str, Any] = {}
 
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_RETENTION_DAYS", "10")
+    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
 
     def _blocking_open(path_obj: Path, *args, **kwargs):
         mode = args[0] if args else kwargs.get("mode", "r")
@@ -3508,7 +3508,7 @@ def test_verify_history_streams_bounded_archive_and_detects_duplicates(plugin, m
     append_raw_history_records(plugin, *records)
 
     total_bytes = load_history_file(plugin).stat().st_size
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_MAX_BYTES", str(total_bytes - 5))
+    monkeypatch.setenv("TELESEC_HISTORY_MAX_BYTES", str(total_bytes - 5))
     monkeypatch.setattr(history, "VERIFY_EVENT_ID_CHUNK_RECORDS", 3)
     monkeypatch.setattr(
         history,
@@ -4028,7 +4028,7 @@ def test_verify_history_caps_diagnostics_and_cli_output(plugin, monkeypatch: pyt
 
 
 def _build_history_parser(plugin):
-    parser = argparse.ArgumentParser(prog="hermes telegram-business")
+    parser = argparse.ArgumentParser(prog="hermes telesec")
     plugin._history_support.setup_cli(parser)
     return parser
 
@@ -4110,7 +4110,7 @@ async def test_history_cli_show_search_export_deletions_and_verify(enabled_histo
 
 @pytest.mark.asyncio
 async def test_history_cli_contacts_catalog_and_contact_resolution(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
     await plugin._history_support.observe_ptb_update(
         make_business_text_update(
@@ -4262,7 +4262,7 @@ async def test_history_cli_numeric_chat_resolution_surfaces_catalog_freshness_er
         allow_missing_empty: bool,
         repair_tails: bool,
     ):
-        raise ValueError("history contact catalog is stale; run 'hermes telegram-business history catalog --rebuild'")
+        raise ValueError("history contact catalog is stale; run 'hermes telesec history catalog --rebuild'")
 
     monkeypatch.setattr(history, "_load_contact_catalog", _raise_catalog_error)
     monkeypatch.setattr(
@@ -4285,7 +4285,7 @@ async def test_history_cli_contact_lookup_normalizes_unicode_nfkc_and_casefold(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
 ):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
     decomposed_name = "Cafe\u0301 Customer"
     composed_name = "Caf\u00e9 Customer"
@@ -4350,7 +4350,7 @@ async def test_history_cli_contact_lookup_normalizes_unicode_nfkc_and_casefold(
 
 @pytest.mark.asyncio
 async def test_history_cli_chat_search_normalizes_unicode_nfkc_and_casefold(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
     decomposed_text = "Cafe\u0301 follow-up"
     fullwidth_text = "Ｆｕｌｌｗｉｄｔｈ invoice"
@@ -4402,7 +4402,7 @@ async def test_history_cli_global_search_normalizes_unicode_nfkc_and_casefold(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
 ):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
     decomposed_text = "Cafe\u0301 refund"
     fullwidth_text = "Ｆｕｌｌｗｉｄｔｈ receipt"
@@ -4468,7 +4468,7 @@ async def test_history_cli_prunes_months_and_answers_contact_last_week_workflow(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
 ):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     fixed_now = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(plugin._history_support, "_utcnow", lambda: fixed_now)
     await plugin._history_support.observe_ptb_update(
@@ -4517,7 +4517,7 @@ async def test_history_cli_prunes_months_and_answers_contact_last_week_workflow(
 
 @pytest.mark.asyncio
 async def test_history_cli_global_search_is_bounded(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     base = datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc)
     for offset, chat_id, text in (
         (0, 991, "refund alpha"),
@@ -4551,7 +4551,7 @@ async def test_history_cli_global_search_is_bounded(plugin, monkeypatch: pytest.
 
 
 def test_streaming_query_scale_prunes_partitions_and_keeps_results_bounded(plugin, monkeypatch: pytest.MonkeyPatch, capsys):
-    monkeypatch.setenv("HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE", "1")
+    monkeypatch.setenv("TELESEC_HISTORY_ENABLE", "1")
     history = plugin._history_support
     records = []
     for month, total in ((6, 250), (7, 1250)):

@@ -18,8 +18,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_FILE = ROOT / "__init__.py"
-CANONICAL_REPOSITORY = "https://github.com/neoromantic/hermes-telegram-business"
-LEGACY_PLUGIN_ID = "telegram-business-voice-transcriber"
+CANONICAL_REPOSITORY = "https://github.com/neoromantic/telesec"
+PLUGIN_ID = "telesec"
 
 
 def _load_plugin_module(
@@ -42,7 +42,7 @@ def _load_plugin_module(
         monkeypatch.setitem(sys.modules, "telegram", telegram)
         monkeypatch.setitem(sys.modules, "telegram.error", telegram_error)
 
-    module_name = f"telegram_business_voice_transcriber_{uuid.uuid4().hex}"
+    module_name = f"telesec_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, PLUGIN_FILE)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -54,21 +54,21 @@ def _load_plugin_module(
 @pytest.fixture(autouse=True)
 def isolate_plugin_environment(monkeypatch: pytest.MonkeyPatch):
     for name in (
-        "TG_BUSINESS_VOICE_CLEANUP_DISABLE",
-        "TG_BUSINESS_VOICE_CLEANUP_PROVIDER",
-        "TG_BUSINESS_VOICE_CLEANUP_MODEL",
-        "TG_BUSINESS_VOICE_CLEANUP_STYLE",
-        "TG_BUSINESS_VOICE_CLEANUP_TIMEOUT",
-        "TG_BUSINESS_VOICE_CLEANUP_MIN_CHARS",
-        "TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS",
-        "TG_BUSINESS_VOICE_TITLE_MIN_CHARS",
-        "TG_BUSINESS_VOICE_TITLE_MIN_WORDS",
-        "TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS",
-        "TG_BUSINESS_AUDIO_FILE_MAX_BYTES",
-        "TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS",
-        "TG_BUSINESS_AUDIO_FILE_MIN_WORDS",
-        "HERMES_TELEGRAM_BUSINESS_VOICE_BYPASS_AUTH",
-        "HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE",
+        "TELESEC_CLEANUP_DISABLE",
+        "TELESEC_CLEANUP_PROVIDER",
+        "TELESEC_CLEANUP_MODEL",
+        "TELESEC_CLEANUP_STYLE",
+        "TELESEC_CLEANUP_TIMEOUT",
+        "TELESEC_CLEANUP_MIN_CHARS",
+        "TELESEC_CLEANUP_MIN_WORDS",
+        "TELESEC_TITLE_MIN_CHARS",
+        "TELESEC_TITLE_MIN_WORDS",
+        "TELESEC_AUDIO_FILE_MAX_DURATION_SECONDS",
+        "TELESEC_AUDIO_FILE_MAX_BYTES",
+        "TELESEC_AUDIO_FILE_PROBE_SECONDS",
+        "TELESEC_AUDIO_FILE_MIN_WORDS",
+        "TELESEC_VOICE_BYPASS_AUTH",
+        "TELESEC_AGENT_ENABLE",
         "TELEGRAM_BOT_TOKEN",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -245,19 +245,18 @@ def make_audio_file_message(
 
 def test_manifest_uses_current_fields():
     manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text(encoding="utf-8"))
-    assert manifest == {
+    assert {key: value for key, value in manifest.items() if key != "config_schema"} == {
         "manifest_version": 2,
-        "name": LEGACY_PLUGIN_ID,
+        "name": PLUGIN_ID,
         "version": "0.9.0",
         "description": (
-            "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
+            "Telesec — Telegram Business secretary for Hermes."
         ),
         "author": "neoromantic",
         "license": "MIT",
-        "homepage": "https://hermes.sergeybaus.com",
+        "homepage": "https://telesec.sergeybaus.com",
         "tags": ["telegram", "business", "voice", "history"],
         "requires_hermes": ">=0.21.6",
-        "config_schema": {},
         "kind": "standalone",
         "provides_hooks": ["pre_gateway_dispatch"],
     }
@@ -273,16 +272,16 @@ def test_release_notes_and_readme_match_manifest_version():
 
     assert first_release.startswith(f"## {version} ")
     assert "Manage Bot" in readme
-    assert "hermes telegram-business mode" in readme
+    assert "hermes telesec mode" in readme
 
 
 def test_package_metadata_uses_public_product_identity():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
-    assert metadata["name"] == "hermes-telegram-business"
+    assert metadata["name"] == "telesec"
     assert metadata["version"] == "0.9.0"
     assert metadata["description"] == (
-        "Telegram Business integration for Hermes Agent with voice transcription and searchable opt-in text history."
+        "Telesec — Telegram Business secretary for Hermes."
     )
     assert metadata["urls"] == {
         "Homepage": CANONICAL_REPOSITORY,
@@ -295,11 +294,11 @@ def test_package_metadata_uses_public_product_identity():
 def test_readme_uses_public_name_and_canonical_install_source():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert readme.startswith("# Telegram Business for Hermes\n")
+    assert readme.startswith("# Telesec\n")
     assert f"{CANONICAL_REPOSITORY}/actions/workflows/test.yml" in readme
-    assert "hermes plugins install neoromantic/hermes-telegram-business --enable" in readme
-    assert "legacy-stable" in readme
-    assert "HERMES_TELEGRAM_BUSINESS_HISTORY_ENABLE" in readme
+    assert "hermes plugins install neoromantic/telesec --enable" in readme
+    assert "scripts/upgrade-telesec.sh" in readme
+    assert "TELESEC_HISTORY_ENABLE" in readme
     assert "gemini-3.8-flash" in readme
     assert "PTB 22.8" in readme
     assert "ctx.register_telegram_handler" in readme
@@ -317,10 +316,10 @@ def test_history_skill_documents_runtime_scheduler_and_defaults():
     assert "Update.ALL_TYPES" in skill
     assert "`source`" in skill
     assert "`classification_reason`" in skill
-    assert "HERMES_TELEGRAM_BUSINESS_HISTORY_CHAT_TYPES" in skill
+    assert "TELESEC_HISTORY_CHAT_TYPES" in skill
     assert "private Business chats only" in skill
     assert "contacts.json" in skill
-    assert "HERMES_TELEGRAM_BUSINESS_HISTORY_NEARBY_BEFORE_SECONDS" in skill
+    assert "TELESEC_HISTORY_NEARBY_BEFORE_SECONDS" in skill
     assert "default `0`" in skill
     assert "1073741824" in skill
     assert "does not depend on `maintain`" in skill
@@ -342,9 +341,9 @@ def test_ci_runs_on_main_and_version_tags():
 
 
 def test_runtime_identity_and_configuration_namespace_remain_legacy_stable(plugin):
-    assert plugin._PLUGIN_NAME == LEGACY_PLUGIN_ID
-    assert plugin._DISABLE_ENV == "TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE"
-    assert plugin._SEND_ERRORS_ENV == "TG_BUSINESS_VOICE_TRANSCRIBER_SEND_ERRORS"
+    assert plugin._PLUGIN_NAME == PLUGIN_ID
+    assert plugin._DISABLE_ENV == "TELESEC_DISABLE"
+    assert plugin._SEND_ERRORS_ENV == "TELESEC_SEND_ERRORS"
 
 
 def test_optional_telegram_error_names_are_import_safe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -386,7 +385,7 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
         llm=llm,
         register_telegram_handler=telegram_registrations.append,
         register_hook=lambda name, callback: registrations.append((name, callback)),
-        register_cli_command=lambda **kwargs: cli_registrations.append(kwargs),
+        get_config={}.get, register_cli_command=lambda **kwargs: cli_registrations.append(kwargs),
         register_skill=lambda name, path, description="": skill_registrations.append((name, path, description)),
     )
 
@@ -395,9 +394,10 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
     assert plugin._llm_facade is llm
     assert telegram_registrations == [plugin._register_telegram_handlers]
     assert registrations == [("pre_gateway_dispatch", plugin._on_pre_gateway_dispatch)]
-    assert cli_registrations == [
+    assert [command["name"] for command in cli_registrations] == ["telesec", "telegram-business"]
+    assert cli_registrations[:1] == [
         {
-            "name": "telegram-business",
+            "name": "telesec",
             "help": "Read Telegram Business history and manage transcription modes",
             "setup_fn": plugin._setup_cli,
             "handler_fn": plugin._handle_cli,
@@ -424,6 +424,7 @@ def test_register_adds_a_neutral_agent_reference_when_supported(plugin):
         llm=None,
         register_telegram_handler=lambda _callback: None,
         register_hook=lambda _name, _callback: None,
+        get_config={}.get,
         register_cli_command=lambda **_kwargs: None,
         register_skill=lambda _name, _path, _description="": None,
         register_system_prompt_section=lambda id, content, **kwargs: sections.append((id, content, kwargs)),
@@ -432,11 +433,11 @@ def test_register_adds_a_neutral_agent_reference_when_supported(plugin):
     plugin.register(ctx)
 
     ((section_id, content, kwargs),) = sections
-    assert section_id == "telegram-business.reference"
+    assert section_id == "telesec.reference"
     assert re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", section_id)  # Hermes' section id rule
     assert len(content) <= kwargs["max_chars"] <= 4000
     for needle in ("mode get <chat_id or @username> --format json", "effective_mode", "stats --chat",
-                   "telegram-business-voice-transcriber:history", "Панель владельца:", "`chat <id>`"):
+                   "telesec:history", "Панель владельца:", "`chat <id>`"):
         assert needle in content
 
     # A host without the API, or one that rejects the section, still loads the plugin.
@@ -479,7 +480,7 @@ def test_cache_paths_are_unique_and_scoped_by_business_connection(plugin, monkey
     assert first_path != second_path
     assert "business_connection_one_voice_123456789_991_77.ogg" == first_path.name
     assert "business_connection_two_voice_123456789_991_77.ogg" == second_path.name
-    assert first_path.parent.name == LEGACY_PLUGIN_ID
+    assert first_path.parent.name == PLUGIN_ID
 
 
 @pytest.mark.parametrize(
@@ -861,7 +862,7 @@ def test_scheduling_failure_rolls_back_identity_for_retry(plugin, monkeypatch, c
 async def test_end_to_end_processing_delegates_stt_replies_and_deletes_media(
     plugin, monkeypatch: pytest.MonkeyPatch, media_kind: str, suffix: str
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(media_kind=media_kind)
     event = make_event(message)
     bot = FakeBot()
@@ -912,7 +913,7 @@ async def test_end_to_end_processing_delegates_stt_replies_and_deletes_media(
 async def test_short_outgoing_transcript_edits_original_caption_without_duplicate_reply(
     plugin, monkeypatch: pytest.MonkeyPatch, media_kind: str
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     existing_entity = SimpleNamespace(type="bold", offset=0, length=8)
     message = make_message(
         media_kind=media_kind,
@@ -974,7 +975,7 @@ def test_expandable_caption_entity_offsets_and_lengths_use_utf16(plugin):
 async def test_uneditable_outgoing_transcript_falls_back_to_separate_reply(
     plugin, monkeypatch: pytest.MonkeyPatch, failure: str
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     if failure == "expired":
         message.date = datetime.now(timezone.utc) - timedelta(hours=49)
@@ -1023,7 +1024,7 @@ async def test_uneditable_outgoing_transcript_falls_back_to_separate_reply(
 async def test_over_caption_limit_transcript_skips_direction_lookup_and_uses_reply(
     plugin, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1045,7 +1046,7 @@ async def test_over_caption_limit_transcript_skips_direction_lookup_and_uses_rep
 async def test_unsupported_expandable_caption_retries_plain_caption_without_reply(
     plugin, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     existing_entity = SimpleNamespace(type="bold", offset=0, length=8)
     message = make_message(
         from_user_id=1000,
@@ -1074,7 +1075,7 @@ async def test_unsupported_expandable_caption_retries_plain_caption_without_repl
 async def test_message_not_modified_on_first_caption_edit_does_not_send_reply(
     plugin, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1097,7 +1098,7 @@ async def test_message_not_modified_on_first_caption_edit_does_not_send_reply(
 async def test_generic_bad_request_caption_edit_exception_uses_reply_fallback(
     plugin, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1120,7 +1121,7 @@ async def test_generic_bad_request_caption_edit_exception_uses_reply_fallback(
 async def test_generic_runtime_error_caption_edit_exception_does_not_send_reply(
     plugin, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1145,7 +1146,7 @@ async def test_generic_runtime_error_caption_edit_exception_does_not_send_reply(
 async def test_timed_out_caption_edit_exception_does_not_send_reply(
     plugin, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1170,7 +1171,7 @@ async def test_timed_out_caption_edit_exception_does_not_send_reply(
 async def test_message_not_modified_on_plain_caption_retry_does_not_send_reply(
     plugin, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1195,7 +1196,7 @@ async def test_message_not_modified_on_plain_caption_retry_does_not_send_reply(
 async def test_network_error_on_plain_caption_retry_does_not_send_reply(
     plugin, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1224,7 +1225,7 @@ async def test_network_error_on_plain_caption_retry_does_not_send_reply(
 async def test_definite_caption_rejection_still_uses_reply_fallback(
     plugin, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1244,7 +1245,7 @@ async def test_definite_caption_rejection_still_uses_reply_fallback(
 
 @pytest.mark.asyncio
 async def test_unsupported_expandable_reply_retries_plain_once(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message()
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1267,7 +1268,7 @@ async def test_unsupported_expandable_reply_retries_plain_once(plugin, monkeypat
 
 @pytest.mark.asyncio
 async def test_failed_plain_caption_retry_uses_complete_plain_reply(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_message(from_user_id=1000)
     event = make_event(message)
     bot = FakeBot(business_owner_id=1000)
@@ -1352,7 +1353,7 @@ async def test_stt_failure_is_silent_by_default_and_deletes_media(plugin):
 
 @pytest.mark.asyncio
 async def test_stt_error_reply_is_opt_in_and_business_scoped(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_TRANSCRIBER_SEND_ERRORS", "true")
+    monkeypatch.setenv("TELESEC_SEND_ERRORS", "true")
     message = make_message()
     event = make_event(message)
     bot = FakeBot()
@@ -1389,7 +1390,7 @@ def test_cleanup_prompt_is_copyediting_not_rewriting(plugin):
 
 
 def test_enriched_prompt_removes_fillers_and_requires_structure(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "enriched")
 
     system, prompt = plugin._cleanup_prompts()
 
@@ -1439,7 +1440,7 @@ def test_enriched_guard_accepts_imperfect_but_usable_enhancement(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "enriched")
     raw = " ".join(f"source{i}" for i in range(100))
     half_length_rewrite = " ".join(f"edited{i}" for i in range(50))
     meaning_change = raw.replace("source50", "opposite")
@@ -1452,7 +1453,7 @@ def test_enriched_guard_rejects_only_structurally_broken_output(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "enriched")
     raw = " ".join(f"source{i}" for i in range(100))
     minimum = " ".join(f"edited{i}" for i in range(20))
     too_short = " ".join(f"edited{i}" for i in range(19))
@@ -1470,7 +1471,7 @@ def test_enriched_guard_does_not_require_numbers_or_paragraph_breaks(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "enriched")
     raw = "15 августа " + " ".join(f"source{i}" for i in range(98))
     cleaned = " ".join(f"edited{i}" for i in range(50))
 
@@ -1483,7 +1484,7 @@ async def test_enriched_cleanup_publishes_first_usable_candidate_without_semanti
     plugin,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "enriched")
     prefix = " ".join(f"контекст{i}" for i in range(45))
     suffix = " ".join(f"деталь{i}" for i in range(45))
     raw = f"{prefix} я не уверен суши я чё-то папа дашу {suffix}"
@@ -1509,7 +1510,7 @@ async def test_catastrophic_enriched_cleanup_is_retried_once_with_feedback(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "enriched")
     raw = " ".join(f"source{i}" for i in range(100))
     rejected = "Короткое резюме."
     repaired = " ".join(f"edited{i}" for i in range(70))
@@ -1540,7 +1541,7 @@ async def test_failed_repair_after_catastrophic_candidate_falls_back_to_raw(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "enriched")
     raw = " ".join(f"source{i}" for i in range(100))
 
     class FakeLlm:
@@ -1565,7 +1566,7 @@ async def test_two_catastrophic_cleanup_candidates_fall_back_to_raw(
     plugin,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "enriched")
     raw = " ".join(f"source{i}" for i in range(100))
 
     class FakeLlm:
@@ -1617,8 +1618,8 @@ async def test_structured_cleanup_uses_host_facade_and_keeps_conservative_result
 
 @pytest.mark.asyncio
 async def test_enriched_cleanup_uses_title_and_style_prompts(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_STYLE", "enriched")
-    monkeypatch.setenv("TG_BUSINESS_VOICE_TITLE_MIN_WORDS", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_STYLE", "enriched")
+    monkeypatch.setenv("TELESEC_TITLE_MIN_WORDS", "1")
     raw = (
         "Слушай ну я вот думаю что сначала надо проверить детали проекта и потом спокойно решить "
         "что делать дальше потому что у нас есть два варианта и сроки уже довольно близко"
@@ -1662,11 +1663,11 @@ async def test_lossy_or_failed_cleanup_falls_back_to_raw_transcript(plugin):
 
 def test_cleanup_can_be_disabled_and_thresholds_are_configurable(plugin, monkeypatch: pytest.MonkeyPatch):
     transcript = "one two three"
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_MIN_CHARS", "1")
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_MIN_WORDS", "3")
+    monkeypatch.setenv("TELESEC_CLEANUP_MIN_CHARS", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_MIN_WORDS", "3")
     assert plugin._should_cleanup(transcript)
 
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "yes")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "yes")
     assert not plugin._should_cleanup(transcript)
 
 
@@ -1798,7 +1799,7 @@ async def test_attached_audio_known_metadata_rejects_before_download_or_stt(
 
 @pytest.mark.asyncio
 async def test_attached_audio_rechecks_authoritative_size_before_download(plugin, monkeypatch):
-    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_BYTES", str(1024 * 1024))
+    monkeypatch.setenv("TELESEC_AUDIO_FILE_MAX_BYTES", str(1024 * 1024))
     message = make_audio_file_message(file_size=512 * 1024, duration=30)
     message.audio.file.file_size = 1024 * 1024 + 1
     event = make_event(message)
@@ -1836,7 +1837,7 @@ async def test_attached_audio_rechecks_actual_duration_even_when_declared_is_sho
 
 @pytest.mark.asyncio
 async def test_missing_duration_uses_ffprobe_then_speech_probe_and_full_stt(plugin, monkeypatch):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_audio_file_message(duration=None)
     event = make_event(message)
     bot = FakeBot()
@@ -1960,7 +1961,7 @@ def test_audio_probe_rejects_common_no_speech_hallucination(plugin):
 
 @pytest.mark.asyncio
 async def test_unknown_attached_audio_extension_is_normalized_before_full_stt(plugin, monkeypatch):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     message = make_audio_file_message(mime_type="application/octet-stream", file_name=None, duration=75)
     event = make_event(message)
     bot = FakeBot()
@@ -2001,7 +2002,7 @@ async def test_unknown_attached_audio_extension_is_normalized_before_full_stt(pl
 
 @pytest.mark.asyncio
 async def test_short_attached_audio_reuses_probe_transcript_and_cleans_both_files(plugin, monkeypatch):
-    monkeypatch.setenv("TG_BUSINESS_VOICE_CLEANUP_DISABLE", "1")
+    monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     monkeypatch.setattr(plugin, "_local_audio_duration", lambda _path: 8.0)
     message = make_audio_file_message(duration=8)
     event = make_event(message)
@@ -2033,14 +2034,14 @@ async def test_short_attached_audio_reuses_probe_transcript_and_cleans_both_file
 def test_audio_file_env_defaults_and_bounds(plugin, monkeypatch):
     assert plugin._audio_file_limits() == (300, 20 * 1024 * 1024, 10, 3)
 
-    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS", "not-a-number")
-    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_BYTES", "0")
-    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS", "999")
-    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MIN_WORDS", "-1")
+    monkeypatch.setenv("TELESEC_AUDIO_FILE_MAX_DURATION_SECONDS", "not-a-number")
+    monkeypatch.setenv("TELESEC_AUDIO_FILE_MAX_BYTES", "0")
+    monkeypatch.setenv("TELESEC_AUDIO_FILE_PROBE_SECONDS", "999")
+    monkeypatch.setenv("TELESEC_AUDIO_FILE_MIN_WORDS", "-1")
     assert plugin._audio_file_limits() == (300, 20 * 1024 * 1024, 10, 3)
 
-    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_DURATION_SECONDS", "5")
-    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MAX_BYTES", "1048576")
-    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_PROBE_SECONDS", "10")
-    monkeypatch.setenv("TG_BUSINESS_AUDIO_FILE_MIN_WORDS", "3")
+    monkeypatch.setenv("TELESEC_AUDIO_FILE_MAX_DURATION_SECONDS", "5")
+    monkeypatch.setenv("TELESEC_AUDIO_FILE_MAX_BYTES", "1048576")
+    monkeypatch.setenv("TELESEC_AUDIO_FILE_PROBE_SECONDS", "10")
+    monkeypatch.setenv("TELESEC_AUDIO_FILE_MIN_WORDS", "3")
     assert plugin._audio_file_limits() == (5, 1024 * 1024, 5, 3)

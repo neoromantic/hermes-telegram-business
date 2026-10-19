@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import history_support as _history
 
 CLI_ACTION = "correspondence_stats"
-TIMEZONE_ENV = "HERMES_TELEGRAM_BUSINESS_TIMEZONE"
+TIMEZONE_ENV = "TELESEC_TIMEZONE"
 REPORT_SCHEMA_VERSION = 1
 DEFAULT_OVERVIEW_LIMIT = 20
 DEFAULT_SESSION_GAP = "6h"
@@ -289,7 +289,7 @@ def resolve_timezone(value: str | None, environ: Mapping[str, str]) -> tuple[tzi
     if value is not None:
         name, source = value.strip(), "--tz"
     else:
-        name, source = (environ.get(TIMEZONE_ENV) or "").strip(), TIMEZONE_ENV
+        name, source = environ.get(TIMEZONE_ENV, _history.get_config("timezone", "UTC")).strip(), TIMEZONE_ENV
         if not name:
             return UTC, "UTC"
     if name == "UTC":
@@ -628,7 +628,7 @@ def _cli_option(name: str, value: Any) -> str:
 
 
 def _details_command(business_connection_id: str | None, chat_id: Any = None) -> str:
-    parts = ["hermes telegram-business history deletions"]
+    parts = ["hermes telesec history deletions"]
     if business_connection_id is not None:
         parts.append(_cli_option("--connection", business_connection_id))
     if chat_id is not None:
@@ -933,12 +933,12 @@ def add_cli_parser(subs: Any) -> None:
         ),
         epilog=(
             "examples:\n"
-            "  hermes telegram-business stats\n"
-            "  hermes telegram-business stats --contact @alice --since 30d\n"
-            "  hermes telegram-business stats --chat 991 --connection business-123 --since 2026-10-01 "
+            "  hermes telesec stats\n"
+            "  hermes telesec stats --contact @alice --since 30d\n"
+            "  hermes telesec stats --chat 991 --connection business-123 --since 2026-10-01 "
             "--until 2026-10-18 --tz Europe/Moscow\n"
-            "  hermes telegram-business stats --contact @alice --format json\n"
-            "storage stats (records, bytes, settings): hermes telegram-business history stats"
+            "  hermes telesec stats --contact @alice --format json\n"
+            "storage stats (records, bytes, settings): hermes telesec history stats"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
