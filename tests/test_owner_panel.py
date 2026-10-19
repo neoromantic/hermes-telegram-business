@@ -1285,9 +1285,9 @@ async def test_owners_chat_with_the_bot_is_not_a_business_chat(history_enabled, 
     business = ttm.registered_business_handler(plugin, ttm.command_adapter(bot))
     # Telegram mirrors the owner's DM with the bot as Business updates, both ways.
     mirrored = [
-        business_text(text=f"/start bizChat{CHAT}", chat_id=BOT_ID, chat_username="bausai_bot", from_user_id=OWNER),
+        business_text(text=f"/start bizChat{CHAT}", chat_id=BOT_ID, chat_username="example_secretary_bot", from_user_id=OWNER),
         business_text(
-            text="Owner panel: chat 991", chat_id=BOT_ID, chat_username="bausai_bot",
+            text="Owner panel: chat 991", chat_id=BOT_ID, chat_username="example_secretary_bot",
             from_user_id=BOT_ID, from_user_is_bot=True, message_id=78,
         ),
     ]

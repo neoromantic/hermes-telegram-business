@@ -14,9 +14,9 @@ Native-handler checks must demonstrate that every Business message/edit/deletion
 
 ## 0.10.1 fix: 2026-10-19
 
-The rename added a top-level PyYAML import in `migration.py`. Hermes 0.22 depends on ruamel.yaml and does not install PyYAML, so `hermes plugins validate` on Hermes v0.22.2 failed the capability probe with `No module named 'yaml'` for 0.10.0. 0.10.1 reads YAML only when the config still names the old plugin, with a ruamel.yaml fallback. With the fix, `hermes plugins validate --install-deps` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`) passed: capability probe, declared hooks, security scan `safe`, no core override, and the known private STT import warning. Production (`baus`, Hermes 0.21.6) has PyYAML and was not affected.
+The rename added a top-level PyYAML import in `migration.py`. Hermes 0.22 depends on ruamel.yaml and does not install PyYAML, so `hermes plugins validate` on Hermes v0.22.2 failed the capability probe with `No module named 'yaml'` for 0.10.0. 0.10.1 reads YAML only when the config still names the old plugin, with a ruamel.yaml fallback. With the fix, `hermes plugins validate --install-deps` on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`) passed: capability probe, declared hooks, security scan `safe`, no core override, and the known private STT import warning. The production gateway (Hermes 0.21.6) has PyYAML and was not affected.
 
-On `baus` the plugin checkout was fast-forwarded to `v0.10.0` and then to `v0.10.1` (`365ee6665187a3a534ee69b484db95f023a3994d`), with a gateway restart each time. After the last restart the gateway wired the `telesec` native handlers, started the dossier worker, and connected to Telegram at **16:30:53 UTC**. The code differs from the earlier live smoke only by the lazy YAML import, so no new Telegram smoke was run.
+On the production gateway the plugin checkout was fast-forwarded to `v0.10.0` and then to `v0.10.1` (`365ee6665187a3a534ee69b484db95f023a3994d`), with a gateway restart each time. After the last restart the gateway wired the `telesec` native handlers, started the dossier worker, and connected to Telegram at **16:30:53 UTC**. The code differs from the earlier live smoke only by the lazy YAML import, so no new Telegram smoke was run.
 
 ## Telesec rename checks: 2026-10-19
 
@@ -24,31 +24,31 @@ Before production cutover:
 
 - [CI passed on Python 3.11–3.14](https://github.com/neoromantic/telesec/actions/runs/39276103429), including migration, conflicting destinations, private permissions, deprecated aliases, and the five settings.
 - The production Hermes 0.21.6 CLI validated the candidate in isolation: manifest v2, config schema, registration/capabilities, security scan, and core-override checks passed. This version reported no warnings; newer Hermes versions' private STT warning remains documented in the catalog readiness checks below.
-- In a separate temporary profile on `baus`, the real `PluginContext.set_config` persisted all five settings and `get_config` returned them to the registered plugin. History, dossier enablement, cleanup style, timezone, and agent passthrough used the saved values; an explicit environment value overrode the form. The config stayed `0600`; production config was untouched.
+- In a separate temporary profile on the production host, the real `PluginContext.set_config` persisted all five settings and `get_config` returned them to the registered plugin. History, dossier enablement, cleanup style, timezone, and agent passthrough used the saved values; an explicit environment value overrode the form. The config stayed `0600`; production config was untouched.
 - A private copy of the current production data/config migrated to `telesec`: all 13 file SHA-256 hashes stayed identical, every file was `0600`, and the second migration left config bytes unchanged. History, the contact catalog, transcription modes, and any dossier/state files share the same directory migration.
 
 Production cutover and live Telegram acceptance are recorded below.
 
 ## Telesec production cutover: 2026-10-19
 
-[PR #42](https://github.com/neoromantic/telesec/pull/42) installed `fe29e489bd8559699ed353e068ed07b1b742469c` as `telesec` on `baus`; the GitHub repository and local origin now use `neoromantic/telesec`. No tag or release was created in this cutover. The Python code passed all **714 tests**, and CI passed on Python 3.11–3.14 before the final docs-only rebase.
+[PR #42](https://github.com/neoromantic/telesec/pull/42) installed `fe29e489bd8559699ed353e068ed07b1b742469c` as `telesec` on the production gateway; the GitHub repository and local origin now use `neoromantic/telesec`. No tag or release was created in this cutover. The Python code passed all **714 tests**, and CI passed on Python 3.11–3.14 before the final docs-only rebase.
 
 - With the gateway stopped, all **13 data files** had identical SHA-256 hashes before and immediately after migration. Canonical history stayed at **13 events**, and dossiers at **one file**. Migrated files remained `0600`. The complete old config entry, including LLM grants, moved unchanged to `plugins.entries.telesec`; the enabled list retained the same selections under the new name.
 - The supported remove/install path was used. Hermes's launcher automatically completed pending dependency/runtime preparation without changing core `818c13be1dc4fd28987e1e881a9408224afd4535` (0.21.6), Python 3.14.7 and PTB 22.8; no core update or maintenance wrapper was invoked. The first headless install declined dependency consent; retrying with `--yes-deps` succeeded. The upgrade script now includes this flag.
-- First startup connected Telegram at **15:35:59 UTC** with both old systemd drop-ins byte-for-byte unchanged. The legacy history/dossier flags enabled the dossier worker and history verification. Then the drop-ins and three cleanup variables moved to `TELESEC_*`; after the immediate restart, all three platforms connected by **15:38:36 UTC**. The gateway's initial environment contained no old plugin variable names, and its session store reported `ok`.
+- First startup connected Telegram at **15:35:59 UTC** with both old service environment overrides byte-for-byte unchanged. The legacy history/dossier flags enabled the dossier worker and history verification. Then those overrides and three cleanup variables moved to `TELESEC_*`; after the immediate restart, all three platforms connected by **15:38:36 UTC**. The gateway's initial environment contained no old plugin variable names, and its session store reported `ok`.
 - `hermes telesec mode list --format json` read the migrated owner modes. The real owner opened `/start bizChat<id>`, saw the mode controls and Stats section, and selected `both`. A six-second synthetic owner voice received its complete transcript in its original caption at **15:39:32 UTC** (`cleaned=True`, `caption_outcome=attached`). The voice and the two bot-DM fixtures were deleted; the controlled chat returned to stored/effective `off`.
 - A **natural incoming contact text** at **15:37:34.969446 UTC** was captured in canonical history. The exact Telegram update appeared in the plugin's consume log, and `state.db` contained **zero new Telegram user/assistant messages for that chat since cutover**. This closes the earlier fresh-contact isolation check. No incoming contact message was fabricated for this check.
 - The owner also confirmed a real Telegram **Manage Bot** tap: its panel chat ID matched the Business chat ID in the gateway log. The real-payload question from the earlier smoke is closed.
 - After live traffic and deletion of the voice fixture, `history verify` returned `ok=True chats=3 files=3 records=17 repaired_files=0 errors=0 warnings=0`. The increase from 13 to 17 happened after migration during normal capture and smoke cleanup.
-- Exactly four install-path literals in the two host maintenance scripts changed to `plugins/telesec`; Bash/Python syntax checks passed. Source and private backup paths are recorded in the baus Vault note.
+- Exactly four install-path literals in the two host maintenance scripts changed to `plugins/telesec`; Bash/Python syntax checks passed. Source and private backup paths are recorded in the maintainer's private host notes.
 
-Evidence is content-free here: no contact names, message text, or raw contact IDs are included. Private before/after manifests, config/drop-in backups, and the natural-contact history/log/database receipt remain on the owner host.
+Evidence is content-free here: no contact names, message text, or raw contact IDs are included. Private before/after manifests, config/override backups, and the natural-contact history/log/database receipt remain on the owner host.
 
 ## Production Business text investigation: 2026-10-19
 
-No recent Business-text agent turns were found on `baus`: a separate profile-local `telegram-business-dm-passive-guard` 0.2.0 was already protecting it. The plugin under test (`de52645`) alone passed ordinary Business text through; this was reproduced with real PTB updates before adding the default consume rule.
+No recent Business-text agent turns were found on the production gateway: a separate profile-local `telegram-business-dm-passive-guard` 0.2.0 was already protecting it. The plugin under test (`de52645`) alone passed ordinary Business text through; this was reproduced with real PTB updates before adding the default consume rule.
 
-Read-only checks of `hermes-gateway-baus.service`, its `gateway.log`, `state.db`, and `sessions/sessions.json` found:
+Read-only checks of the gateway service, its `gateway.log`, `state.db`, and `sessions/sessions.json` found:
 
 - The local guard was enabled and its disable flag was unset. Hermes core was `818c13be1dc4fd28987e1e881a9408224afd4535`.
 - Between October 16 and October 19 at 16:32:55 Europe/Berlin (UTC+02:00), the gateway logged 359 `pre_gateway_dispatch skip: reason=telegram_business_dm_passive_guard` events across 24 Business chats: 97, 129, 53, and 80 per day.
@@ -79,16 +79,16 @@ The validator's recording context lacks the documented `ctx.llm` property. The p
 
 ## Live gateway smoke: Business update isolation, 2026-10-19
 
-[PR #37](https://github.com/neoromantic/telesec/pull/37) deployed plugin `d2201a8bf88f2743e0f48d38d6c5461bfc741d60` to `baus`. [All 700 tests passed on Python 3.11–3.14 with PTB 22.8](https://github.com/neoromantic/telesec/actions/runs/39272026538). The separate local `telegram-business-dm-passive-guard` was disabled; its files remain installed. `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` was not enabled.
+[PR #37](https://github.com/neoromantic/telesec/pull/37) deployed plugin `d2201a8bf88f2743e0f48d38d6c5461bfc741d60` to the production gateway. [All 700 tests passed on Python 3.11–3.14 with PTB 22.8](https://github.com/neoromantic/telesec/actions/runs/39272026538). The separate local `telegram-business-dm-passive-guard` was disabled; its files remain installed. `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` was not enabled.
 
-- `hermes-gateway-baus.service` restarted at 14:51:08 UTC. Telegram, API, and webhook reported `connected`, the gateway reported `running`, and its session store reported `ok`.
+- The gateway service restarted at 14:51:08 UTC. Telegram, API, and webhook reported `connected`, the gateway reported `running`, and its session store reported `ok`.
 - Hermes core remained `818c13be1dc4fd28987e1e881a9408224afd4535` (0.21.6). The `hermes plugins disable` launcher unexpectedly completed a pending source-update dependency tail before disabling the guard. The running gateway used managed Python 3.14.7 and PTB 22.8; `uv pip check` reported all 152 installed packages compatible in that active environment. The older Python 3.11.16 venv also passed `python -m pip check`. No core source upgrade was requested.
 - The real owner account sent the Manage Bot `/start bizChat<id>` payload in the bot DM. The panel showed the chat label, stored `off` mode, all four modes, Reset, and Refresh. Selecting `own` returned `Transcription: own`; after the voice check, selecting `off` returned `Transcription: off` and restored the selected button.
 - A six-second synthetic owner voice note in the existing controlled Business conversation was accepted with `mode=own direction=own decision=transcribe reason=own_message`. It received the complete transcript in its original caption. The test voice was then deleted for both parties; the bot-DM fixture and its generated replies were also removed.
 - A separate panel-follow-up deployment advanced the plugin to `0b4ea669f6035e5ef2d559b31219873f7cbd3010` and restarted the gateway at 15:16:44 UTC; all platforms reconnected by 15:17:29. That revision includes `d2201a8` as an ancestor and retains the Business-update isolation; the local passive guard remains disabled. Exclude this 45-second interruption from the traffic observation.
 - Observation from 14:51:43 to 15:22:59 UTC covered more than 30 healthy minutes after excluding that interruption. The plugin consumed eight updates across the bot-DM Business mirror and the controlled voice/deletion fixture; the old local guard recorded zero skips, and `state.db` had zero new Telegram user/assistant messages for those consumed Business chat IDs. No natural human-contact text arrived in this window, so fresh incoming-contact isolation is **pending**, not a passed live check. By coordinator decision, the post-rename deployment smoke will collect that evidence.
 
-The separate local guard can be restored with `HERMES_HOME=/root/bots/baus/.hermes-runtime-baus hermes plugins enable telegram-business-dm-passive-guard` and a gateway restart. Keep `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` unset for this plugin's default protection.
+The separate local guard can be restored with `hermes plugins enable telegram-business-dm-passive-guard` in the gateway's profile and a gateway restart. Keep `HERMES_TELEGRAM_BUSINESS_AGENT_ENABLE` unset for this plugin's default protection.
 
 ## Live gateway smoke: owner panel follow-ups, 2026-10-19
 
@@ -97,7 +97,7 @@ Plugin `0b4ea66` (main after #40, #43–#46) ran on the owner's gateway with Her
 - Sending `/start bizChat<chat_id>` from the owner's account opened the panel. The header showed the chat label and `chat <chat_id>`. The mode line, the four mode buttons with the current mode marked, Reset to default, and Refresh were present. The test client does not report a Russian Telegram language, so the panel was in English. The Russian strings are covered by tests only.
 - Refresh answered "Refreshed". No mode was changed.
 - Telegram also sends the owner's private chat with the bot as Business updates. After the restart, the `/start` message and the panel reply were not written to history. `history contacts` and `stats --format json` do not list that chat. Records from before this fix stay on disk, but readers skip them.
-- `hermes telegram-business mode get <chat_id> --format json` returned the mode, `effective_mode`, `source: stored`, the label, and `business_connection_id`. `mode list --format json` returned the default mode, `transcription_enabled`, and the chats. On this host the history opt-in is set only in the gateway's service unit, so the CLI run needed it in its environment too.
+- `hermes telegram-business mode get <chat_id> --format json` returned the mode, `effective_mode`, `source: stored`, the label, and `business_connection_id`. `mode list --format json` returned the default mode, `transcription_enabled`, and the chats. On this host the history opt-in is set only in the gateway's service environment, so the CLI run needed it in its environment too.
 - The host rendered the plugin's `telegram-business.reference` system prompt section (1218 characters).
 
 This earlier smoke typed `/start` by hand. The owner later confirmed the real Manage Bot payload; see the [Telesec cutover](#telesec-production-cutover-2026-10-19).
