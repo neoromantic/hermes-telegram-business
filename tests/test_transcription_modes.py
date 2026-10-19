@@ -1763,6 +1763,36 @@ def test_cli_set_get_list_reset_round_trip(plugin, modes):
     assert run_cli(plugin, "mode", "list", "--owner", "1000")[1].startswith("owner=1000 chat=-100123 mode=peer")
 
 
+def test_cli_json_shows_stored_and_effective_modes(plugin, modes, monkeypatch):
+    def as_json(*argv):
+        exit_code, output = run_cli(plugin, "mode", *argv, "--format", "json")
+        assert exit_code == 0
+        return json.loads(output)
+
+    assert as_json("list") == {"default_mode": "both", "transcription_enabled": True, "chats": []}
+    assert as_json("get", "991") == {
+        "owner": None, "chat_id": "991", "business_connection_id": None, "mode": None, "effective_mode": "both",
+        "source": "default", "updated_via": None, "updated_at": None, "label": None,
+    }
+
+    modes.default_store().set_mode(OWNER, CHAT, "off", via="chat", label="Alice \u202e")
+    (row,) = as_json("list")["chats"]
+    assert {key: row[key] for key in ("owner", "chat_id", "mode", "effective_mode", "source", "updated_via", "label")} == {
+        "owner": "1000", "chat_id": "991", "mode": "off", "effective_mode": "off", "source": "stored",
+        "updated_via": "chat", "label": "Alice \u202e",
+    }
+    assert "\\u202e" in run_cli(plugin, "mode", "list", "--format", "json")[1]  # escaped, never a raw control
+    got = as_json("get", "991", "--connection", "business-123")
+    assert (got["owner"], got["mode"], got["source"], got["business_connection_id"]) == ("1000", "off", "stored", "business-123")
+    assert got["updated_at"] == row["updated_at"]
+
+    monkeypatch.setenv("TG_BUSINESS_VOICE_TRANSCRIBER_DISABLE", "1")
+    assert as_json("list")["transcription_enabled"] is False
+    assert (as_json("get", "991")["mode"], as_json("get", "991")["effective_mode"]) == ("off", "off")
+    assert as_json("get", "992")["source"] == "disabled"
+    assert run_cli(plugin, "mode", "get", "991") == (0, f"chat=991 mode=off (via chat at {row['updated_at']})")
+
+
 def test_cli_list_shows_labels_and_empty_state(plugin, modes):
     assert run_cli(plugin, "mode", "list") == (0, "No transcription modes set; every chat uses both (default).")
     modes.default_store().set_mode(OWNER, CHAT, "off", via="chat", label='Alice "A"')
