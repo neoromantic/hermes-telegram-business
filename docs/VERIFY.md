@@ -185,7 +185,8 @@ Use an explicitly selected test Business conversation and the intended Hermes pr
 6. Send short incoming/outgoing voice notes and a round video note. Verify one logical transcript per source and outgoing caption behavior in Telegram clients.
 7. Send an attached speech recording and a tagged music file. Check that the speech is transcribed and music is skipped without an agent turn.
 8. Exercise cleanup with the configured Gemini model and trust allowlist. Compare Russian, English, and mixed-language examples containing names, dates, amounts, negations, and long paragraphs against raw STT. Record fidelity and time to visible text.
-9. Disable/remove the plugin and restart. Confirm ordinary Hermes Telegram behavior still works.
+9. Open Settings with `/telesec`. Check the Keep row and the model lines (no credentials). Tap a shorter retention, check the question, and Cancel; tap a longer one and check that it applies at once and that `hermes telesec settings` shows it. Put the retention back.
+10. Disable/remove the plugin and restart. Confirm ordinary Hermes Telegram behavior still works.
 
 Keep evidence free of real contact details and message content. Record Hermes/PTB/Python/model versions and distinguish simulated checks from live Telegram/model results.
 

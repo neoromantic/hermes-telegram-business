@@ -14,7 +14,7 @@ History is off by default. Turn it on in [Settings](../README.md#settings): send
 hermes telesec settings set history on
 ```
 
-No gateway restart is needed: capture starts with the next update. **Don't save** or `hermes telesec settings set history off` stops capture and keeps what was stored; retention and delayed deletion classification keep running. Up to 0.11.0, `TELESEC_HISTORY_ENABLE=1` or the Desktop `history_enable` setting turned history on. On the first start after upgrading, an "on" there is stored in Settings once and the gateway log says so (a variable set to off over a Desktop "on" is stored as off); after that they are ignored. Remove them once you no longer plan to go back to 0.11.0 or older.
+No gateway restart is needed: capture starts with the next update. **Don't save** or `hermes telesec settings set history off` stops capture and keeps what was stored; retention and delayed deletion classification keep running. How long history is kept is set in Settings too ([retention](#retention-and-removal)). Up to 0.11.0, `TELESEC_HISTORY_ENABLE=1` or the Desktop `history_enable` setting turned history on. On the first start after upgrading, an "on" there is stored in Settings once and the gateway log says so (a variable set to off over a Desktop "on" is stored as off); after that they are ignored. Remove them once you no longer plan to go back to 0.11.0 or older.
 
 By default, capture includes private chats Telegram delivers through the bot's Business connections. Connection and chat filters are optional. Your own chat with the bot (where the owner panel and your agent chat live) is never captured: Telegram also delivers it as Business updates, but it is not a Business chat. The plugin knows it by the bot's id (from the running bot, or from the digits before `:` in `TELEGRAM_BOT_TOKEN`), and readers (history, stats, dossiers, the panel) also skip such a chat if an older version captured it. Groups, supergroups, and channels require explicit configuration. The plugin does not fetch conversations from before capture started, but you can [import a chat's earlier messages](#import-past-messages) from a Telegram Desktop export.
 
@@ -106,8 +106,9 @@ These are observable text-similarity categories, not judgments about a person's 
 | `TELESEC_HISTORY_CHAT_TYPES` | `private` | Eligible chat types; explicitly add `group`, `supergroup`, or `channel`. |
 | `TELESEC_HISTORY_CORRECTION_WINDOW` | `120` | Post-delete replacement window and classification delay, in seconds. |
 | `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | Pre-delete replacement window, in seconds. |
-| `TELESEC_HISTORY_RETENTION_DAYS` | `0` | Closed-partition retention target; `0` disables age pruning. |
-| `TELESEC_HISTORY_MAX_BYTES` | `1073741824` | Total storage target before pruning old closed partitions. |
+| `TELESEC_HISTORY_MAX_BYTES` | `1073741824` | Disk-safety limit for operators: above this total size the oldest closed months are pruned, whatever the retention in Settings. |
+
+Retention is not a variable: it is set in [Settings](#retention-and-removal). `TELESEC_HISTORY_RETENTION_DAYS` is no longer read; on the first start a value other than `0` is stored once as the retention and the gateway log says so.
 
 Unknown chat types are excluded unless an exact chat ID or earlier canonical profile evidence establishes eligibility. No member-count requests run on capture.
 
@@ -140,7 +141,17 @@ Read commands do not repair canonical files. `verify --repair-tails` explicitly 
 
 Telegram-side deletion does **not** erase the archive. The archive deliberately preserves the earlier text to make deletion inspection possible.
 
-Automatic retention and size pruning remove whole closed monthly partitions. The current month and partitions needed for pending deletion classification are preserved, so a configured target is not a hard storage ceiling. The contact catalog is rebuilt from retained evidence after pruning.
+History is kept forever by default. To keep less, tap **Keep** in [Settings](../README.md#settings) (`/telesec` in your private chat with the bot): forever, 1 year, 90 days, or 30 days. A shorter time asks first; a longer one applies at once. From the terminal:
+
+```bash
+hermes telesec settings set retention 90
+hermes telesec settings set retention forever
+hermes telesec settings --format json   # retention.days, 0 is forever
+```
+
+`settings set retention N` takes any number of days from 0 to 36500. The value is stored in `settings.json` and read by every maintenance run, so a change needs no restart. Maintenance runs at gateway start and then at most once an hour, when a Business update arrives, also while history is off.
+
+Automatic retention and size pruning remove whole closed monthly partitions. Partitions follow observation time. A month is deleted once all of it is older than the retention: with 30 days, September goes at the first cleanup on or after October 31. The current month and partitions needed for pending deletion classification are preserved, so neither retention nor `TELESEC_HISTORY_MAX_BYTES` is a hard storage ceiling. The contact catalog is rebuilt from retained evidence after pruning.
 
 Don't save for one chat stops capture but keeps what that chat already has. No record-level erasure command ships in this version. To remove an entire local archive, turn history off in Settings, stop the gateway, back up anything you need, and remove the intended profile-local history directory before restarting. Include any external backups or exports in your own removal process. Removing history does not remove dossiers; use `hermes telesec dossier forget` for those ([storage and privacy](DOSSIERS.md#storage-and-privacy)). Future reply state must support scoped forgetting before it ships.
 

@@ -1,13 +1,14 @@
-"""Global Telesec switches: transcription, history and dossiers, for all chats.
+"""Global Telesec switches: transcription, history and dossiers, for all chats, and history retention.
 
-Transcription and history live in ``$HERMES_HOME/data/telesec/settings.json``. The dossier switch
-stays in ``dossiers/settings.json`` (0.11.0), so a rollback keeps it. Readers stat the file on every
-call and re-read it only when it changed, so a change from Telegram or the CLI applies to the next
-update without a restart.
+Transcription, history and retention live in ``$HERMES_HOME/data/telesec/settings.json``. The dossier
+switch stays in ``dossiers/settings.json`` (0.11.0), so a rollback keeps it. Readers stat the file on
+every call and re-read it only when it changed, so a change from Telegram or the CLI applies to the
+next update without a restart.
 
 Up to 0.11.0, ``TELESEC_DISABLE``, ``TELESEC_HISTORY_ENABLE`` and the Desktop ``history_enable``
-setting were the switches. ``migrate_legacy()`` stores their value once, only when it differs from the
-default, and they are never read again. Stdlib-only; the file never holds message text.
+setting were the switches, and up to 0.12 ``TELESEC_HISTORY_RETENTION_DAYS`` set retention.
+``migrate_legacy()`` stores their value once, only when it differs from the default, and they are
+never read again. Stdlib-only; the file never holds message text.
 """
 
 from __future__ import annotations
@@ -40,7 +41,16 @@ SETTINGS_COMMAND = "hermes telesec settings"
 LEGACY_TRANSCRIPTION_ENV = "TELESEC_DISABLE"
 LEGACY_HISTORY_ENV = "TELESEC_HISTORY_ENABLE"
 LEGACY_HISTORY_SETTING = "history_enable"
-LEGACY_ENV = {LEGACY_TRANSCRIPTION_ENV: "transcription", LEGACY_HISTORY_ENV: "history"}
+LEGACY_RETENTION_ENV = "TELESEC_HISTORY_RETENTION_DAYS"
+LEGACY_ENV = {LEGACY_TRANSCRIPTION_ENV: "transcription", LEGACY_HISTORY_ENV: "history",
+              LEGACY_RETENTION_ENV: "retention"}
+# How long saved history is kept, in days; 0 keeps it forever. Its own top-level key, not part of the
+# history item: storing it must not count as a stored history switch (see migrate_legacy).
+RETENTION = "retention"
+RETENTION_CHOICES = (0, 365, 90, 30)
+DEFAULT_RETENTION_DAYS = _history.DEFAULT_RETENTION_DAYS
+MAX_RETENTION_DAYS = 36500
+RETENTION_VALUES = "forever|365|90|30|N"
 SAVE_HINT = f"'{SETTINGS_COMMAND} set' rewrites it after a backup"
 
 
@@ -66,7 +76,29 @@ def _parse(data: bytes) -> dict[str, Any]:
         item = raw.get(feature)
         if item is not None and not (isinstance(item, dict) and isinstance(item.get("enabled"), bool)):
             raise SettingsFileCorrupt(f"invalid {feature} entry")
+    item = raw.get(RETENTION)
+    if item is not None and not (isinstance(item, dict) and valid_retention(item.get("days"))):
+        raise SettingsFileCorrupt(f"invalid {RETENTION} entry")
     return raw
+
+
+def valid_retention(days: Any) -> bool:
+    return type(days) is int and 0 <= days <= MAX_RETENTION_DAYS
+
+
+def parse_retention(raw: str) -> int:
+    """``forever`` or a number of days (0 is forever); raises ValueError otherwise."""
+    text = raw.strip().lower()
+    if text == "forever":
+        return 0
+    if text.isascii() and text.isdigit() and valid_retention(int(text)):
+        return int(text)
+    raise ValueError(f"retention must be forever or 0..{MAX_RETENTION_DAYS} days, got {raw!r}")
+
+
+def keeps_less(days: int, than: int) -> bool:
+    """Is ``days`` a shorter retention than ``than``? 0 is forever, the longest."""
+    return days != 0 and (than == 0 or days < than)
 
 
 class _Store:
@@ -144,7 +176,7 @@ class _Store:
 
 
 def _fallback_note(payload: dict[str, Any]) -> str:
-    if any(feature in payload for feature in STORED_FEATURES):
+    if any(feature in payload for feature in (*STORED_FEATURES, RETENTION)):
         return "keeping the last valid settings"
     return "transcription stays on and history off"
 
@@ -180,30 +212,37 @@ def dossiers_active() -> bool:
     return enabled("dossiers") and enabled("history")
 
 
+def retention_days() -> int:
+    """Days saved history is kept (0: forever). Maintenance prunes whole closed months older than that."""
+    item = _STORE.payload().get(RETENTION)
+    return item["days"] if isinstance(item, dict) else DEFAULT_RETENTION_DAYS
+
+
 def _source(via: Any) -> str:
     if via is None:
         return "default"
     return "migration" if via == MIGRATION_VIA else "stored"
 
 
+def _stored_status(item: Any, key: str, default: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {key: default, "source": "default", "updated_at": None, "updated_via": None}
+    via = item.get("updated_via") if item.get("updated_via") in (*UPDATED_VIA, MIGRATION_VIA) else None
+    at = item.get("updated_at") if isinstance(item.get("updated_at"), str) else None
+    return {key: item[key], "source": "migration" if via == MIGRATION_VIA else "stored", "updated_at": at,
+            "updated_via": via}
+
+
 def status() -> dict[str, dict[str, Any]]:
-    """Each switch: enabled, source (stored, migration, default or unreadable), updated_at, updated_via."""
+    """Each switch: enabled (retention: days), source (stored, migration, default or unreadable), updated_at,
+    updated_via."""
     payload = _STORE.payload()
-    out: dict[str, dict[str, Any]] = {}
-    for feature in STORED_FEATURES:
-        item = payload.get(feature)
-        if isinstance(item, dict):
-            via = item.get("updated_via") if item.get("updated_via") in (*UPDATED_VIA, MIGRATION_VIA) else None
-            at = item.get("updated_at") if isinstance(item.get("updated_at"), str) else None
-            out[feature] = {"enabled": item["enabled"], "source": "migration" if via == MIGRATION_VIA else "stored",
-                            "updated_at": at, "updated_via": via}
-        else:
-            out[feature] = {"enabled": DEFAULTS[feature], "source": "default", "updated_at": None,
-                            "updated_via": None}
+    out = {feature: _stored_status(payload.get(feature), "enabled", DEFAULTS[feature]) for feature in STORED_FEATURES}
     dossier = _ds.load_settings()
     out["dossiers"] = {"enabled": dossier["enabled"],
                        "source": "unreadable" if dossier.get("error") else _source(dossier["updated_via"]),
                        "updated_at": dossier["updated_at"], "updated_via": dossier["updated_via"]}
+    out[RETENTION] = _stored_status(payload.get(RETENTION), "days", DEFAULT_RETENTION_DAYS)
     return out
 
 
@@ -249,18 +288,50 @@ def set_enabled(feature: str, on: bool, *, via: str, now: datetime | None = None
     return {**item, "changed": True, "backup_path": backup}
 
 
+def set_retention(days: int, *, via: str, now: datetime | None = None, repair_corrupt: bool = False) -> dict[str, Any]:
+    """Keep saved history ``days`` days (0: forever); same write rules and result as ``set_enabled``."""
+    if not valid_retention(days):
+        raise ValueError(f"retention must be 0..{MAX_RETENTION_DAYS} days, got {days!r}")
+    if via not in UPDATED_VIA:
+        raise ValueError(f"unknown switch source {via!r}; use one of: {', '.join(UPDATED_VIA)}")
+    path = settings_path()
+    with _modes._writer_lock(path):
+        payload, backup = _read_for_write(path, now=now, repair_corrupt=repair_corrupt)
+        current = payload.get(RETENTION)
+        if isinstance(current, dict) and current["days"] == days:
+            return {**current, "changed": False, "backup_path": None}
+        item = {"days": days, "updated_at": _modes._format_timestamp(now), "updated_via": via}
+        _modes._write_private_json_atomic(path, {**payload, "schema_version": SCHEMA_VERSION, RETENTION: item})
+    logger.info("%s: retention set days=%d via=%s", _history.PLUGIN_NAME, days, via)
+    return {**item, "changed": True, "backup_path": backup}
+
+
 def _setting_on(value: Any) -> bool:
     return value is True or (isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "on"})
 
 
-def _legacy_values(get_config: Callable[..., Any]) -> dict[str, tuple[bool, str]]:
+def _legacy_retention() -> int | None:
+    """Days from ``TELESEC_HISTORY_RETENTION_DAYS`` when it kept less than forever, as 0.12 read it."""
+    raw = os.environ.get(LEGACY_RETENTION_ENV, "").strip()
+    try:
+        days = int(raw)
+    except ValueError:
+        return None
+    # 0.12 read a negative value as 0 (forever); over MAX_RETENTION_DAYS is forever in all but name.
+    return days if 0 < days <= MAX_RETENTION_DAYS else None
+
+
+def _legacy_values(get_config: Callable[..., Any]) -> dict[str, tuple[Any, str]]:
     """feature -> (value, source name) for each old switch to store.
 
     That is a value that differs from the default, plus history off when the variable turns off a
     Desktop "on": the variable wins over the Desktop setting, as it did up to 0.11.0, and without a
     stored "off" a later process without the variable would store the stale Desktop "on".
     """
-    found: dict[str, tuple[bool, str]] = {}
+    found: dict[str, tuple[Any, str]] = {}
+    days = _legacy_retention()
+    if days is not None:
+        found[RETENTION] = (days, LEGACY_RETENTION_ENV)
     if _history._truthy_env(LEGACY_TRANSCRIPTION_ENV):
         found["transcription"] = (False, LEGACY_TRANSCRIPTION_ENV)
     desktop_history = _setting_on(get_config(LEGACY_HISTORY_SETTING, None))
@@ -278,9 +349,21 @@ def _state(on: bool) -> str:
     return "on" if on else "off"
 
 
-def _ignored_line(name: str, feature: str, on: bool, source: str) -> str:
-    return (f"{name} is no longer read; {feature} is {_state(on)} ({source}). "
+def retention_text(days: int) -> str:
+    return "forever" if days == 0 else f"{days} day" + ("" if days == 1 else "s")
+
+
+def _ignored_line(name: str, feature: str, value: Any, source: str) -> str:
+    if feature == RETENTION:
+        return (f"{name} is no longer read; history is kept {retention_text(value)} ({source}). "
+                f"Use /telesec or '{SETTINGS_COMMAND} set retention {RETENTION_VALUES}'.")
+    return (f"{name} is no longer read; {feature} is {_state(value)} ({source}). "
             f"Use /telesec or '{SETTINGS_COMMAND} set {feature} on|off'.")
+
+
+def _stored_item(feature: str, value: Any, stamp: str) -> dict[str, Any]:
+    key = "days" if feature == RETENTION else "enabled"
+    return {key: value, "updated_at": stamp, "updated_via": MIGRATION_VIA}
 
 
 def migrate_legacy(*, get_config: Callable[..., Any] | None = None, now: datetime | None = None) -> list[str]:
@@ -302,7 +385,7 @@ def migrate_legacy(*, get_config: Callable[..., Any] | None = None, now: datetim
         return []
     if all(feature in current for feature in legacy):
         return []
-    moved: list[tuple[str, bool, str]] = []
+    moved: list[tuple[str, Any, str]] = []
     with _modes._writer_lock(path):
         try:
             payload = _parse(path.read_bytes())
@@ -313,7 +396,7 @@ def migrate_legacy(*, get_config: Callable[..., Any] | None = None, now: datetim
         stamp = _modes._format_timestamp(now)
         for feature, (value, source) in legacy.items():
             if feature not in payload:
-                payload[feature] = {"enabled": value, "updated_at": stamp, "updated_via": MIGRATION_VIA}
+                payload[feature] = _stored_item(feature, value, stamp)
                 moved.append((feature, value, source))
         if moved:
             _modes._write_private_json_atomic(path, {**payload, "schema_version": SCHEMA_VERSION})
@@ -339,7 +422,8 @@ def warn_ignored_env(skip: tuple[str, ...] | list[str] = ()) -> list[str]:
             continue
         item = current[feature]
         source = "moved to Telesec settings" if item["source"] == "migration" else item["source"]
-        logger.warning("%s: %s", _history.PLUGIN_NAME, _ignored_line(name, feature, item["enabled"], source))
+        value = item["days"] if feature == RETENTION else item["enabled"]
+        logger.warning("%s: %s", _history.PLUGIN_NAME, _ignored_line(name, feature, value, source))
         warned.append(name)
     return warned
 
@@ -350,7 +434,7 @@ def ignored_env_names() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# CLI: hermes telesec settings [--format json] | settings set <feature> on|off
+# CLI: hermes telesec settings [--format json] | settings set <feature> on|off | settings set retention <days>
 # ---------------------------------------------------------------------------
 
 
@@ -359,9 +443,10 @@ def add_settings_parser(subs: Any) -> None:
     parser.add_argument("--format", choices=["text", "json"], default="text")
     parser.set_defaults(_settings_action="show")
     actions = parser.add_subparsers(dest="telesec_settings_command")
-    set_parser = actions.add_parser("set", help="Turn transcription, history or dossiers on or off for all chats")
-    set_parser.add_argument("feature", choices=list(FEATURES))
-    set_parser.add_argument("value", choices=["on", "off"])
+    set_parser = actions.add_parser("set", help="Turn transcription, history or dossiers on or off for all chats, "
+                                                "or set how long history is kept")
+    set_parser.add_argument("feature", choices=[*FEATURES, RETENTION])
+    set_parser.add_argument("value", help=f"on|off; for retention: {RETENTION_VALUES} (days)")
     set_parser.set_defaults(_settings_action="set")
 
 
@@ -383,9 +468,10 @@ def _chat_counts() -> dict[str, int | None]:
 
 
 def _status_line(feature: str, item: dict[str, Any]) -> str:
+    value = retention_text(item["days"]) if feature == RETENTION else _state(item["enabled"])
     if item["source"] in ("default", "unreadable"):
-        return f"{feature}: {_state(item['enabled'])} ({item['source']})"
-    return f"{feature}: {_state(item['enabled'])} (stored via {item['updated_via']} at {item['updated_at']})"
+        return f"{feature}: {value} ({item['source']})"
+    return f"{feature}: {value} (stored via {item['updated_via']} at {item['updated_at']})"
 
 
 def _show(as_json: bool) -> int:
@@ -402,7 +488,7 @@ def _show(as_json: bool) -> int:
         print(json.dumps(document, ensure_ascii=True, indent=2))
         return 0
     lines = ["Telesec settings (all chats):"]
-    lines += [_status_line(feature, current[feature]) for feature in FEATURES]
+    lines += [_status_line(feature, current[feature]) for feature in ("transcription", "history", RETENTION, "dossiers")]
     if paused:
         lines.append("note: dossiers are paused while history is off.")
     if degraded:
@@ -416,12 +502,30 @@ def _show(as_json: bool) -> int:
     for name in ignored:
         lines.append(f"note: {name} is set in this process but no longer read.")
     lines.append(f"Change: '{SETTINGS_COMMAND} set <transcription|history|dossiers> on|off', "
-                 "or /telesec in your private chat with the bot.")
+                 f"'{SETTINGS_COMMAND} set retention {RETENTION_VALUES}', or /telesec in your private chat with the bot.")
     print("\n".join(lines))
     return 0
 
 
-def _set(feature: str, on: bool) -> int:
+def _set_retention(raw: str) -> int:
+    days = parse_retention(raw)
+    result = set_retention(days, via="cli", repair_corrupt=True)
+    if result.get("backup_path") is not None:
+        print(f"warning: corrupt {SETTINGS_FILENAME} backed up to {result['backup_path']}")
+    print(f"retention: {retention_text(days)}" + ("" if result["changed"] else " (unchanged)"))
+    if days:
+        print(f"Saved history is deleted a whole month at a time: a month goes at the next hourly cleanup once all "
+              f"of it is older than {retention_text(days)}.")
+    print("The gateway applies it to the next cleanup; no restart is needed.")
+    return 0
+
+
+def _set(feature: str, value: str) -> int:
+    if feature == RETENTION:
+        return _set_retention(value)
+    if value not in ("on", "off"):
+        raise ValueError(f"{feature} takes on or off, got {value!r}")
+    on = value == "on"
     result = set_enabled(feature, on, via="cli", repair_corrupt=True)
     if result.get("backup_path") is not None:
         print(f"warning: corrupt {SETTINGS_FILENAME} backed up to {result['backup_path']}")
@@ -438,7 +542,7 @@ def _set(feature: str, on: bool) -> int:
 def handle_settings_cli(args: argparse.Namespace) -> int:
     try:
         if getattr(args, "_settings_action", None) == "set":
-            return _set(args.feature, args.value == "on")
+            return _set(args.feature, args.value)
         return _show(getattr(args, "format", None) == "json")
     except (OSError, ValueError) as exc:
         print(f"error: {exc}")

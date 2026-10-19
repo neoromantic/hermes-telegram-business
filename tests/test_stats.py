@@ -1369,7 +1369,7 @@ def test_real_prune(plugin, monkeypatch: pytest.MonkeyPatch):
         _tomb(plugin, 2, _utc(2026, 10, 7, 9, 0), "outbound", message_at=august),
         _tomb(plugin, 99, _utc(2026, 10, 8, 9, 0), "unknown"),
     )
-    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "30")
+    th.set_retention(plugin, 30)
 
     result = history.maintain_history(now=NOW)
 

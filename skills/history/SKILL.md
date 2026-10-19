@@ -43,8 +43,8 @@ Use this plugin skill when you need to inspect or maintain the opt-in Telegram B
 - Optional controls:
   - `TELESEC_HISTORY_CORRECTION_WINDOW` seconds, default `120`; this is the post-delete candidate window and classification delay
   - `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` seconds, default `15`
-  - `TELESEC_HISTORY_RETENTION_DAYS`, default `0`; `0` disables retention pruning
-  - `TELESEC_HISTORY_MAX_BYTES`, default `1073741824`
+  - `TELESEC_HISTORY_MAX_BYTES`, default `1073741824`; an operator disk-safety limit on top of retention
+- Retention is a stored setting, not a variable: `hermes telesec settings --format json` shows `retention.days` (`0` keeps history forever). The owner sets it in Telegram Settings or with `hermes telesec settings set retention <forever|365|90|30|N>`. A shorter value deletes whole closed months at the next cleanup, so change it only when the owner asks. `TELESEC_HISTORY_RETENTION_DAYS` is no longer read.
 - Without `--tz`, `stats` uses the Hermes time zone (`HERMES_TIMEZONE` or `timezone` in `config.yaml`), else UTC. Telesec has no time zone setting of its own.
 
 ## Read Recipes

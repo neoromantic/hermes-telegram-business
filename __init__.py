@@ -625,6 +625,11 @@ def _cleanup_model() -> str:
     return os.environ.get(_CLEANUP_MODEL_ENV, _DEFAULT_CLEANUP_MODEL).strip() or _DEFAULT_CLEANUP_MODEL
 
 
+def _voice_cleanup_model() -> tuple[str, str] | None:
+    """The provider and model voice cleanup calls, or None while it is off; Settings shows them."""
+    return None if _cleanup_disabled() else (_cleanup_provider(), _cleanup_model())
+
+
 def _cleanup_style() -> str:
     style = os.environ.get(_CLEANUP_STYLE_ENV, _history_support.get_config("cleanup_style", "conservative")).strip().lower()
     return "enriched" if style == "enriched" else "conservative"
@@ -3188,7 +3193,7 @@ def register(ctx: Any) -> None:
     ctx.register_telegram_handler(_register_telegram_handlers)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
     _stats_panel.register_section()
-    _settings_panel.register_section()
+    _settings_panel.register_section(voice_cleanup=_voice_cleanup_model)
     register_command = getattr(ctx, "register_command", None)
     if callable(register_command):  # the owner's exact `/telesec` never gets here: the panel claims it
         register_command("telesec", _settings_command_fallback, description="Telesec settings")

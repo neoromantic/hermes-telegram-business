@@ -72,6 +72,7 @@ def isolate_plugin_environment(monkeypatch: pytest.MonkeyPatch):
         # Old switches: register() would move a developer's own value into the test's settings.json.
         "TELESEC_DISABLE",
         "TELESEC_HISTORY_ENABLE",
+        "TELESEC_HISTORY_RETENTION_DAYS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -333,7 +334,8 @@ def test_history_skill_documents_runtime_scheduler_and_defaults():
     assert "private Business chats only" in skill
     assert "contacts.json" in skill
     assert "TELESEC_HISTORY_NEARBY_BEFORE_SECONDS" in skill
-    assert "default `0`" in skill
+    assert "`retention.days` (`0` keeps history forever)" in skill
+    assert "settings set retention <forever|365|90|30|N>" in skill
     assert "1073741824" in skill
     assert "does not depend on `maintain`" in skill
     assert "No record-level or right-to-erasure command ships in v1." in skill

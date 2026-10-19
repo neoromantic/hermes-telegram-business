@@ -59,6 +59,11 @@ def set_switch(plugin, feature: str, on: bool) -> None:
     plugin._global_settings.set_enabled(feature, on, via="cli")
 
 
+def set_retention(plugin, days: int) -> None:
+    """Keep history ``days`` days the way `hermes telesec settings set retention` does (0: forever)."""
+    plugin._global_settings.set_retention(days, via="cli")
+
+
 @pytest.fixture
 def enabled_history(monkeypatch: pytest.MonkeyPatch, plugin):
     set_switch(plugin, "history", True)
@@ -743,7 +748,6 @@ def test_history_config_defaults_and_env_overrides(plugin, monkeypatch: pytest.M
 
     monkeypatch.setenv("TELESEC_HISTORY_NEARBY_BEFORE_SECONDS", "7")
     monkeypatch.setenv("TELESEC_HISTORY_CHAT_TYPES", "private,group")
-    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "0")
     config = plugin._history_support.history_config_from_env()
     assert config.chat_types == {"group", "private"}
     assert config.nearby_before_seconds == 7
@@ -1845,7 +1849,7 @@ async def test_streamed_read_waits_for_concurrent_prune_and_keeps_selected_parti
         return original_open(path_obj, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", _blocking_open)
-    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
+    set_retention(plugin, 10)
 
     def _reader() -> None:
         try:
@@ -2281,7 +2285,7 @@ async def test_deletion_retry_after_original_partition_is_pruned_keeps_one_tombs
     deletion = make_deleted_update(update_id=2)
     assert await history.observe_ptb_update(deletion, bot=FakeBot(), now=deleted_at)
     assert history.maintain_history(now=deleted_at + timedelta(seconds=20)).classified == 1
-    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "1")
+    set_retention(enabled_history, 1)
     assert history.maintain_history(now=deleted_at + timedelta(seconds=21)).pruned_files == 1
 
     reloaded = _load_plugin_module(monkeypatch, tmp_path)
@@ -2817,7 +2821,7 @@ async def test_retention_and_size_prune_closed_partitions_but_preserve_active(en
 
     old_file = load_history_file(plugin, month="2026-06.jsonl")
     current_file = load_history_file(plugin, month="2026-07.jsonl")
-    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "20")
+    set_retention(plugin, 20)
     monkeypatch.setenv("TELESEC_HISTORY_MAX_BYTES", str(current_file.stat().st_size + 1))
 
     result = plugin._history_support.maintain_history(now=current_time)
@@ -2881,7 +2885,7 @@ async def test_retention_prune_rebuilds_catalog_from_remaining_canonical_history
         now=june_time + timedelta(seconds=1),
     )
 
-    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
+    set_retention(plugin, 10)
     result = plugin._history_support.maintain_history(now=july_time)
     catalog = load_catalog(plugin)
     entries = {int(entry["chat_id"]): entry for entry in catalog["contacts"]}
@@ -2922,7 +2926,7 @@ async def test_post_prune_catalog_rebuild_failure_marks_dirty_until_explicit_reb
 
     old_file = load_history_file(plugin, month="2026-06.jsonl")
     original_write_catalog = history._write_catalog_locked
-    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
+    set_retention(plugin, 10)
     monkeypatch.setattr(
         history,
         "_write_catalog_locked",
@@ -2995,7 +2999,7 @@ async def test_verify_warns_not_errors_when_retention_prunes_old_delete_tombston
     )
     plugin._history_support.maintain_history(now=classified_time)
 
-    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
+    set_retention(plugin, 10)
     result = plugin._history_support.maintain_history(now=verify_time)
 
     june_file = load_history_file(plugin, month="2026-06.jsonl")
@@ -3189,7 +3193,7 @@ async def test_collect_history_stats_holds_root_snapshot_against_concurrent_capt
     prune_done = threading.Event()
     results: dict[str, Any] = {}
 
-    monkeypatch.setenv("TELESEC_HISTORY_RETENTION_DAYS", "10")
+    set_retention(plugin, 10)
 
     def _blocking_open(path_obj: Path, *args, **kwargs):
         mode = args[0] if args else kwargs.get("mode", "r")
