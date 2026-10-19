@@ -260,8 +260,9 @@ PANEL_MONTH_RU = """
 
 <b>💬 1 284</b> · активных дней 25/30
 <pre>Денис █████████░░░░░░░ 58%
-Вы    ███████░░░░░░░░░ 42%</pre>
-<pre>         Денис     Вы
+Вы    ███████░░░░░░░░░ 42%
+
+         Денис     Вы
 сообщ.     745    539
 ответ      12м    38м
 p90      1ч40м   3ч5м
@@ -275,8 +276,9 @@ p90      1ч40м   3ч5м
 ▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
 пн вт ср чт пт сб вс
 ▂·▄▆▄▇▇▅▃▆▇▅▄▆█▃····▄▅▆▇▅▃▆▇█▃
-по дням 20.09 → 19.10</pre>
-<pre>серия    10 дн. · макс 14
+по дням 20.09 → 19.10
+
+серия    10 дн. · макс 14
 пауза    4д2ч · 05.10–10.10
 беседы   41 · старт Денис 61%
 удалено  3 · неясн. 1</pre>
@@ -290,8 +292,9 @@ PANEL_MONTH_EN = """
 
 <b>💬 1,284</b> · active days 25/30
 <pre>Denis █████████░░░░░░░ 58%
-You   ███████░░░░░░░░░ 42%</pre>
-<pre>           Denis    You
+You   ███████░░░░░░░░░ 42%
+
+           Denis    You
 msgs         745    539
 reply        12m    38m
 p90        1h40m   3h5m
@@ -305,8 +308,9 @@ edits          7      5</pre>
 ▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
 Mo Tu We Th Fr Sa Su
 ▂·▄▆▄▇▇▅▃▆▇▅▄▆█▃····▄▅▆▇▅▃▆▇█▃
-by day 20 Sep → 19 Oct</pre>
-<pre>streak   10 d · max 14
+by day 20 Sep → 19 Oct
+
+streak   10 d · max 14
 pause    4d2h · 5 Oct–10 Oct
 sessions 41 · Denis starts 61%
 deleted  3 · unexplained 1</pre>
@@ -320,8 +324,9 @@ PANEL_WEEK_RU = """
 
 <b>💬 370</b> · активных дней 7/7
 <pre>Денис █████████░░░░░░░ 57%
-Вы    ███████░░░░░░░░░ 43%</pre>
-<pre>         Денис     Вы
+Вы    ███████░░░░░░░░░ 43%
+
+         Денис     Вы
 сообщ.     212    158
 ответ       9м    25м
 p90      1ч10м  2ч30м
@@ -334,8 +339,9 @@ p90      1ч10м  2ч30м
 ▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
 пн вт ср чт пт сб вс
 █▆▅▇█▇▄
-по дням 13.10 → 19.10</pre>
-<pre>серия    7 дн. · макс 7
+по дням 13.10 → 19.10
+
+серия    7 дн. · макс 7
 пауза    9ч40м · 14.10–15.10
 беседы   19 · старт Денис 42%</pre>
 <b>📈 к пред. 7 дн.:</b> сообщ. 0→370
@@ -348,8 +354,9 @@ PANEL_WEEK_EN = """
 
 <b>💬 370</b> · active days 7/7
 <pre>Denis █████████░░░░░░░ 57%
-You   ███████░░░░░░░░░ 43%</pre>
-<pre>           Denis    You
+You   ███████░░░░░░░░░ 43%
+
+           Denis    You
 msgs         212    158
 reply         9m    25m
 p90        1h10m  2h30m
@@ -362,8 +369,9 @@ length        38     21</pre>
 ▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
 Mo Tu We Th Fr Sa Su
 █▆▅▇█▇▄
-by day 13 Oct → 19 Oct</pre>
-<pre>streak   7 d · max 7
+by day 13 Oct → 19 Oct
+
+streak   7 d · max 7
 pause    9h40m · 14 Oct–15 Oct
 sessions 19 · Denis starts 42%</pre>
 <b>📈 vs prev. 7 d:</b> msgs 0→370
@@ -376,8 +384,9 @@ PANEL_ALL_RU = """
 
 <b>💬 12 325</b> · активных дней 312/364
 <pre>Денис █████████░░░░░░░ 56%
-Вы    ███████░░░░░░░░░ 44%</pre>
-<pre>         Денис     Вы
+Вы    ███████░░░░░░░░░ 44%
+
+         Денис     Вы
 сообщ.   6 948  5 377
 ответ       9м    24м
 p90         2ч     4ч
@@ -391,8 +400,9 @@ p90         2ч     4ч
 пн вт ср чт пт сб вс
 ▂▆▇▅▆▇▇▆▅▅██▂
 по месяцам
-21.10.2025 → 19.10.2026</pre>
-<pre>серия    3 дн. · макс 23
+21.10.2025 → 19.10.2026
+
+серия    3 дн. · макс 23
 пауза    12д
          28.12.2025–09.01.2026
 беседы   412 · старт Денис 58%
@@ -406,8 +416,9 @@ PANEL_ALL_EN = """
 
 <b>💬 12,325</b> · active days 312/364
 <pre>Denis █████████░░░░░░░ 56%
-You   ███████░░░░░░░░░ 44%</pre>
-<pre>           Denis    You
+You   ███████░░░░░░░░░ 44%
+
+           Denis    You
 msgs       6,948  5,377
 reply         9m    24m
 p90           2h     4h
@@ -421,8 +432,9 @@ edits        120     85</pre>
 Mo Tu We Th Fr Sa Su
 ▂▆▇▅▆▇▇▆▅▅██▂
 by month
-21 Oct 2025 → 19 Oct 2026</pre>
-<pre>streak   3 d · max 23
+21 Oct 2025 → 19 Oct 2026
+
+streak   3 d · max 23
 pause    12d
          28 Dec 2025–9 Jan 2026
 sessions 412 · Denis starts 58%
@@ -436,8 +448,9 @@ PANEL_PARTIAL_RU = """
 
 <b>💬 5</b> · активных дней 3/90
 <pre>Денис ████████████████ 100%
-Вы    ░░░░░░░░░░░░░░░░ 0%</pre>
-<pre>         Денис     Вы
+Вы    ░░░░░░░░░░░░░░░░ 0%
+
+         Денис     Вы
 сообщ.       5      0
 ответ        –      –
 p90          –      –
@@ -450,8 +463,9 @@ p90          –      –
 ·· ▆▆ ·· ██ ·· ·· ··
 пн вт ср чт пт сб вс
 ······█··▄··█·
-по неделям 22.07 → 19.10</pre>
-<pre>серия    0 дн. · макс 1
+по неделям 22.07 → 19.10
+
+серия    0 дн. · макс 1
 пауза    23д · 15.09–08.10
 беседы   3 · старт Денис 100%</pre>
 <i>история с 01.09.2026 (период неполный) · удалений вне истории 2 · правок без оригинала 1 · только текст · 13:32</i>
@@ -463,8 +477,9 @@ PANEL_PARTIAL_EN = """
 
 <b>💬 5</b> · active days 3/90
 <pre>Denis ████████████████ 100%
-You   ░░░░░░░░░░░░░░░░ 0%</pre>
-<pre>           Denis    You
+You   ░░░░░░░░░░░░░░░░ 0%
+
+           Denis    You
 msgs           5      0
 reply          –      –
 p90            –      –
@@ -477,8 +492,9 @@ length        12      –</pre>
 ·· ▆▆ ·· ██ ·· ·· ··
 Mo Tu We Th Fr Sa Su
 ······█··▄··█·
-by week 22 Jul → 19 Oct</pre>
-<pre>streak   0 d · max 1
+by week 22 Jul → 19 Oct
+
+streak   0 d · max 1
 pause    23d · 15 Sep–8 Oct
 sessions 3 · Denis starts 100%</pre>
 <i>history since 1 Sep 2026 (period partial) · deletions not in history 2 · edits without original 1 · text only · 13:32</i>
@@ -518,8 +534,9 @@ CARD_ALL_RU = """
 
 <b>💬 12 325</b> · дней общения 312
 <pre>Денис  █████████░░░░░░░ 56%
-Сергей ███████░░░░░░░░░ 44%</pre>
-<pre>         Денис Сергей
+Сергей ███████░░░░░░░░░ 44%
+
+         Денис Сергей
 сообщ.   6 948  5 377
 ответ       9м    24м
 подряд     2.1    1.4
@@ -531,8 +548,9 @@ CARD_ALL_RU = """
 пн вт ср чт пт сб вс
 ▂▆▇▅▆▇▇▆▅▅██▂
 по месяцам
-21.10.2025 → 19.10.2026</pre>
-<pre>рекорд   23 дн. подряд
+21.10.2025 → 19.10.2026
+
+рекорд   23 дн. подряд
 беседы   412 · старт Денис 58%</pre>
 <i>посчитал <a href="https://telesec.sergeybaus.com">Telesec</a></i>
 """.strip("\n")
@@ -543,8 +561,9 @@ CARD_ALL_EN = """
 
 <b>💬 12,325</b> · days in touch 312
 <pre>Denis █████████░░░░░░░ 56%
-Sam   ███████░░░░░░░░░ 44%</pre>
-<pre>           Denis    Sam
+Sam   ███████░░░░░░░░░ 44%
+
+           Denis    Sam
 messages   6,948  5,377
 reply         9m    24m
 per turn     2.1    1.4
@@ -556,8 +575,9 @@ length        42     18</pre>
 Mo Tu We Th Fr Sa Su
 ▂▆▇▅▆▇▇▆▅▅██▂
 by month
-21 Oct 2025 → 19 Oct 2026</pre>
-<pre>record   23 days in a row
+21 Oct 2025 → 19 Oct 2026
+
+record   23 days in a row
 sessions 412 · Denis starts 58%</pre>
 <i>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></i>
 """.strip("\n")
@@ -568,8 +588,9 @@ CARD_MONTH_RU = """
 
 <b>💬 1 284</b> · дней общения 25
 <pre>Денис  █████████░░░░░░░ 58%
-Сергей ███████░░░░░░░░░ 42%</pre>
-<pre>         Денис Сергей
+Сергей ███████░░░░░░░░░ 42%
+
+         Денис Сергей
 сообщ.     745    539
 ответ      12м    38м
 подряд     2.1    1.4
@@ -580,8 +601,9 @@ CARD_MONTH_RU = """
 ▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
 пн вт ср чт пт сб вс
 ▂·▄▆▄▇▇▅▃▆▇▅▄▆█▃····▄▅▆▇▅▃▆▇█▃
-по дням 20.09 → 19.10</pre>
-<pre>рекорд   14 дн. подряд
+по дням 20.09 → 19.10
+
+рекорд   14 дн. подряд
 беседы   41 · старт Денис 61%</pre>
 <i>посчитал <a href="https://telesec.sergeybaus.com">Telesec</a></i>
 """.strip("\n")
@@ -592,8 +614,9 @@ CARD_MONTH_EN = """
 
 <b>💬 1,284</b> · days in touch 25
 <pre>Denis █████████░░░░░░░ 58%
-Sam   ███████░░░░░░░░░ 42%</pre>
-<pre>           Denis    Sam
+Sam   ███████░░░░░░░░░ 42%
+
+           Denis    Sam
 messages     745    539
 reply        12m    38m
 per turn     2.1    1.4
@@ -604,8 +627,9 @@ length        42     18</pre>
 ▆▆ ██ ▄▄ ▆▆ ▅▅ ▃▃ ▂▂
 Mo Tu We Th Fr Sa Su
 ▂·▄▆▄▇▇▅▃▆▇▅▄▆█▃····▄▅▆▇▅▃▆▇█▃
-by day 20 Sep → 19 Oct</pre>
-<pre>record   14 days in a row
+by day 20 Sep → 19 Oct
+
+record   14 days in a row
 sessions 41 · Denis starts 61%</pre>
 <i>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></i>
 """.strip("\n")
@@ -731,7 +755,13 @@ def _check(text: str) -> str:
     # Outside markup and the three entities html.escape writes, no raw "<", ">" or "&" is left.
     assert not re.search(r"[<>&]", _MARKUP_RE.sub("", text))
     assert len(text.encode("utf-16-le")) // 2 <= 4096
-    for block in _PRE_RE.findall(text):
+    # Telegram gives every <pre> a copy bar: a view has two at most, none empty,
+    # and one empty line at most between the parts of a block, never at its ends.
+    blocks = _PRE_RE.findall(text)
+    assert len(blocks) <= 2, blocks
+    for block in blocks:
+        assert block.strip("\n") == block != "" and "\n\n\n" not in block, block
+    for block in blocks:
         for line in html.unescape(block).split("\n"):
             assert _columns(line) <= 31, line
             assert line == line.rstrip(), line
@@ -746,6 +776,7 @@ def test_panel_goldens(cs, render, case: str, period: str, lang: str, expected: 
     text = _panel(cs, render, case, period, lang)
     assert text == expected
     _check(text)
+    assert text.count("<pre>") == (0 if case == "empty" else 2)
 
 
 @pytest.mark.parametrize(("case", "period", "lang", "expected"), CARDS)
@@ -753,6 +784,7 @@ def test_card_goldens(cs, render, case: str, period: str, lang: str, expected: s
     text = _card(cs, render, case, period, lang)
     assert text == expected
     _check(text)
+    assert text.count("<pre>") == (0 if case == "empty" else 2)
 
 
 def test_language_follows_the_owner_client(cs, render):
@@ -785,6 +817,7 @@ def test_panel_omits_rows_without_data(cs, render):
     assert "edits" not in bare  # only unknown-direction edits: no side to show them under
     assert "deleted  2</pre>" in bare and "unexplained" not in bare
     assert "█░" not in bare.split("<pre>")[1]  # no share bars without known sides
+    _check(bare)  # so the first block starts with the table, not an empty line
     # A missing name falls back to the stats' own name.
     assert "<pre>Денис П… " in _panel(cs, render, "month", "30d", "ru", contact_name=None)
 
@@ -923,7 +956,7 @@ def test_wide_names_keep_the_columns_aligned(cs, render):
             _card(cs, render, "month", "30d", "en", owner="Sam", contact=contact),
         ):
             _check(view)
-            bars, table = (html.unescape(block).split("\n") for block in _PRE_RE.findall(view)[:2])
+            bars, table = (part.split("\n") for part in html.unescape(_PRE_RE.findall(view)[0]).split("\n\n"))
             assert bars[0].startswith(f"{clipped} ")
             # Both bars start in the same column, and every table line ends in the same one.
             assert len({_columns(re.split("[█░]", line)[0]) for line in bars}) == 1, bars

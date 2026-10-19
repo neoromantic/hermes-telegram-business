@@ -52,8 +52,9 @@ CARD_ALL_EN = """
 
 <b>💬 10</b> · days in touch 4
 <pre>Alice ███████████░░░░░ 67%
-Sam   █████░░░░░░░░░░░ 33%</pre>
-<pre>           Alice    Sam
+Sam   █████░░░░░░░░░░░ 33%
+
+           Alice    Sam
 messages       6      3
 reply        52m    30m
 per turn     1.5    1.0
@@ -64,8 +65,9 @@ length        10     10</pre>
 ·· ·· ·· ·· ·· ██ ▁▁
 Mo Tu We Th Fr Sa Su
 █······▆······▄▂·
-by day 3 Oct → 19 Oct</pre>
-<pre>record   2 days in a row
+by day 3 Oct → 19 Oct
+
+record   2 days in a row
 sessions 5 · Alice starts 60%</pre>
 <i>counted by <a href="https://telesec.sergeybaus.com">Telesec</a></i>
 """.strip("\n")
@@ -76,8 +78,9 @@ CARD_ALL_RU = """
 
 <b>💬 10</b> · дней общения 4
 <pre>Alice  ███████████░░░░░ 67%
-Сергей █████░░░░░░░░░░░ 33%</pre>
-<pre>         Alice Сергей
+Сергей █████░░░░░░░░░░░ 33%
+
+         Alice Сергей
 сообщ.       6      3
 ответ      52м    30м
 подряд     1.5    1.0
@@ -88,8 +91,9 @@ CARD_ALL_RU = """
 ·· ·· ·· ·· ·· ██ ▁▁
 пн вт ср чт пт сб вс
 █······▆······▄▂·
-по дням 03.10 → 19.10</pre>
-<pre>рекорд   2 дн. подряд
+по дням 03.10 → 19.10
+
+рекорд   2 дн. подряд
 беседы   5 · старт Alice 60%</pre>
 <i>посчитал <a href="https://telesec.sergeybaus.com">Telesec</a></i>
 """.strip("\n")

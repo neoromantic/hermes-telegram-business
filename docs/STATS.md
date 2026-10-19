@@ -370,7 +370,7 @@ The buttons under the report pick the period:
 
 A period is whole local days: it starts at midnight of its first day, so `7d` shows 7 days, not 8 partial ones. The current period is marked `•`. Tap it again to refresh. The report runs to now. It uses the default time zone of the CLI (the Hermes time zone, else UTC) and the default 6-hour session gap. So the numbers are the same as `hermes telesec stats --chat <id> --connection <id>` with that `--since` date, run at the same moment.
 
-The report speaks the language of your Telegram app: Russian for a Russian app, English otherwise. In Russian the buttons are `7 дн.`, `30 дн.`, `90 дн.`, and `Всё`. It is a compact view of the CLI numbers, laid out for a phone screen with Telegram formatting. Blocks with bars and sparklines use a monospace font and fit 31 columns. From top to bottom:
+The report speaks the language of your Telegram app: Russian for a Russian app, English otherwise. In Russian the buttons are `7 дн.`, `30 дн.`, `90 дн.`, and `Всё`. It is a compact view of the CLI numbers, laid out for a phone screen with Telegram formatting. Two blocks use a monospace font and fit 31 columns: the share bars with the table, and the sparklines with the summary. Telegram shows a copy bar on each. From top to bottom:
 
 - **Title.** The contact and the period, then the dates the period covers and the time zone.
 - **💬** Messages in the period, and active days out of the days in the period.
@@ -394,6 +394,7 @@ Example (synthetic): Alice from the [example above](#example-synthetic), period 
 💬 10 · active days 5/30
 Alice ███████████░░░░░ 67%
 You   █████░░░░░░░░░░░ 33%
+
            Alice    You
 msgs           6      3
 reply        52m    30m
@@ -409,6 +410,7 @@ edits          0      1
 Mo Tu We Th Fr Sa Su
 ·············█▃·····█······▆·▃
 by day 20 Sep → 19 Oct
+
 streak   1 d · max 2
 pause    7d7h · 10 Oct–17 Oct
 sessions 5 · Alice starts 60%
@@ -474,6 +476,7 @@ Example (synthetic): Alice from the [example above](#example-synthetic), `/stats
 💬 10 · days in touch 4
 Alice ███████████░░░░░ 67%
 Sam   █████░░░░░░░░░░░ 33%
+
            Alice    Sam
 messages       6      3
 reply        52m    30m
@@ -486,6 +489,7 @@ length        10     10
 Mo Tu We Th Fr Sa Su
 █······▆······▄▂·
 by day 3 Oct → 19 Oct
+
 record   2 days in a row
 sessions 5 · Alice starts 60%
 counted by Telesec

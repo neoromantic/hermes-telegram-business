@@ -346,7 +346,16 @@ def _cut(line: str) -> str:
     return _clip_columns(line, PRE_WIDTH)
 
 
-def _pre(lines: Sequence[str]) -> str:
+def _pre(*parts: Sequence[str]) -> str:
+    """One monospace block: the parts that have lines, with one empty line between them.
+
+    Telegram gives every ``<pre>`` its own copy bar, so a view merges its lines into
+    two blocks instead of one per part.
+    """
+    lines: list[str] = []
+    for part in parts:
+        if part:
+            lines.extend([*([""] if lines else []), *part])
     return "<pre>" + _esc("\n".join(_cut(line) for line in lines)) + "</pre>"
 
 
@@ -418,11 +427,12 @@ def _sessions_row(stats: _stats.ContactStats, fmt: _Format, contact: str) -> lis
     return _row(fmt.t("sessions"), parts)
 
 
-def _shares(stats: _stats.ContactStats, contact: str, owner: str) -> str | None:
+def _shares(stats: _stats.ContactStats, contact: str, owner: str) -> list[str]:
+    """The share bars, or no lines when a side's share is not known."""
     share = stats.share
     if share.received is None or share.sent is None:
-        return None
-    return _pre(_bars([(contact, share.received), (owner, share.sent)]))
+        return []
+    return _bars([(contact, share.received), (owner, share.sent)])
 
 
 def _range_dates(stats: _stats.ContactStats, fmt: _Format) -> str | None:
@@ -487,9 +497,6 @@ def panel(
         )
     )
     blocks.append(f"<b>{_esc(f'💬 {fmt.num(stats.messages.total)}')}</b> · {_esc(days)}")
-    shares = _shares(stats, contact, owner)
-    if shares is not None:
-        blocks.append(shares)
 
     replies, turns, length, edited = stats.replies, stats.turns, stats.text_length, stats.edited
     rows = [
@@ -501,7 +508,7 @@ def panel(
     ]
     if edited.received or edited.sent:
         rows.append((fmt.t("row.edits"), fmt.num(edited.received), fmt.num(edited.sent)))
-    blocks.append(_pre(_table((contact, owner), rows)))
+    blocks.append(_pre(_shares(stats, contact, owner), _table((contact, owner), rows)))
 
     waiting = stats.waiting
     if waiting is not None:
@@ -516,7 +523,6 @@ def panel(
     peak = _peak(stats, fmt)
     if peak is not None:
         blocks.append(peak)
-    blocks.append(_pre(_rhythm(stats, fmt)))
 
     streaks = stats.streaks
     summary = _row(
@@ -537,7 +543,7 @@ def panel(
         if deletions.unexplained.total:
             parts.append(fmt.t("unexplained", count=fmt.num(deletions.unexplained.total)))
         summary.extend(_row(fmt.t("deleted"), parts))
-    blocks.append(_pre(summary))
+    blocks.append(_pre(_rhythm(stats, fmt), summary))
 
     previous = stats.previous
     if previous is not None:
@@ -608,9 +614,6 @@ def card(
     else:
         days = fmt.t("days_in_touch", days=fmt.num(stats.active_days.total))
         blocks.append(f"<b>{_esc(f'💬 {fmt.num(stats.messages.total)}')}</b> · {_esc(days)}")
-        shares = _shares(stats, contact, owner)
-        if shares is not None:
-            blocks.append(shares)
         replies, turns, length = stats.replies, stats.turns, stats.text_length
         rows = [
             (fmt.t("row.messages_card"), fmt.num(stats.messages.received), fmt.num(stats.messages.sent)),
@@ -618,14 +621,14 @@ def card(
             (fmt.t("row.per_turn"), _per_turn(turns.per_turn_received), _per_turn(turns.per_turn_sent)),
             (fmt.t("row.length"), _optional(fmt, length.received), _optional(fmt, length.sent)),
         ]
-        blocks.append(_pre(_table((contact, owner), rows)))
+        blocks.append(_pre(_shares(stats, contact, owner), _table((contact, owner), rows)))
         peak = _peak(stats, fmt)
         if peak is not None:
             blocks.append(peak)
-        blocks.append(_pre(_rhythm(stats, fmt)))
         longest = stats.streaks.longest_days
         record = fmt.t("record_day" if longest == 1 else "record_days", days=fmt.num(longest))
-        blocks.append(_pre([*_row(fmt.t("record"), [record]), *_sessions_row(stats, fmt, contact)]))
+        summary = [*_row(fmt.t("record"), [record]), *_sessions_row(stats, fmt, contact)]
+        blocks.append(_pre(_rhythm(stats, fmt), summary))
     before, _, after = fmt.t("counted_by", link="\0").partition("\0")
     blocks.append(f'<i>{_esc(before)}<a href="{SITE_URL}">Telesec</a>{_esc(after)}</i>')
     return _finish(blocks)

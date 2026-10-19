@@ -73,8 +73,9 @@ ALICE_WEEK_RU = """
 
 <b>💬 3</b> · активных дней 2/7
 <pre>Alice ███████████░░░░░ 67%
-Вы    █████░░░░░░░░░░░ 33%</pre>
-<pre>         Alice     Вы
+Вы    █████░░░░░░░░░░░ 33%
+
+         Alice     Вы
 сообщ.       2      1
 ответ    1ч34м      –
 p90      1ч34м      –
@@ -87,8 +88,9 @@ p90      1ч34м      –
 ▄▄ ·· ·· ·· ·· ██ ··
 пн вт ср чт пт сб вс
 ····█·▄
-по дням 13.10 → 19.10</pre>
-<pre>серия    1 дн. · макс 1
+по дням 13.10 → 19.10
+
+серия    1 дн. · макс 1
 пауза    1д2ч · 17.10–19.10
 беседы   2 · старт Alice 50%
 удалено  1</pre>
@@ -102,8 +104,9 @@ ALICE_WEEK_EN = """
 
 <b>💬 3</b> · active days 2/7
 <pre>Alice ███████████░░░░░ 67%
-You   █████░░░░░░░░░░░ 33%</pre>
-<pre>           Alice    You
+You   █████░░░░░░░░░░░ 33%
+
+           Alice    You
 msgs           2      1
 reply      1h34m      –
 p90        1h34m      –
@@ -116,8 +119,9 @@ length        10     10</pre>
 ▄▄ ·· ·· ·· ·· ██ ··
 Mo Tu We Th Fr Sa Su
 ····█·▄
-by day 13 Oct → 19 Oct</pre>
-<pre>streak   1 d · max 1
+by day 13 Oct → 19 Oct
+
+streak   1 d · max 1
 pause    1d2h · 17 Oct–19 Oct
 sessions 2 · Alice starts 50%
 deleted  1</pre>
@@ -138,8 +142,9 @@ ALICE_MONTH = """
 
 <b>💬 10</b> · active days 5/30
 <pre>Alice ███████████░░░░░ 67%
-You   █████░░░░░░░░░░░ 33%</pre>
-<pre>           Alice    You
+You   █████░░░░░░░░░░░ 33%
+
+           Alice    You
 msgs           6      3
 reply        52m    30m
 p90        1h34m    30m
@@ -153,8 +158,9 @@ edits          0      1</pre>
 ▁▁ ·· ·· ·· ·· ██ ▁▁
 Mo Tu We Th Fr Sa Su
 ·············█▃·····█······▆·▃
-by day 20 Sep → 19 Oct</pre>
-<pre>streak   1 d · max 2
+by day 20 Sep → 19 Oct
+
+streak   1 d · max 2
 pause    7d7h · 10 Oct–17 Oct
 sessions 5 · Alice starts 60%
 deleted  4 · unexplained 1</pre>
