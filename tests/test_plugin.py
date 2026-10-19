@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import re
 import json
 import sys
 import tomllib
@@ -415,6 +416,34 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
             "Telegram Business contact dossiers and owner persona: safe read and correction recipes.",
         ),
     ]
+
+
+def test_register_adds_a_neutral_agent_reference_when_supported(plugin):
+    sections = []
+    ctx = SimpleNamespace(
+        llm=None,
+        register_telegram_handler=lambda _callback: None,
+        register_hook=lambda _name, _callback: None,
+        register_cli_command=lambda **_kwargs: None,
+        register_skill=lambda _name, _path, _description="": None,
+        register_system_prompt_section=lambda id, content, **kwargs: sections.append((id, content, kwargs)),
+    )
+
+    plugin.register(ctx)
+
+    ((section_id, content, kwargs),) = sections
+    assert section_id == "telegram-business.reference"
+    assert re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", section_id)  # Hermes' section id rule
+    assert len(content) <= kwargs["max_chars"] <= 4000
+    for needle in ("mode get <chat_id or @username> --format json", "effective_mode", "stats --chat",
+                   "telegram-business-voice-transcriber:history", "Панель владельца:", "`chat <id>`"):
+        assert needle in content
+
+    # A host without the API, or one that rejects the section, still loads the plugin.
+    del ctx.register_system_prompt_section
+    plugin.register(ctx)
+    ctx.register_system_prompt_section = lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("duplicate"))
+    plugin.register(ctx)
 
 
 @pytest.mark.parametrize(

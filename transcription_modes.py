@@ -686,12 +686,14 @@ def add_mode_parser(subs: Any) -> None:
 
     list_parser = mode_subs.add_parser("list", help="List chats with a stored transcription mode")
     list_parser.add_argument("--owner")
+    list_parser.add_argument("--format", choices=["text", "json"], default="text")
     list_parser.set_defaults(_mode_action="list")
 
     get_parser = mode_subs.add_parser("get", help="Show the transcription mode for one chat")
     get_parser.add_argument("chat")
     get_parser.add_argument("--owner")
     get_parser.add_argument("--connection")
+    get_parser.add_argument("--format", choices=["text", "json"], default="text")
     get_parser.set_defaults(_mode_action="get")
 
     set_parser = mode_subs.add_parser("set", help="Set the transcription mode for one chat")
@@ -811,6 +813,39 @@ def _resolve_chat_selector(selector: str, connection: str | None) -> tuple[str, 
     )
 
 
+def _mode_json(
+    owner: str | None, chat: str, entry: ModeEntry | None, *, label: str | None = None, **extra: Any
+) -> dict[str, Any]:
+    """One chat for ``--format json``: the stored mode and the mode the next voice note gets.
+
+    ``source`` is ``stored`` (an owner set it), ``default`` (no stored mode), or
+    ``disabled`` (transcription is off on this gateway, so nothing is transcribed).
+    """
+    disabled = _history._truthy_env(_history.TRANSCRIBER_DISABLE_ENV)
+    if disabled:
+        effective, source = "off", "disabled"
+    elif entry is not None:
+        effective, source = entry.mode, "stored"
+    else:
+        effective, source = DEFAULT_MODE, "default"
+    return {
+        "owner": owner,
+        "chat_id": chat,
+        **extra,
+        "mode": entry.mode if entry is not None else None,
+        "effective_mode": effective,
+        "source": source,
+        "updated_via": entry.updated_via if entry is not None else None,
+        "updated_at": entry.updated_at if entry is not None else None,
+        "label": (entry.label if entry is not None else None) or label,
+    }
+
+
+def _print_json(document: Any) -> None:
+    # ASCII only: labels are contact names, and escapes keep terminal controls inert.
+    print(json.dumps(document, ensure_ascii=True, indent=2))
+
+
 def _render_label(label: str | None) -> str:
     return "" if label is None else f" label={json.dumps(label, ensure_ascii=False)}"
 
@@ -837,16 +872,29 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
                 raise
             snapshot = Snapshot()
         known = snapshot.owners()
+        as_json = getattr(args, "format", None) == "json"
         if action == "list":
             owner = _resolve_owner(known, owner_arg, action=action)
             owners = [owner] if owner is not None else known
-            rows = []
-            for owner_key in owners:
-                for chat_key, entry in sorted(snapshot.get(owner_key, {}).items(), key=lambda item: int(item[0])):
-                    rows.append(
-                        f"owner={owner_key} chat={chat_key} mode={entry.mode} via={entry.updated_via} "
-                        f"updated_at={entry.updated_at}{_render_label(entry.label)}"
-                    )
+            chats = [
+                (owner_key, chat_key, entry)
+                for owner_key in owners
+                for chat_key, entry in sorted(snapshot.get(owner_key, {}).items(), key=lambda item: int(item[0]))
+            ]
+            if as_json:
+                _print_json(
+                    {
+                        "default_mode": DEFAULT_MODE,
+                        "transcription_enabled": not _history._truthy_env(_history.TRANSCRIBER_DISABLE_ENV),
+                        "chats": [_mode_json(owner_key, chat_key, entry) for owner_key, chat_key, entry in chats],
+                    }
+                )
+                return 0
+            rows = [
+                f"owner={owner_key} chat={chat_key} mode={entry.mode} via={entry.updated_via} "
+                f"updated_at={entry.updated_at}{_render_label(entry.label)}"
+                for owner_key, chat_key, entry in chats
+            ]
             if not rows:
                 print("No transcription modes set; every chat uses both (default).")
             for row in rows:
@@ -857,6 +905,9 @@ def handle_mode_cli(args: argparse.Namespace, *, store: ModeStore | None = None)
         owner = _resolve_chat_owner(snapshot, owner_arg, connection, action=action)
         if action == "get":
             entry = snapshot.get(owner, {}).get(chat) if owner is not None else None
+            if as_json:
+                _print_json(_mode_json(owner, chat, entry, label=label, business_connection_id=connection))
+                return 0
             if entry is None:
                 print(f"chat={chat} mode={DEFAULT_MODE} (default)")
             else:

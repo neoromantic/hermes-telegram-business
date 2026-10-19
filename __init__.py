@@ -2745,6 +2745,37 @@ def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -
     return {"action": "skip", "reason": result.reason or "telegram_business_event_handled"}
 
 
+AGENT_REFERENCE_SECTION_ID = "telegram-business.reference"
+# Frozen into each new session's system prompt. It must stay neutral: the
+# section only sees the platform, never the chat or the user.
+AGENT_REFERENCE = f"""\
+Telegram Business tools (plugin {_PLUGIN_NAME}). Use them when the user asks about their \
+Telegram Business chats, contacts, voice transcription, or the owner panel. Run them with the \
+terminal tool on this gateway host and prefer `--format json`.
+
+- Transcription mode per chat (both, own, peer, off): `hermes telegram-business mode list --format json`, \
+`hermes telegram-business mode get <chat_id or @username> --format json`. `effective_mode` is what the \
+next voice note gets; `source` is stored, default, or disabled. Change a mode only when the user asks: \
+`hermes telegram-business mode set <chat> <mode>` or `hermes telegram-business mode reset <chat>`.
+- Correspondence stats: `hermes telegram-business stats --chat <chat_id> --format json` (or \
+`--contact @username`; without either it lists contacts).
+- History and dossiers, when enabled: skills `{_PLUGIN_NAME}:history` and `{_PLUGIN_NAME}:dossiers`.
+- Owner panel: a bot message that starts with "Owner panel:" or "Панель владельца:" controls one \
+Business chat and names it as `chat <id>`. When the user replies to a panel message, the question is \
+about that chat; use that id as <chat_id> above.
+"""
+
+
+def _register_agent_reference(ctx: Any) -> None:
+    register_section = getattr(ctx, "register_system_prompt_section", None)
+    if not callable(register_section):  # older Hermes: the agent still finds the skills
+        return
+    try:
+        register_section(AGENT_REFERENCE_SECTION_ID, AGENT_REFERENCE, max_chars=2000)
+    except Exception as exc:  # noqa: BLE001 - plugin load must stay available
+        logger.warning("%s: system prompt section not registered (%s)", _PLUGIN_NAME, type(exc).__name__)
+
+
 def register(ctx: Any) -> None:
     global _llm_facade
     _llm_facade = getattr(ctx, "llm", None)
@@ -2768,6 +2799,7 @@ def register(ctx: Any) -> None:
         _dossier_support.skill_path(),
         "Telegram Business contact dossiers and owner persona: safe read and correction recipes.",
     )
+    _register_agent_reference(ctx)
     on_unload = getattr(ctx, "on_unload", None)
     if callable(on_unload):
         on_unload(_dossier_support.stop_workers)
