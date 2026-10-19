@@ -43,7 +43,7 @@ body:
       options:
         - Voice and video note transcription
         - Attached audio file transcription
-        - Transcription modes (owner panel, /transcribe, or mode CLI)
+        - Transcription modes (owner panel or mode CLI)
         - Correspondence history
         - Correspondence stats
         - Contact dossiers

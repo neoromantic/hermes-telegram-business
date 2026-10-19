@@ -28,7 +28,7 @@ To try a change in a real gateway, install your checkout into a test Hermes prof
 ## Where things live
 
 - `__init__.py`: registration, Telegram handlers, the dispatch hook, and the voice pipeline.
-- `transcription_modes.py` and `owner_panel.py`: per-chat modes, `/transcribe`, and the owner panel.
+- `transcription_modes.py` and `owner_panel.py`: per-chat modes and the owner panel.
 - `history_support.py`: opt-in history and the `history` CLI.
 - `correspondence_stats.py`: the `stats` CLI.
 - `dossier_support.py` and `dossier_cli.py`: opt-in dossiers.

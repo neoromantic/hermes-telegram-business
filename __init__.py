@@ -420,15 +420,6 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
             _note_business_update_chat(update)
         except Exception as exc:  # noqa: BLE001 - bookkeeping must not break dispatch
             logger.debug("%s: business chat note failed (%s)", _PLUGIN_NAME, type(exc).__name__)
-        # Owner `/transcribe` commands are claimed before history capture, the
-        # media filter, and the DM allowlist: Business ownership is the auth.
-        try:
-            if await _handle_transcribe_command_update(update, bot=context.bot, adapter=adapter):
-                raise ApplicationHandlerStop
-        except ApplicationHandlerStop:
-            raise
-        except Exception as exc:  # noqa: BLE001 - command failures must not break dispatch
-            logger.warning("%s: transcribe command handling failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         try:
             await _history_support.observe_ptb_update(update, bot=context.bot)
         except Exception as exc:  # noqa: BLE001 - capture failures must not break dispatch
@@ -1982,150 +1973,6 @@ def _log_policy_decision(message: Any, decision: _transcription_modes.PolicyDeci
     )
 
 
-# How long the owner sees a `/transcribe` status before the bot deletes it.
-_COMMAND_STATUS_TTL_SECONDS = 5.0
-
-
-async def _confirm_transcribe_command(*, bot: Any, adapter: Any, message: Any, text: str) -> None:
-    """Edit the owner's command into a status line (or reply), then delete it after a short delay."""
-    chat_id = _get(_get(message, "chat"), "id")
-    message_id = _get(message, "message_id")
-    business_connection_id = _business_connection_id(message)
-    edit_text = getattr(bot, "edit_message_text", None)
-    outcome = CaptionEditAttemptOutcome.DEFINITE_REJECTION
-    if callable(edit_text) and chat_id is not None and message_id is not None and business_connection_id:
-        try:
-            outcome = _classify_caption_edit_result(
-                await _maybe_await(
-                    edit_text(
-                        text=text,
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        business_connection_id=business_connection_id,
-                    )
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - every failed edit falls back to a reply
-            outcome = _classify_caption_edit_exception(exc)
-    to_delete = [message_id] if message_id is not None else []
-    if outcome is not CaptionEditAttemptOutcome.APPLIED:
-        # Unlike transcript captions, a duplicate short status is harmless, so any
-        # unapplied or uncertain edit falls back to a Business reply.
-        try:
-            reply = await bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                business_connection_id=business_connection_id,
-                reply_to_message_id=message_id,
-                **_notification_kwargs(adapter),
-            )
-            reply_id = _get(reply, "message_id")
-            if isinstance(reply_id, int):
-                to_delete.append(reply_id)
-        except Exception as exc:  # noqa: BLE001 - confirmation is best effort
-            logger.warning("%s: transcribe command confirmation failed (%s)", _PLUGIN_NAME, type(exc).__name__)
-    if business_connection_id and to_delete:
-        _schedule_module_work(lambda: _delete_command_messages(bot, str(business_connection_id), to_delete))
-
-
-async def _delete_command_messages(bot: Any, business_connection_id: str, message_ids: list[int]) -> None:
-    """Remove the command and its status so the contact does not keep seeing them."""
-    await asyncio.sleep(_COMMAND_STATUS_TTL_SECONDS)
-    delete = getattr(bot, "delete_business_messages", None)
-    if not callable(delete):
-        return
-    try:
-        await _maybe_await(delete(business_connection_id=business_connection_id, message_ids=message_ids))
-    except Exception as exc:  # noqa: BLE001 - cleanup is best effort
-        logger.warning(
-            "%s: could not delete the /transcribe command (%s); allow the bot to delete messages "
-            "in Telegram Business > Chatbots",
-            _PLUGIN_NAME,
-            type(exc).__name__,
-        )
-
-
-async def _handle_transcribe_command_update(update: Any, *, bot: Any, adapter: Any) -> bool:
-    """Execute an owner `/transcribe` command; True means the update is claimed."""
-    if not _voice_module_enabled():
-        # With transcription disabled, `/transcribe` is ordinary text.
-        return False
-    edited = getattr(update, "edited_business_message", None)
-    payload = edited or getattr(update, "business_message", None)
-    if payload is None:
-        return False
-    text = _get(payload, "text")
-    if not _history_support.is_transcribe_control_message(payload, text):
-        # Ordinary text, a forwarded or inline-bot `/transcribe`, or bot-sent
-        # text that is not the plugin's own status line.
-        return False
-    business_connection_id = _business_connection_id(payload)
-    chat_id = _get(_get(payload, "chat"), "id")
-    if not business_connection_id or chat_id is None:
-        return False
-    store = _transcription_modes.default_store()
-    # A failed live lookup falls back to the owner persisted for this connection,
-    # which only a verified owner command or lookup ever recorded.
-    resolved = await _history_support.resolve_business_direction(
-        payload, bot=bot, stored_owner=store.connection_owner
-    )
-    if resolved.direction != "own":
-        # A contact's command, or one whose owner cannot be verified, is ordinary text.
-        logger.debug("%s: transcribe command not from owner reason=%s", _PLUGIN_NAME, resolved.reason)
-        return False
-    if edited is not None or resolved.reason == "sender_business_bot" or resolved.owner_user_id is None:
-        # The bot's own status edit/reply, or an owner editing an old command:
-        # claim it so it never reaches history or core, but never execute it.
-        logger.debug("%s: transcribe command echo ignored", _PLUGIN_NAME)
-        return True
-
-    message_id = _get(payload, "message_id")
-    if not _mark_identity_seen(
-        ("transcribe-command", str(business_connection_id), str(chat_id), f"message:{message_id}")
-    ):
-        return True
-    try:
-        command = _transcription_modes.parse_command(text)
-        if command is None:
-            return True
-        owner_id = resolved.owner_user_id
-        try:
-            if command.action == "show":
-                status = _transcription_modes.status_text(command, entry=store.get(owner_id, chat_id))
-            elif command.action == "set":
-                result = await asyncio.to_thread(
-                    store.set_mode,
-                    owner_id,
-                    str(chat_id),
-                    command.mode,
-                    via="chat",
-                    label=_transcription_modes.build_chat_label(_get(payload, "chat")),
-                    connection=str(business_connection_id),
-                )
-                status = _transcription_modes.status_text(command, entry=result.entry)
-            elif command.action == "reset":
-                await asyncio.to_thread(store.reset, owner_id, str(chat_id), connection=str(business_connection_id))
-                status = _transcription_modes.status_text(command, entry=None)
-            else:
-                status = _transcription_modes.status_text(command, entry=None)
-        except (_transcription_modes.ModeStoreError, _transcription_modes.ModesFileCorrupt, OSError) as exc:
-            # A corrupt modes file is never replaced from chat; only an explicit CLI write repairs it.
-            logger.warning("%s: could not save transcription mode (%s)", _PLUGIN_NAME, type(exc).__name__)
-            status = _transcription_modes.status_text(command, entry=None, error=True)
-        logger.info(
-            "%s: transcribe command chat=%s message=%s action=%s mode=%s",
-            _PLUGIN_NAME,
-            _safe_part(chat_id),
-            _safe_part(message_id),
-            command.action,
-            command.mode or "-",
-        )
-        await _confirm_transcribe_command(bot=bot, adapter=adapter, message=payload, text=status)
-    except Exception as exc:  # noqa: BLE001 - the owner's command must never reach core
-        logger.warning("%s: transcribe command failed (%s)", _PLUGIN_NAME, type(exc).__name__)
-    return True
-
-
 # --- Owner panel ("Manage Bot") ---------------------------------------------------------------
 
 # Owner checks rebuild the known connections on every call; per-connection
@@ -2366,7 +2213,7 @@ def _panel_state(
         # cannot read or change another connection's data for this chat.
         connection = next((c for c in owner.connections if (c, chat_id) in _PANEL_SEEN_CHATS), None)
     entry = _transcription_modes.default_store().get(owner_id, chat_id)
-    # Same snapshot rule as the chat command: build_chat_label over the contact's
+    # Same snapshot rule as 0.9.0's chat labels: build_chat_label over the contact's
     # profile (control characters stripped, clipped), never message content;
     # without a profile the stored label stays.
     store_label = _transcription_modes.build_chat_label(profile) if isinstance(profile, dict) else None
@@ -2570,7 +2417,7 @@ async def _handle_owner_panel_callback(query: Any, *, bot: Any) -> None:
             try:
                 entry, toast = await _apply_panel_mode(parsed, state)
             except (_transcription_modes.ModeStoreError, _transcription_modes.ModesFileCorrupt, OSError) as exc:
-                # Like the chat command: a corrupt modes file is never overwritten from Telegram.
+                # A corrupt modes file is never overwritten from Telegram, only by an explicit CLI write.
                 logger.warning("%s: could not save transcription mode (%s)", _PLUGIN_NAME, type(exc).__name__)
                 toast = notice = _owner_panel.tr("save_error", language_code)
         await _answer_panel_callback(bot, query, toast)

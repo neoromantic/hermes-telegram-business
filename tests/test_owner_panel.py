@@ -328,7 +328,7 @@ async def test_any_business_message_in_the_chat_verifies_the_owner(plugin, modes
 async def test_hint_clears_once_the_sender_is_bound(plugin, modes):
     bot = PanelBot(business_owner_id=OWNER)
     assert await dispatch(plugin, start_update(), bot) is True
-    bind_owner(plugin)  # e.g. the owner sent /transcribe in the chat
+    bind_owner(plugin)  # e.g. an earlier panel change in the chat
 
     assert await dispatch(plugin, start_update(), bot) is True
 
@@ -587,13 +587,10 @@ async def test_real_history_catalog_names_the_chat_and_scopes_the_section(histor
 
 
 @pytest.mark.asyncio
-async def test_panel_keeps_the_chat_command_label(plugin, modes, monkeypatch):
+async def test_panel_keeps_a_stored_label(plugin, modes, monkeypatch):
     bot = PanelBot(business_owner_id=OWNER)
-    adapter = ttm.command_adapter(bot)
-    business = ttm.registered_business_handler(plugin, adapter)
-    with pytest.raises(ApplicationHandlerStop):
-        await business(ttm.make_text_update("/transcribe off", chat_username="casey"), SimpleNamespace(bot=bot))
-    assert modes.default_store().get(OWNER, CHAT).label == "Casey Customer (@casey)"
+    # A label stored earlier (0.9.0's in-chat command stored the chat's own profile).
+    modes.default_store().set_mode(OWNER, CHAT, "off", via="chat", label="Casey Customer (@casey)", connection=BCID)
     catalog = [{"business_connection_id": BCID, "chat_id": CHAT,
                 "current_profile": {"first_name": "Casey", "last_name": "Customer", "username": "casey"}}]
     monkeypatch.setattr(plugin, "_panel_catalog", lambda: catalog)
