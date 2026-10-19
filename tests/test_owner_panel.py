@@ -8,6 +8,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+import telegram
 import test_history
 import test_plugin
 import test_telegram_integration
@@ -965,6 +966,93 @@ async def test_async_section_render_is_awaited(plugin, modes):
 
     assert await dispatch(plugin, callback_update("tb:s:991:dossier"), bot) is True
     assert last_edit(bot) == ("async body", [[("« Back", "tb:b:991")]])
+    # A plain view sends no formatting options at all.
+    assert "parse_mode" not in bot.text_edit_calls[-1] and "link_preview_options" not in bot.text_edit_calls[-1]
+
+
+def test_with_back_keeps_the_view_formatting(plugin):
+    panel = plugin._owner_panel
+    view = panel.PanelView(
+        text="<b>x</b>", buttons=[[("Next", "tb:s:991:x/2")]], parse_mode="HTML", disable_link_preview=True
+    )
+
+    backed = panel.with_back(view, "991", "ru")
+
+    assert backed == panel.PanelView(
+        text="<b>x</b>",
+        buttons=[[("Next", "tb:s:991:x/2")], [("« Назад", "tb:b:991")]],
+        parse_mode="HTML",
+        disable_link_preview=True,
+    )
+    assert view.buttons == [[("Next", "tb:s:991:x/2")]]
+
+
+def test_panel_message_options_follow_the_view(plugin, monkeypatch):
+    panel = plugin._owner_panel
+    plain = plugin._panel_message_kwargs(panel.PanelView(text="plain"))
+    assert set(plain) == {"text", "reply_markup"}
+
+    formatted = plugin._panel_message_kwargs(
+        panel.PanelView(text="<b>x</b>", parse_mode="HTML", disable_link_preview=True)
+    )
+    assert formatted["parse_mode"] == "HTML"
+    assert formatted["link_preview_options"].is_disabled is True
+    assert "disable_web_page_preview" not in formatted
+
+    # python-telegram-bot before 20.8 has no LinkPreviewOptions.
+    monkeypatch.delattr(telegram, "LinkPreviewOptions")
+    old = plugin._panel_message_kwargs(panel.PanelView(text="x", disable_link_preview=True))
+    assert old["disable_web_page_preview"] is True and "parse_mode" not in old
+
+
+@pytest.mark.asyncio
+async def test_formatted_section_is_sent_with_its_parse_mode(plugin, modes):
+    bind_owner(plugin)
+    panel = plugin._owner_panel
+    panel.register_section(
+        "dossier",
+        "Dossier",
+        lambda ctx: panel.PanelView(text="<b>Bold</b> body", parse_mode="HTML", disable_link_preview=True),
+    )
+    bot = PanelBot(business_owner_id=OWNER)
+
+    assert await dispatch(plugin, start_update(), bot) is True
+    # The main panel stays plain text.
+    assert "parse_mode" not in bot.calls[0] and "link_preview_options" not in bot.calls[0]
+
+    assert await dispatch(plugin, callback_update("tb:s:991:dossier"), bot) is True
+    assert last_edit(bot) == ("<b>Bold</b> body", [[("« Back", "tb:b:991")]])
+    call = bot.text_edit_calls[-1]
+    assert call["parse_mode"] == "HTML" and call["link_preview_options"].is_disabled is True
+
+    assert await dispatch(plugin, callback_update("tb:b:991"), bot) is True
+    assert last_edit(bot)[0].startswith("Owner panel: chat 991")
+    assert "parse_mode" not in bot.text_edit_calls[-1] and "link_preview_options" not in bot.text_edit_calls[-1]
+
+
+@pytest.mark.asyncio
+async def test_rejected_formatted_section_falls_back_to_plain_text(plugin, modes, caplog):
+    bind_owner(plugin)
+    panel = plugin._owner_panel
+    panel.register_section("dossier", "Dossier", lambda ctx: panel.PanelView(text="<b>bad", parse_mode="HTML"))
+    bot = PanelBot(business_owner_id=OWNER)
+    original = bot.edit_message_text
+
+    async def edit(**kwargs):
+        if "parse_mode" in kwargs:
+            bot.text_edit_calls.append(kwargs)
+            raise ttm.BadRequest("Can't parse entities: can't find end tag")
+        return await original(**kwargs)
+
+    bot.edit_message_text = edit
+
+    assert await dispatch(plugin, callback_update("tb:s:991:dossier"), bot) is True
+
+    rejected, fallback = bot.text_edit_calls
+    assert rejected["parse_mode"] == "HTML"
+    assert fallback["text"] == "chat 991\nSection unavailable."
+    assert "parse_mode" not in fallback
+    assert "owner panel edit failed (BadRequest)" in caplog.text
 
 
 @pytest.mark.asyncio

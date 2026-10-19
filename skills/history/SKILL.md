@@ -45,7 +45,7 @@ Use this plugin skill when you need to inspect or maintain the opt-in Telegram B
   - `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` seconds, default `15`
   - `TELESEC_HISTORY_RETENTION_DAYS`, default `0`; `0` disables retention pruning
   - `TELESEC_HISTORY_MAX_BYTES`, default `1073741824`
-- `TELESEC_TIMEZONE` is an optional IANA time zone, such as `Europe/Moscow`, used as the default `--tz` for `stats`. Unset means UTC.
+- Without `--tz`, `stats` uses the Hermes time zone (`HERMES_TIMEZONE` or `timezone` in `config.yaml`), else UTC. Telesec has no time zone setting of its own.
 
 ## Read Recipes
 
@@ -79,17 +79,20 @@ hermes telesec stats --contact @alice --since 2026-10-01 --tz Europe/Moscow --fo
 hermes telesec stats --chat 991 --connection business-123 --since 2026-10-01 --until 2026-10-18 --format json
 ```
 
-- Prefer `--format json` when you compute or compare. Keys are stable (`schema_version` 1).
-- "This month" means `--since YYYY-MM-01` for the current month. Plain dates are whole days in `--tz`, and both bounds are inclusive. Pass `--tz` when the owner's time zone is known and `TELESEC_TIMEZONE` is not set.
+- Prefer `--format json` when you compute or compare. Keys are stable (`schema_version` 2).
+- "This month" means `--since YYYY-MM-01` for the current month. Plain dates are whole days in `--tz`, and both bounds are inclusive. The report prints the time zone it used (`range.timezone`); pass `--tz` when the owner's time zone is known and differs.
 - Counts cover text messages only. Say so in the answer: voice notes, media, and captions are not counted.
 - `sent` is the owner side and `received` is the contact side. Report `unknown_direction` separately; never add it to either side.
 - For "who did I talk with most", run the overview with `--format json` and sort `contacts` by `messages.total`. If `overview.not_shown_over_limit` is above 0, raise `--limit`.
 - `missing_history.range_partial: true` means history starts at `missing_history.retained_from`. Earlier activity is unknown, not zero.
 - The overview leaves out contacts with no activity in the range, but still counts their gaps. If `overview.not_shown_no_activity_partial` is above 0, that many hidden contacts have history only from after `--since`: say their activity in the range is unknown, never that they had none. `overview.not_shown_no_activity_missing_history` sums their other missing history.
 - Do not over-interpret "no observed reply after it" (`latest.observed_reply: "none"`). It only means history has no sent text message after the latest received one. Never turn it into "you ignored them", "they are waiting", or any claim about intent: the owner may have answered by voice, by phone, or outside Telegram. `"after_range"` means a reply was recorded after `--until`.
+- For "how fast do I reply", use `replies.sent` (the owner's replies) and `replies.received` (the contact's): `count`, `median_seconds`, `p90_seconds`. Only a turn that answers the other side within the session gap is a reply; a longer silence is a new conversation. For "more or less than before", use `previous` (same-length period right before `--since`); it is `null` when retained history does not cover it, so say the comparison is not available rather than inventing one.
+- `waiting` follows the same rule as "no observed reply": it only says that history has no text reply to the last turn yet. Report it as "no reply recorded since <time>", never as a claim that someone ignores or waits for someone.
 - Deletions are counts split by the side of the deleted message. Telegram does not say who deleted a message, so never say "Alice deleted it". For details, run `deletions.details_command`.
 - If the contact is ambiguous, ask the owner which one, or pass `--chat` with `--connection`.
 - `history stats` is a different command: storage stats (records, bytes, settings), not correspondence counts.
+- To share stats with the contact, the owner types `/stats` (all history) or `/stats 7d`, `30d`, or `90d` in the Business chat. The bot turns it into a card that the contact sees too. You never see the command, and neither it nor the card is in history.
 
 ## Deletion Semantics
 

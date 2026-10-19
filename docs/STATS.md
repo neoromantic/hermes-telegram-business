@@ -1,8 +1,8 @@
 # Correspondence stats
 
-`hermes telesec stats` is a deterministic report over retained [correspondence history](HISTORY.md). For each contact it counts text messages received and sent, active days, conversation sessions, latest activity, and deletions. It also says which history is missing.
+`hermes telesec stats` is a deterministic report over retained [correspondence history](HISTORY.md). For each contact it counts text messages received and sent, active days, conversation sessions, latest activity, and deletions. It also measures the conversation: each side's share, turns, reply times, who is waiting for a reply, message length, edits, the hours and weekdays of activity, activity over time, streaks, the longest silence, and a comparison with the previous period. It also says which history is missing.
 
-It reads only what history has already retained, so capture must be enabled first. It uses no LLM, stores nothing new, and never prints message text.
+It reads only what history has already retained, so capture must be enabled first. It uses no LLM, stores nothing new, and never prints message text. It reads text only to count its characters.
 
 ## Commands
 
@@ -22,7 +22,7 @@ Without `--contact` or `--chat`, the command prints a table of contacts with act
 | `--connection` | Business connection ID. Filters the table and disambiguates `--chat` or `--contact`. |
 | `--since` | Inclusive start. Default: all retained history. See [Time and time zone](#time-and-time-zone). |
 | `--until` | Inclusive end. Default: now. |
-| `--tz` | IANA time zone for dates, day boundaries, and active days. Default: `TELESEC_TIMEZONE`, otherwise `UTC`. |
+| `--tz` | IANA time zone for dates, day boundaries, active days, and hours. Default: the Hermes time zone, otherwise `UTC`. See [Time and time zone](#time-and-time-zone). |
 | `--session-gap` | Silence that starts a new session. A whole number with `s`, `m`, `h`, `d`, or `w`, such as `90m` or `1d`. Default: `6h`. |
 | `--limit` | Contacts shown in the table, from 1 to 5000. Default: 20. Ignored for one contact. |
 | `--format` | `text` or `json`. Default: `text`. |
@@ -45,9 +45,43 @@ Alice Example (@alice) connection=business-123 chat=991
   latest 2026-10-17 21:04 received; last sent 2026-10-17 19:30
   last message: received 2026-10-17 21:04, no observed reply after it
   sessions 4 (gap 6h): started by contact 2, by owner 2; ended on received 2
+  share received 63%, sent 37%
+  turns 7 (received 4, sent 3); messages per turn received 1.3, sent 1.0
+  replies received 2: median 52m, p90 1h34m; sent 1: median 30m, p90 30m
+  text length median received 10, sent 10; edited 2 (received 0, sent 1, unknown direction 1)
+  peak Sat 12:00; hours 0..23: 1 0 0 0 0 0 0 0 0 0 0 2 3 0 0 0 0 0 0 1 0 1 0 1; weekdays Mon..Sun: 0 0 0 0 0 8 1
+  activity by day from 2026-10-01: 0 0 3 1 0 0 0 0 0 3 0 0 0 0 0 0 2 0
+  streak current 1d, longest 2d (2026-10-03..2026-10-04); longest silence 7d07h (2026-10-10 12:14..2026-10-17 19:30)
   deletions 4: unexplained 1 (received 1, sent 0), likely correction 1, likely duplicate 1, pending 1
   missing history: retained from 2026-10-03 (range is partial); 1 deletion of a message not in history; 1 message known only from an edit
   deletion details: hermes telesec history deletions --connection business-123 --chat 991 --status unexplained
+```
+
+The same contact for the last 7 days. The range runs to now, so the report says who is waiting for a reply. Retained history covers the 7 days before the range too, so the report compares with them:
+
+```bash
+hermes telesec stats --contact @alice --since 7d --tz Europe/Moscow
+```
+
+```text
+range 2026-10-12 14:32..now Europe/Moscow, by Telegram send time; text messages only
+Alice Example (@alice) connection=business-123 chat=991
+  messages 3: received 2, sent 1, unknown direction 0
+  active days 2 (received 2, sent 1)
+  latest 2026-10-19 00:00 received; last sent 2026-10-17 19:30
+  last message: received 2026-10-19 00:00, no observed reply after it
+  sessions 2 (gap 6h): started by contact 1, by owner 1; ended on received 2
+  share received 67%, sent 33%
+  turns 2 (received 1, sent 1); messages per turn received 2.0, sent 1.0
+  replies received 1: median 1h34m, p90 1h34m; sent 0
+  waiting received since 2026-10-17 21:04 (1d17h)
+  text length median received 10, sent 10; edited 0
+  peak Sat 00:00; hours 0..23: 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 1 0 0; weekdays Mon..Sun: 1 0 0 0 0 2 0
+  activity by day from 2026-10-12: 0 0 0 0 0 2 0 1
+  streak current 1d, longest 1d (2026-10-17..2026-10-17); longest silence 1d02h (2026-10-17 21:04..2026-10-19 00:00)
+  previous 2026-10-05 14:32..2026-10-12 14:31: messages 3 -> 3 (+0%); active days 1 -> 2; reply median received 10m -> 1h34m, sent -
+  deletions 1: pending 1
+  missing history: none (retained from 2026-10-03)
 ```
 
 All contacts:
@@ -69,7 +103,7 @@ deletion details: hermes telesec history deletions --status unexplained
 
 Carol has only a deletion in the range, so her row comes last. Dave wrote only in September, so he is not shown, and the footer says so.
 
-JSON for one contact. It is trimmed here: `chat_type`, `name`, `username`, `active_days`, and `sessions` are left out. Real output always has every key.
+JSON for one contact. It is trimmed here: `chat_type`, `name`, `username`, `active_days`, `sessions`, `hours`, and `weekdays` are left out, and the `counts` list is on one line. Real output always has every key.
 
 ```bash
 hermes telesec stats --contact @alice --since 2026-10-01 --until 2026-10-18 --tz Europe/Moscow --format json
@@ -77,7 +111,7 @@ hermes telesec stats --contact @alice --since 2026-10-01 --until 2026-10-18 --tz
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "report": "correspondence_stats",
   "mode": "contact",
   "generated_at": "2026-10-19T14:32:00+03:00",
@@ -127,7 +161,61 @@ hermes telesec stats --contact @alice --since 2026-10-01 --until 2026-10-18 --tz
         "range_partial": true,
         "deletions_of_messages_not_in_history": 1,
         "messages_known_only_from_edit": 1
-      }
+      },
+      "share": {
+        "received": 63,
+        "sent": 37
+      },
+      "turns": {
+        "total": 7,
+        "received": 4,
+        "sent": 3,
+        "messages_per_turn": {
+          "received": 1.3,
+          "sent": 1.0
+        }
+      },
+      "replies": {
+        "received": {
+          "count": 2,
+          "median_seconds": 3120,
+          "p90_seconds": 5640
+        },
+        "sent": {
+          "count": 1,
+          "median_seconds": 1800,
+          "p90_seconds": 1800
+        }
+      },
+      "waiting": null,
+      "text_length_median": {
+        "received": 10,
+        "sent": 10
+      },
+      "edited": {
+        "total": 2,
+        "received": 0,
+        "sent": 1
+      },
+      "peak_hour": 12,
+      "peak_weekday": 5,
+      "activity": {
+        "bucket": "day",
+        "start": "2026-10-01",
+        "counts": [0, 0, 3, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 2, 0]
+      },
+      "streaks": {
+        "current_days": 1,
+        "longest_days": 2,
+        "longest_start": "2026-10-03",
+        "longest_end": "2026-10-04"
+      },
+      "silence": {
+        "seconds": 630930,
+        "from": "2026-10-10T12:14:30+03:00",
+        "to": "2026-10-17T19:30:00+03:00"
+      },
+      "previous": null
     }
   ],
   "overview": null
@@ -148,6 +236,22 @@ hermes telesec stats --contact @alice --since 2026-10-01 --until 2026-10-18 --tz
 - **Last message.** When the latest counted message is received, a `last message:` line follows. "no observed reply after it" means history has no sent message after it. "reply observed after the range" means a sent message came after it, but after `--until`. This is an observation, not a guess about intent: a reply by voice, by phone, or outside Telegram is not in history.
 - **Sessions.** Counted messages in the range are sorted by send time, then by message ID. A new session starts when the gap since the previous message is longer than `--session-gap` (default 6 hours). A gap exactly equal to it stays in the same session. Unknown-direction messages take part in session boundaries. The report gives the number of sessions, who started them (contact, owner, and unknown when above 0), and how many ended on a received message. Only messages inside the range are used, so a session that crosses a range boundary is cut at that boundary.
 
+## Conversation metrics
+
+These lines follow the sessions line. They use the same counted messages: text messages in the range, without replaced deletions, sorted by send time, then by message ID. When the range has no counted message, they are left out. Only the `previous` line can still show, because the previous period may have messages. Durations are rounded down and printed as `40s`, `12m`, `1h40m`, `3h05m`, or `4d02h`. A `-` means that a value is not known.
+
+- **Share.** `share received 63%, sent 37%`: each side's percent of the messages with a known side. Received is rounded half up, and sent is 100 minus received. The line is left out when no message has a known side.
+- **Turns.** A turn is a run of consecutive messages from the same side. An unknown-direction message ends the current turn and does not start one. `turns 7 (received 4, sent 3)` counts turns per side. `messages per turn` is each side's messages divided by its turns, rounded half up to one decimal.
+- **Replies.** When a turn of one side comes right after a turn of the other side, it is a reply. The reply time is the gap from the last message of the earlier turn to the first message of the reply. A gap longer than `--session-gap` is a new conversation, not a reply. An unknown-direction message between the two turns also means no reply. `replies received` are the contact's replies; `replies sent` are the owner's. Each side shows the number of replies, the median, and p90. The median is the middle value (the mean of the two middle values for an even count), rounded half up to whole seconds. p90 is the nearest-rank 90th percentile: the value at position ceil(0.9 × n) in sorted order. When a side has no replies, only its count `0` is shown.
+- **Waiting.** Only when the range runs to now (no `--until`). The last turn with a known side has no reply yet. `waiting received since <time> (<how long>)` means the contact's turn waits for the owner; `waiting sent` means the owner's turn waits for the contact. The time is the first message of that turn, and the duration runs to now. Unknown-direction messages after that turn do not end the wait. This is an observation, not a judgment: a reply by voice, by phone, or outside Telegram is not in history.
+- **Text length.** The median number of characters per message, for each side. It is the length of the latest text of a message, without spaces at the start and end, counted in Unicode code points. Only the length is used; the text is never stored or printed.
+- **Edited.** Counted messages with at least one observed edit. Split by side, with unknown direction when above 0.
+- **Hours and weekdays.** Counted messages per local hour (0 to 23) and per weekday (Monday to Sunday) in `--tz`, unknown direction included. On a day when clocks change, hours follow the local clock. `peak Sat 12:00` is the busiest weekday and the busiest hour, each on its own. A tie goes to the earliest.
+- **Activity.** Counted messages per period over the whole range, for a chart. The range is from `--since` (or the first counted message without it) to `--until` (or now), in `--tz`. The period is the smallest of day, week (Monday to Sunday), month, quarter, and year that gives at most 31 values. `activity by week from 2026-09-28: ...` names the period and the start of the first one.
+- **Streaks.** Days in a row with at least one counted message, in `--tz`. `longest` is the longest run with its dates; a tie goes to the earliest. `current` is the run that ends on the last day of the range (today without `--until`) or on the day before it, so a streak is still alive until a full day passes without messages. Otherwise it is `0d`.
+- **Longest silence.** The longest gap between two consecutive counted messages, with both times. A tie goes to the earliest. It needs at least two messages.
+- **Previous period.** Only with `--since`. The previous period has the same length and ends right before `--since`. When the range is whole days (it starts at midnight, as a date `--since` does, and runs to now or to the end of a day), the previous period is as many whole days: on 2026-10-19, `--since 2026-10-13` compares with 2026-10-06..2026-10-12. The line shows both periods side by side: messages with the percent change, active days, and the median reply time per side. It is shown only when retained history covers all of the previous period, so a comparison never uses a period that is partly missing. Deletions are not compared.
+
 ## Missing history
 
 Missing history is shown on its own line. It is never mixed into the counts.
@@ -163,7 +267,7 @@ Stats are computed live from retained JSONL. Retention removes whole monthly par
 ## Time and time zone
 
 - Messages are placed by Telegram's send time (`message_at`), not by the time the bot observed them. If the send time is missing, the first observation time is used.
-- `--tz` takes an IANA name such as `Europe/Moscow`. The default is `TELESEC_TIMEZONE` when it is set, otherwise UTC. The report always prints the time zone it used. An unknown name is an error. Named zones need the system time zone database or the Python `tzdata` package; `UTC` always works.
+- `--tz` takes an IANA name such as `Europe/Moscow`. Without it, the report uses the Hermes time zone (`HERMES_TIMEZONE`, or `timezone` in Hermes's `config.yaml`), then UTC. Telesec has no time zone setting of its own. The report always prints the time zone it used. An unknown name in `--tz` is an error. An unknown Hermes time zone is ignored, and the report uses UTC. Named zones need the system time zone database or the Python `tzdata` package; `UTC` always works.
 - `--since` and `--until` accept:
   - relative values such as `30m`, `6h`, `7d`, or `2w`, counted back from now;
   - plain dates such as `2026-10-01`: the start of that day for `--since`, and the end of that day for `--until`, in `--tz`. Other ISO date forms, such as `20261001`, work too;
@@ -174,11 +278,7 @@ Stats are computed live from retained JSONL. Retention removes whole monthly par
 
 These rules differ from `history show` and `history search`. Their bounds apply to observation time, and they read a timestamp without an offset as UTC.
 
-To set the default time zone, add this to the active Hermes profile's `.env`:
-
-```dotenv
-TELESEC_TIMEZONE=Europe/Moscow
-```
+Stats use the time zone Hermes already has. To set it, add `timezone: Europe/Moscow` to the active Hermes profile's `config.yaml`, or `HERMES_TIMEZONE=Europe/Moscow` to its `.env`, then restart the gateway. This changes the time zone for all of Hermes. For one report in another zone, pass `--tz`.
 
 ## Contacts table
 
@@ -214,7 +314,7 @@ Here two of the three contacts have retained history only from October, so their
 
 | Key | Meaning |
 |---|---|
-| `schema_version` | `1`. |
+| `schema_version` | `2`. Version 2 added the conversation metrics, after `missing_history`. |
 | `report` | `correspondence_stats`. |
 | `mode` | `contact` or `overview`. |
 | `generated_at` | Report time. |
@@ -235,59 +335,182 @@ Each contact object has:
 | `sessions` | `total`, `started_by_contact`, `started_by_owner`, `started_by_unknown`, `ended_on_received` |
 | `deletions` | `total`, `unexplained` (`total`, `received`, `sent`, `unknown_direction`), `likely_correction`, `likely_duplicate`, `unclassifiable`, `pending`, `details_command` (`null` without unexplained deletions) |
 | `missing_history` | `retained_from`, `range_partial`, `deletions_of_messages_not_in_history`, `messages_known_only_from_edit` |
+| `share` | `received`, `sent`: percent of messages with a known side, or `null` without any |
+| `turns` | `total`, `received`, `sent`, `messages_per_turn` (`received`, `sent`: one decimal, `null` without turns on that side) |
+| `replies` | `received` (the contact's replies) and `sent` (the owner's), each with `count`, `median_seconds`, and `p90_seconds` (`null` without replies) |
+| `waiting` | `null`, or `side` (`received`: the contact waits; `sent`: the owner waits), `since` (first message of the unanswered turn), and `seconds` (up to `generated_at`). Always `null` with `--until`. |
+| `text_length_median` | `received`, `sent`: median characters per message, or `null` |
+| `edited` | `total` (unknown direction included), `received`, `sent` |
+| `hours` | 24 counts, local hours 0 to 23 |
+| `weekdays` | 7 counts, Monday to Sunday |
+| `peak_hour`, `peak_weekday` | Index of the largest count in `hours` and `weekdays` (Monday is 0), the earliest on a tie, or `null` without messages |
+| `activity` | `null` when there is no `--since` and no counted message. Otherwise `bucket` (`day`, `week`, `month`, `quarter`, or `year`), `start` (date the first bucket starts), and `counts` |
+| `streaks` | `current_days`, `longest_days`, `longest_start`, `longest_end` (dates, `null` without messages) |
+| `silence` | `null` with fewer than two messages. Otherwise `seconds`, `from`, and `to` |
+| `previous` | `null` without `--since` or when retained history does not cover the previous period. Otherwise `since`, `until`, `messages` (`total`), `active_days` (`total`), and `replies` (`received` and `sent`, each with `median_seconds`) |
 
-Timestamps are ISO 8601 in `--tz`, with the offset. The output is ASCII; other characters are escaped. Errors are a plain `error: ...` line with exit code 1, also with `--format json`.
+Timestamps are ISO 8601 in `--tz`, with the offset. Dates (`start`, `longest_start`, `longest_end`) are `YYYY-MM-DD` in `--tz`. The output is ASCII; other characters are escaped. Errors are a plain `error: ...` line with exit code 1, also with `--format json`.
 
 ## In Telegram (owner panel)
 
-The one-contact report is also in Telegram, in your private chat with the bot. Open a Business chat and tap **Manage Bot**. Telegram opens your private chat with the bot, and the bot shows the owner panel for that chat. Tap **📊 Stats**.
+The one-contact stats are also in Telegram, in your private chat with the bot. Open a Business chat and tap **Manage Bot**. Telegram opens your private chat with the bot, and the bot shows the owner panel for that chat. Tap **📊 Stats**.
+
+<img src="images/stats-panel-en@2x.png" width="430" alt="Synthetic screenshot of the 📊 Stats view in the owner panel for a fictional contact, Alex Rivera, over 30 days: 252 messages on 27 of 30 days, share bars (Alex 60%, You 40%), a table with messages, median and p90 reply times, messages per turn, length, and edits for each side, a line saying Alex has had no reply since 12:04, the peak Sun 22–23, sparklines for hours, weekdays, and days, the streak, the longest pause, sessions, deletions, the change against the previous 30 days, and the footer, with 7d, 30d, 90d, All, and Back buttons.">
+
+The screenshot is synthetic: fictional history (Alex Rivera and the owner Sam, about 2,000 text messages over 12 months) run through the real view. It is also in [Russian](images/stats-panel-ru@2x.png). [`scripts/render-stats-screenshots.py`](../scripts/render-stats-screenshots.py) rebuilds it; the pages in `images/src/` hold the exact Telegram HTML of each view.
 
 The buttons under the report pick the period:
 
-| Button | Period | Same as the CLI with |
+| Button | Period | Same as the CLI with, on 2026-10-19 |
 |---|---|---|
-| `7d` | The last 7 days, counted back from now. | `--since 7d` |
-| `30d` | The last 30 days. The default. | `--since 30d` |
-| `90d` | The last 90 days. | `--since 90d` |
+| `7d` | Today and the 6 days before it. | `--since 2026-10-13` |
+| `30d` | Today and the 29 days before it. The default. | `--since 2026-09-20` |
+| `90d` | Today and the 89 days before it. | `--since 2026-07-22` |
 | `All` | All retained history. | no `--since` |
 
-The current period is marked `•`. Tap it again to refresh. The report runs to now. It uses `TELESEC_TIMEZONE` (otherwise UTC) and the default 6-hour session gap. So the numbers are the same as `hermes telesec stats --chat <id> --connection <id>` with that `--since`, run at the same moment.
+A period is whole local days: it starts at midnight of its first day, so `7d` shows 7 days, not 8 partial ones. The current period is marked `•`. Tap it again to refresh. The report runs to now. It uses the default time zone of the CLI (the Hermes time zone, else UTC) and the default 6-hour session gap. So the numbers are the same as `hermes telesec stats --chat <id> --connection <id>` with that `--since` date, run at the same moment.
 
-The first line shows the contact and the period. The second shows the time zone and, except for All, where the period starts. The counting lines follow, exactly as in the CLI. The last line shows when the report was made. The `deletion details` line is CLI-only and is left out.
+The report speaks the language of your Telegram app: Russian for a Russian app, English otherwise. In Russian the buttons are `7 дн.`, `30 дн.`, `90 дн.`, and `Всё`. It is a compact view of the CLI numbers, laid out for a phone screen with Telegram formatting. Two blocks use a monospace font and fit 31 columns: the share bars with the table, and the sparklines with the summary. Telegram shows a copy bar on each. From top to bottom:
 
-Example (synthetic): Alice from the [example above](#example-synthetic), period `30d`, `TELESEC_TIMEZONE=Europe/Moscow`, clock at 2026-10-19 11:32 UTC. The last line shows the period buttons; the panel adds a Back button below them. A test checks that this block still matches the real view.
+- **Title.** The contact and the period, then the dates the period covers and the time zone.
+- **💬** Messages in the period, and active days out of the days in the period.
+- **Share.** Bars for each side's share of messages. `You` is the owner.
+- **Table.** Per side: messages, median and p90 reply time, messages per turn, median text length, and edits (only when there are edits). `–` means there is no data.
+- **⏳ no reply.** The side that is still waiting for a reply, since when, and for how long. Left out when nobody is waiting.
+- **🕘 peak.** The busiest weekday and hour.
+- **Rhythm.** Sparklines of messages per hour (0 to 23), per weekday (Monday to Sunday), and over the period: per day, week, month, quarter, or year, depending on the length. `·` means zero.
+- **Summary.** The current and longest streak of active days, the longest silence with its dates, sessions and the share the contact started, and deletions with the unexplained ones (only when there are deletions).
+- **📈 vs prev.** The change in messages and in reply times against the same number of days right before the period. Left out when retained history does not cover the previous period, and for `All`.
+- **Footer.** When history starts, marked `period partial` when it starts inside the period. Then missing history counts (only when above zero), `text only`, and the time the report was made.
+
+Durations are compact and rounded down: `45s`, `12m`, `2h10m`, `2h`, `1d17h`, `12d`. A zero minor unit is left out, and days show hours only below 10 days. Numbers have a thousands separator: `1,284` in English and `1 284` in Russian. The deletion details, the turn counts, and the latest activity are CLI-only.
+
+Example (synthetic): Alice from the [example above](#example-synthetic), period `30d`, Hermes time zone `Europe/Moscow`, clock at 2026-10-19 11:32 UTC, English app. Bold, italic, and monospace are lost here. The last line shows the period buttons; the panel adds a Back button below them. A test checks that this block still matches the real view.
 
 ```text
-📊 Alice Example (@alice) · last 30 days
-since 2026-09-19 14:32 Europe/Moscow, by Telegram send time; text messages only
-messages 10: received 6, sent 3, unknown direction 1
-active days 5 (received 4, sent 3)
-latest 2026-10-19 00:00 received; last sent 2026-10-17 19:30
-last message: received 2026-10-19 00:00, no observed reply after it
-sessions 5 (gap 6h): started by contact 3, by owner 2; ended on received 3
-deletions 4: unexplained 1 (received 1, sent 0), likely correction 1, likely duplicate 1, pending 1
-missing history: retained from 2026-10-03 (range is partial); 1 deletion of a message not in history; 1 message known only from an edit
-as of 2026-10-19 14:32
+📊 Alice Example · 30 d
+20 Sep–19 Oct · Europe/Moscow
+
+💬 10 · active days 5/30
+Alice ███████████░░░░░ 67%
+You   █████░░░░░░░░░░░ 33%
+
+           Alice    You
+msgs           6      3
+reply        52m    30m
+p90        1h34m    30m
+per turn     1.5    1.0
+length        10     10
+edits          0      1
+⏳ no reply: Alice, since 17 Oct 21:04 (1d17h)
+🕘 peak Sat 12–13
+▆··········▆█······▃·▃·▃
+0     6     12    18  23
+▁▁ ·· ·· ·· ·· ██ ▁▁
+Mo Tu We Th Fr Sa Su
+·············█▃·····█······▆·▃
+by day 20 Sep → 19 Oct
+
+streak   1 d · max 2
+pause    7d7h · 10 Oct–17 Oct
+sessions 5 · Alice starts 60%
+deleted  4 · unexplained 1
+history since 3 Oct 2026 (period partial) · deletions not in history 1 · edits without original 1 · text only · 14:32
 
 [7d] [• 30d] [90d] [All]
 ```
 
+There is no `📈` line here because history starts inside the period.
+
 Other states:
 
-- **History is off.** `Stats need history. Turn it on in Settings (/telesec).`
-- **History paused for this chat.** The chat is set to Don't save in its panel ([per-chat history](../README.md#per-chat-history-and-dossier)). The report still shows what was saved, with `History is paused for this chat.` at the end.
+- **History is off.** `History is off. Turn it on in Settings (/telesec).`
+- **History paused for this chat.** The chat is set to Don't save in its panel ([per-chat history](../README.md#per-chat-history-and-dossier)). The report still shows what was saved, with `History is paused for this chat.` (Russian: `История этого чата сейчас не сохраняется.`) as its last line, above the period buttons.
 - **Connection not known yet.** The bot has not seen the Business connection for this chat yet.
-- **Bad time zone.** `TELESEC_TIMEZONE` is not a known IANA name.
 - **No history for this chat.** History records new text messages only, so a chat with no message since capture started has no report yet. It also shows when the chat is outside the history scope settings (see [HISTORY.md](HISTORY.md)); widen the scope to include it.
-- **No activity in the period.** The report shows zeros. It is not an error, and the period buttons stay.
+- **No activity in the period.** The title, the dates, and `no messages in this period`. It is not an error, and the period buttons stay.
 - **History could not be read.** For example, a stale or damaged catalog, a torn final line, or a missing lock. The panel shows the `stats` command to run on the gateway host for details, and keeps the period buttons so you can retry. The gateway log gets a warning with only the error type: no names, paths, or error text.
 
 Privacy:
 
-- The report is shown only in your private chat with the bot. Nothing is ever posted into the Business chat, and the contact sees nothing.
+- The report is shown only in your private chat with the bot. Nothing is posted into the Business chat, and the contact sees nothing. The [`/stats` card](#in-a-business-chat-stats) is different: you post it into the chat, and the contact sees it.
 - It shows only the chat under the Business connection you were verified for. The same chat ID under another connection is never shown.
 - Like the CLI, it first checks that the whole history catalog is current. So damaged history anywhere on the gateway, even in another connection, shows the "could not be read" state.
-- It is read-only, uses no LLM, and stores nothing. It never shows message text. Contact names are escaped as in the CLI and cut to 100 characters.
+- It is read-only, uses no LLM, and stores nothing. It never shows message text; it reads text only to count its characters. Contact names are escaped as in the CLI, then escaped for Telegram formatting. They are cut to 64 characters in the title and 8 columns in the monospace blocks, where a wide character such as a CJK letter or an emoji takes two columns, so the columns stay aligned. A name with right-to-left letters (Arabic, Hebrew) is wrapped in invisible left-to-right marks, so it cannot flip a line or move numbers past it. Link previews are off.
+
+## In a Business chat (/stats)
+
+`/stats` is one of the two commands you can type in a Business chat; the other is [`/dossier`](DOSSIERS.md#in-telegram), and the owner panel replaced `/transcribe`. Both post something the contact sees. `/stats` turns your message into a short stats card for you and the contact, right in the chat. **The card is posted into the Business chat, so the contact sees it too.** Only you, the owner of the Business account, can use it.
+
+| You type | Period |
+|---|---|
+| `/stats` or `/stats all` | All retained history. |
+| `/stats 7d` | Today and the 6 days before it. |
+| `/stats 30d` | Today and the 29 days before it. |
+| `/stats 90d` | Today and the 89 days before it. |
+
+The command is case-insensitive and may name the bot (`/stats@YourBot 7d`). The bot edits your message in place into the card. The window rules are the panel's: whole local days that run to now, in the Hermes time zone (else UTC), with the 6-hour session gap. The card counts only this chat under this Business connection. In a chat set to [Don't save](../README.md#per-chat-history-and-dossier), the card still counts what was saved and says nothing about the pause.
+
+The card speaks the language of your Telegram app: Russian for a Russian app, English otherwise. It names both people by first name: yours from your Telegram profile and the contact's from the chat, never `You`. It holds only the numbers that are fine to share:
+
+- **Title.** Both names and the period, then the dates the period covers.
+- **💬** Messages in the period and the days you were in touch.
+- **Share.** Bars for each side's share of messages.
+- **Table.** Per side: messages, median reply time, messages per turn, and median text length.
+- **🕘 peak** and the **rhythm** sparklines, as in the panel.
+- **Summary.** The longest streak of active days, and the sessions with the share the contact started.
+- **Footer.** `counted by Telesec`, with a link to the Telesec site. Link previews are off.
+
+The card never shows deletions, edits, who is waiting for a reply, p90 reply times, missing history, the change against the previous period, or any message text. Those stay in the owner panel.
+
+<img src="images/stats-card-en@2x.png" width="430" alt="Synthetic screenshot of a Business chat with a fictional contact, Alex Rivera. Alex asks how much they actually text, and the owner's /stats message has become the card: Sam × Alex, all time, 2,046 messages, 250 days in touch, share bars (Alex 58%, Sam 42%), a table with messages, median reply time, messages per turn, and length for each side, the peak Tue 21–22, sparklines for hours, weekdays, and months, a record of 13 days in a row, 306 sessions, and counted by Telesec.">
+
+The card is a normal message in the chat: the contact can read, copy, or forward it, and it stays until you delete it. The screenshot uses the same fictional history as the [panel screenshot](#in-telegram-owner-panel), with the owner Sam; it is also in [Russian](images/stats-card-ru@2x.png).
+
+Example (synthetic): Alice from the [example above](#example-synthetic), `/stats`, no Hermes time zone (UTC), clock at 2026-10-19 11:32 UTC, English app, owner first name Sam. Bold, italic, monospace, and the link are lost here. A test checks that this block still matches the real card.
+
+```text
+📊 Sam × Alice · all time
+3 Oct–19 Oct
+
+💬 10 · days in touch 4
+Alice ███████████░░░░░ 67%
+Sam   █████░░░░░░░░░░░ 33%
+
+           Alice    Sam
+messages       6      3
+reply        52m    30m
+per turn     1.5    1.0
+length        10     10
+🕘 peak Sat 9–10
+········▆█······▃·▃·▃▆··
+0     6     12    18  23
+·· ·· ·· ·· ·· ██ ▁▁
+Mo Tu We Th Fr Sa Su
+█······▆······▄▂·
+by day 3 Oct → 19 Oct
+
+record   2 days in a row
+sessions 5 · Alice starts 60%
+counted by Telesec
+```
+
+Who can use it:
+
+- The message must come from the owner of the Business connection. The bot asks Telegram, and if that lookup fails, it uses the owner the modes file records for the connection. The DM allowlist does not matter here.
+- From the contact, `/stats` is ordinary text: it is kept in history like any other text. So are a forwarded `/stats`, one sent through an inline bot, a message edited into `/stats`, text the Business bot sent, and an unknown argument such as `/stats 1y`.
+- The command never reaches the Hermes agent, even with `TELESEC_AGENT_ENABLE=1`.
+
+When something goes wrong:
+
+- **The edit fails.** If Telegram does not let the bot edit your message, the bot sends the card as a new message and deletes your command. If that send fails too, your command stays.
+- **You deleted the command.** If you delete `/stats` before the card is ready, the bot posts nothing.
+- **No card to show.** The bot edits your command into a short notice instead, then deletes it about 5 seconds later. The notices are `📊 Stats are unavailable: history is off.`, `📊 No history for this chat yet.`, and `📊 Stats are unavailable: history could not be read.` The contact may see them, so they hold no details. For details, open **📊 Stats** in the owner panel. If the edit fails here too, the bot replies with the notice and deletes both.
+- **Deleting needs a permission.** Give the bot the right to delete messages in Telegram Business > Chatbots. Without it, the command or notice stays, and the gateway log gets a hint.
+
+Never in history: the command, the card, a fallback card or notice, Telegram's copies of their edits, and their deletion are never recorded, so they are never counted in stats. The bot remembers these message IDs in memory for 24 hours. A send can time out after Telegram already delivered the message, so the bot learns its ID only from Telegram's copy: for 10 minutes it expects a copy from the bot with exactly that card or notice text, keeps it out of history, and still deletes such a notice. If you edit or delete the card more than 24 hours later, or after a gateway restart, history records an edit or deletion of a message it never had, and stats count it as an edit without original or a deletion not in history.
+
+Like the panel, the command is read-only, uses no LLM, and stores nothing. The gateway log gets one line per command with the chat ID, message ID, period, and outcome: no names and no text.
 
 ## Storage stats
 
@@ -295,7 +518,7 @@ Privacy:
 
 ## Privacy and safety
 
-- The report never prints message text, in text or JSON.
+- The report never prints message text, in text or JSON. To measure text length it reads the text of each message, keeps only the number of characters, and drops the text.
 - Contact names are untrusted. Text output escapes control characters and bidirectional marks in them.
 - No LLM and no network calls. The report is computed live, and nothing new is stored.
 - The command is read-only. It does not rebuild the contact catalog, repair files, or classify pending deletions. A pending deletion stays pending until the gateway or `history maintain` classifies it.
@@ -304,6 +527,5 @@ Privacy:
 ## Not in this version
 
 - An overview of all contacts in the owner panel ([#29](https://github.com/neoromantic/telesec/issues/29)).
-- Response-time and turn metrics ([#28](https://github.com/neoromantic/telesec/issues/28)).
 - Opt-in owner notifications for unexplained deletions and overdue incoming turns ([#27](https://github.com/neoromantic/telesec/issues/27)).
 - Counting voice notes, video notes, and media. This needs a metadata-only capture change in history.

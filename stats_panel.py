@@ -2,21 +2,27 @@
 
 The view is shown only in the owner's private chat with the bot, never in the
 Business chat with the contact. It is deterministic and read-only, and stores
-nothing. Its body is the ``stats --chat`` CLI report for the same window, so
-the panel and the CLI cannot drift. Like the CLI, it never shows message text.
+nothing. It computes the same stats as ``stats --chat`` for the same window
+and shows them as compact Telegram HTML (``stats_render.panel``), so the panel
+and the CLI cannot drift. Like the CLI, it never shows message text.
 
 ``build_stats_view`` returns a panel-independent ``StatsPanelView``;
 ``render_section`` turns it into the owner panel's section view.
+
+``build_stats_card`` is the in-chat ``/stats`` command's public card
+(``stats_render.card``) over the same window rules. Unlike the panel, the card
+is posted into the Business chat, so the contact sees it too; its error states
+are short notices without details.
 """
 
 from __future__ import annotations
 
 import argparse
+import html
 import logging
-import os
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from typing import Any
 
 # Attribute access only, like correspondence_stats: monkeypatches of history_support apply.
@@ -24,96 +30,135 @@ from . import chat_settings as _chat_settings
 from . import correspondence_stats as _stats
 from . import history_support as _history
 from . import owner_panel as _owner_panel
+from . import stats_render as _render
 
 logger = logging.getLogger(__name__)
 
 _ICON = "\U0001f4ca"
 SECTION_KEY = "stats"
 SECTION_LABEL = f"{_ICON} Stats"
-# (sub-argument, button label, header label, CLI --since value)
-PERIODS: tuple[tuple[str, str, str, str | None], ...] = (
-    ("7d", "7d", "last 7 days", "7d"),
-    ("30d", "30d", "last 30 days", "30d"),
-    ("90d", "90d", "last 90 days", "90d"),
-    ("all", "All", "all history", None),
-)
+# (sub-argument, local days in the period; None for all history)
+PERIODS: tuple[tuple[str, int | None], ...] = (("7d", 7), ("30d", 30), ("90d", 90), ("all", None))
 DEFAULT_PERIOD = "30d"
 CURRENT_MARK = "• "
-MAX_NAME_CHARS = 100
-MAX_TEXT_UTF16 = 4096  # Telegram's message text limit, in UTF-16 code units.
-_PERIODS = {period[0]: period for period in PERIODS}
+MAX_LABEL_CHARS = _render.TITLE_NAME_CHARS
+_PERIODS = dict(PERIODS)
 
-HISTORY_DISABLED = f"{SECTION_LABEL}\nStats need history. Turn it on in Settings (/telesec)."
-CONNECTION_UNKNOWN = f"{SECTION_LABEL}\nStats unavailable: the Business connection for this chat is not known yet."
-BAD_TIMEZONE = (
-    f"{SECTION_LABEL}\nStats unavailable: {_stats.TIMEZONE_ENV} is not a known time zone; "
-    "use an IANA name such as Europe/Moscow."
-)
-NO_HISTORY = "No history for this chat yet. History records new text messages only."
-HISTORY_PAUSED = "History is paused for this chat."
+# Panel strings. Values are Telegram HTML, the view's parse mode, so they hold
+# only fixed text; untrusted values are escaped before they are formatted in.
+STRINGS: dict[str, dict[str, str]] = {
+    "en": {
+        "stats.title": SECTION_LABEL,
+        "stats.button.7d": "7d",
+        "stats.button.30d": "30d",
+        "stats.button.90d": "90d",
+        "stats.button.all": "All",
+        "stats.chat": "chat {chat}",
+        "stats.history_disabled": "History is off. Turn it on in Settings (/telesec).",
+        "stats.connection_unknown": "The Business connection for this chat is not known yet. "
+        "Send any message in the chat and try again.",
+        "stats.no_history": "No history for this chat yet. History records new text messages only.",
+        "stats.history_paused": "History is paused for this chat.",
+        "stats.read_error": "History could not be read. For details, run on the gateway host:",
+        # In-chat `/stats` notices: plain text, seen by the contact too, so no details.
+        "stats.card.owner": "Owner",
+        "stats.card.history_disabled": f"{_ICON} Stats are unavailable: history is off.",
+        "stats.card.no_history": f"{_ICON} No history for this chat yet.",
+        "stats.card.read_error": f"{_ICON} Stats are unavailable: history could not be read.",
+    },
+    "ru": {
+        "stats.title": f"{_ICON} Статистика",
+        "stats.button.7d": "7 дн.",
+        "stats.button.30d": "30 дн.",
+        "stats.button.90d": "90 дн.",
+        "stats.button.all": "Всё",
+        "stats.chat": "чат {chat}",
+        "stats.history_disabled": "История выключена. Включите её в настройках (/telesec).",
+        "stats.connection_unknown": "Business-подключение этого чата пока неизвестно. "
+        "Отправьте любое сообщение в этом чате и попробуйте снова.",
+        "stats.no_history": "Истории этого чата пока нет. История записывает только новые текстовые сообщения.",
+        "stats.history_paused": "История этого чата сейчас не сохраняется.",
+        "stats.read_error": "Историю не удалось прочитать. Подробности — на хосте шлюза:",
+        "stats.card.owner": "Владелец",
+        "stats.card.history_disabled": f"{_ICON} Статистика недоступна: история выключена.",
+        "stats.card.no_history": f"{_ICON} Истории этого чата пока нет.",
+        "stats.card.read_error": f"{_ICON} Статистика недоступна: историю не удалось прочитать.",
+    },
+}
+# The section button; registered with the section, so other "stats" sections keep their own label.
+SECTION_STRINGS = {"en": {"section.stats": SECTION_LABEL}, "ru": {"section.stats": STRINGS["ru"]["stats.title"]}}
+_owner_panel.register_strings(STRINGS)
 
 
 @dataclass(frozen=True, slots=True)
 class StatsPanelView:
-    text: str
+    text: str  # Telegram HTML
     # One row of period buttons as (label, sub-argument); empty when there is nothing to choose.
     buttons: tuple[tuple[str, str], ...] = ()
 
 
-def _period(period: str | None) -> tuple[str, str, str, str | None]:
+def _period(period: str | None) -> str:
     # An unknown or missing sub-argument means the default period.
-    return _PERIODS.get(period or "", _PERIODS[DEFAULT_PERIOD])
+    return period if period in _PERIODS else DEFAULT_PERIOD
 
 
-def period_window(period: str | None, *, now: datetime, environ: Mapping[str, str]) -> _stats.StatsWindow:
-    """The CLI's window for ``--since <period>`` (or no --since for all history)."""
-    args = argparse.Namespace(since=_period(period)[3], until=None, tz=None, session_gap=None)
-    return _stats.build_window(args, now=now, environ=environ)
+def period_window(period: str | None, *, now: datetime) -> _stats.StatsWindow:
+    """The last N local days with today (or all history), in Hermes's time zone, running to now.
+
+    Whole days, so "7d" shows 7 days, not 7 x 24 hours over 8 dates: the CLI's
+    window for ``--since <date>`` with the first of those days.
+    """
+    window = _stats.build_window(argparse.Namespace(since=None, until=None, tz=None, session_gap=None), now=now)
+    days = _PERIODS[_period(period)]
+    if days is None:
+        return window
+    first = window.now.astimezone(window.tz).date() - timedelta(days=days - 1)
+    return replace(window, since=_stats._local_day_start(first, window.tz))
 
 
-def period_buttons(period: str | None) -> tuple[tuple[str, str], ...]:
+def period_buttons(period: str | None, language_code: str | None = None) -> tuple[tuple[str, str], ...]:
     # Tapping the current period re-renders it, so it doubles as refresh.
-    current = _period(period)[0]
-    return tuple((f"{CURRENT_MARK}{label}" if sub == current else label, sub) for sub, label, _, _ in PERIODS)
-
-
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _fit(text: str) -> str:
-    # Names are clipped and the body is short, so this only guards against surprises.
-    if len(text.encode("utf-16-le")) // 2 <= MAX_TEXT_UTF16:
-        return text
-    head = text.encode("utf-16-le")[: (MAX_TEXT_UTF16 - 1) * 2]
-    return head.decode("utf-16-le", errors="ignore") + "…"  # drops a split surrogate pair
+    current = _period(period)
+    return tuple(
+        (("" if sub != current else CURRENT_MARK) + _owner_panel.tr(f"stats.button.{sub}", language_code), sub)
+        for sub, _ in PERIODS
+    )
 
 
 def _label(text: str) -> str:
-    return _clip(_stats._safe(text), MAX_NAME_CHARS)
+    return _render.safe_name(text, MAX_LABEL_CHARS)
 
 
-def render_report(stats: _stats.ContactStats, window: _stats.StatsWindow, *, period: str | None) -> StatsPanelView:
-    """The report for one chat: a header, the CLI report body, and when it was computed."""
-    sub, _, header, _ = _period(period)
-    tz = window.tz
-    basis = f"{window.tz_label}, by Telegram send time; text messages only"
-    if window.since is not None:
-        since = _stats._bound_text(window.since, tz, end_of_day=False, missing="start of history")
-        basis = f"since {since} {basis}"
-    # The CLI lines minus the range and identity lines (the header replaces them)
-    # and the CLI-only deletion details hint.
-    body = [line.lstrip() for line in _stats.render_contact_text(stats, window)[2:]]
-    lines = [
-        f"{_ICON} {_label(stats.display_name)} · {header}",
-        basis,
-        *(line for line in body if not line.startswith("deletion details:")),
-        f"as of {_stats._local_text(window.now, tz)}",
-    ]
-    return StatsPanelView(text=_fit("\n".join(lines)), buttons=period_buttons(sub))
+def _state(message: str, language_code: str | None, title: str | None = None, note: str | None = None) -> str:
+    # ``message`` and ``note`` are catalog HTML; ``title`` is untrusted.
+    heading = _owner_panel.tr("stats.title", language_code) if title is None else f"{_ICON} {title}"
+    text = f"<b>{html.escape(heading, quote=False)}</b>\n{message}"
+    return text if note is None else f"{text}\n{note}"
 
 
-def _read_error_text(chat_id: Any, business_connection_id: str) -> str:
+def render_report(
+    stats: _stats.ContactStats,
+    window: _stats.StatsWindow,
+    *,
+    period: str | None,
+    language_code: str | None = None,
+    contact_name: str | None = None,
+    note: str | None = None,
+) -> StatsPanelView:
+    """The report for one chat, with the period buttons; ``note`` is a catalog HTML last line."""
+    sub = _period(period)
+    text = _render.panel(stats, window, period=sub, language_code=language_code, contact_name=contact_name, note=note)
+    return StatsPanelView(text=text, buttons=period_buttons(sub, language_code))
+
+
+def _first_name(entry: Mapping[str, Any]) -> str | None:
+    profile = entry.get("current_profile")
+    return _history._clean_optional_text(profile.get("first_name")) if isinstance(profile, dict) else None
+
+
+def _read_error_text(
+    chat_id: Any, business_connection_id: str, language_code: str | None, note: str | None = None
+) -> str:
     command = " ".join(
         (
             "hermes telesec stats",
@@ -121,10 +166,9 @@ def _read_error_text(chat_id: Any, business_connection_id: str) -> str:
             _stats._cli_option("--connection", business_connection_id),
         )
     )
-    return (
-        f"{SECTION_LABEL}\nStats unavailable: history could not be read. "
-        f"For details, run on the gateway host:\n{_stats._safe(command)}"
-    )
+    code = html.escape(_stats._safe(command), quote=False)
+    message = f"{_owner_panel.tr('stats.read_error', language_code)}\n<code>{code}</code>"
+    return _state(message, language_code, note=note)
 
 
 def build_stats_view(
@@ -134,39 +178,105 @@ def build_stats_view(
     chat_label: str | None = None,
     period: str | None = None,
     now: datetime | None = None,
-    environ: Mapping[str, str] | None = None,
+    language_code: str | None = None,
+    history_paused: bool = False,
 ) -> StatsPanelView:
     """Read history for one chat under one Business connection and render it.
 
     Blocking: run it off the event loop. Reads are scoped to ``business_connection_id``.
+    ``history_paused`` means the chat is set to Don't save: the saved data still
+    shows, and every state but history off ends with a line that says so.
     """
-    environ = os.environ if environ is None else environ
-    sub = _period(period)[0]
+    lang = language_code
+    sub = _period(period)
     if not _history.history_config_from_env().enabled:
-        return StatsPanelView(HISTORY_DISABLED)
+        return StatsPanelView(_state(_owner_panel.tr("stats.history_disabled", lang), lang))
+    note = _owner_panel.tr("stats.history_paused", lang) if history_paused else None
     if not business_connection_id:
-        return StatsPanelView(CONNECTION_UNKNOWN)
-    try:
-        _stats.resolve_timezone(None, environ)
-    except ValueError:
-        return StatsPanelView(BAD_TIMEZONE)
-    window = period_window(sub, now=_history._utcnow() if now is None else now, environ=environ)
+        return StatsPanelView(_state(_owner_panel.tr("stats.connection_unknown", lang), lang, note=note))
+    window = period_window(sub, now=_history._utcnow() if now is None else now)
     try:
         entries = _history._filter_catalog_entries(
             business_connection_id=str(business_connection_id),
             chat_id=str(chat_id),
         )
         if not entries:
-            label = _label(chat_label) if chat_label else f"chat {_stats._safe(str(chat_id))}"
-            return StatsPanelView(f"{SECTION_LABEL}: {label}\n{NO_HISTORY}")
+            label = _label(chat_label) if chat_label else _owner_panel.tr("stats.chat", lang, chat=_label(str(chat_id)))
+            return StatsPanelView(_state(_owner_panel.tr("stats.no_history", lang), lang, title=label, note=note))
         if len(entries) > 1:
             # The catalog keys chats by (connection, chat), so two matches mean it is damaged.
             raise ValueError("ambiguous history chat")
-        return render_report(_stats.collect_contact_stats(entries[0], window), window, period=sub)
+        stats = _stats.collect_contact_stats(entries[0], window)
+        return render_report(
+            stats, window, period=sub, language_code=lang, contact_name=_first_name(entries[0]), note=note
+        )
     except (OSError, ValueError, OverflowError) as exc:
         # Exception text can carry contact names and paths, so only its type is logged.
         logger.warning("telesec stats panel: history could not be read (%s)", type(exc).__name__)
-        return StatsPanelView(_read_error_text(chat_id, str(business_connection_id)), period_buttons(sub))
+        return StatsPanelView(
+            _read_error_text(chat_id, str(business_connection_id), lang, note), period_buttons(sub, lang)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StatsCard:
+    text: str
+    # True: the card, Telegram HTML. False: a short plain-text notice (history off,
+    # no history, read error) that the command deletes again after a few seconds.
+    ok: bool
+
+
+CARD_DEFAULT_PERIOD = "all"
+
+
+def build_stats_card(
+    *,
+    chat_id: Any,
+    business_connection_id: str,
+    period: str | None = None,
+    owner_name: str | None = None,
+    contact_name: str | None = None,
+    now: datetime | None = None,
+    language_code: str | None = None,
+) -> StatsCard:
+    """The public card for the in-chat ``/stats`` command, or a short notice.
+
+    Blocking: run it off the event loop. Same window rules and read scope as the
+    panel (``build_stats_view``), but ``/stats`` without a period means all
+    history. ``owner_name`` and ``contact_name`` are first names; without them
+    the card uses the contact's name from history and a generic owner label.
+    A chat set to Don't save still gets a card over what was saved, without the
+    panel's paused line: the contact sees the card.
+    """
+    lang = language_code
+    sub = period if period in _PERIODS else CARD_DEFAULT_PERIOD
+    if not _history.history_config_from_env().enabled:
+        return StatsCard(_owner_panel.tr("stats.card.history_disabled", lang), ok=False)
+    window = period_window(sub, now=_history._utcnow() if now is None else now)
+    try:
+        entries = _history._filter_catalog_entries(
+            business_connection_id=str(business_connection_id),
+            chat_id=str(chat_id),
+        )
+        if not entries:
+            return StatsCard(_owner_panel.tr("stats.card.no_history", lang), ok=False)
+        if len(entries) > 1:
+            # The catalog keys chats by (connection, chat), so two matches mean it is damaged.
+            raise ValueError("ambiguous history chat")
+        stats = _stats.collect_contact_stats(entries[0], window)
+    except (OSError, ValueError, OverflowError) as exc:
+        # Exception text can carry contact names and paths, so only its type is logged.
+        logger.warning("telesec stats command: history could not be read (%s)", type(exc).__name__)
+        return StatsCard(_owner_panel.tr("stats.card.read_error", lang), ok=False)
+    text = _render.card(
+        stats,
+        window,
+        period=sub,
+        owner_name=owner_name or _owner_panel.tr("stats.card.owner", lang),
+        contact_name=contact_name or _first_name(entries[0]) or stats.name or stats.display_name,
+        language_code=lang,
+    )
+    return StatsCard(text, ok=True)
 
 
 def render_section(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
@@ -176,15 +286,19 @@ def render_section(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
         business_connection_id=ctx.business_connection_id,
         chat_label=ctx.chat_label,
         period=ctx.arg,
+        language_code=ctx.language_code,
+        # "Don't save" in this chat's panel (fails closed like capture).
+        history_paused=_chat_settings.default_store().is_off(ctx.owner_user_id, ctx.chat_id, "history"),
     )
     row = [(label, _owner_panel.section_callback(ctx.chat_id, SECTION_KEY, sub)) for label, sub in view.buttons]
-    text = view.text
-    if text != HISTORY_DISABLED and _chat_settings.default_store().is_off(ctx.owner_user_id, ctx.chat_id, "history"):
-        text = _fit(f"{text}\n{HISTORY_PAUSED}")  # "Don't save": the saved data still shows
-    return _owner_panel.PanelView(text=text, buttons=[row] if row else [])
+    return _owner_panel.PanelView(
+        text=view.text,
+        buttons=[row] if row else [],
+        parse_mode=_render.PARSE_MODE,
+        disable_link_preview=True,
+    )
 
 
 def register_section() -> None:
-    _owner_panel.register_strings({"en": {f"section.{SECTION_KEY}": SECTION_LABEL},
-                                   "ru": {f"section.{SECTION_KEY}": f"{_ICON} Статистика"}})
+    _owner_panel.register_strings(SECTION_STRINGS)
     _owner_panel.register_section(SECTION_KEY, SECTION_LABEL, render_section, order=20)

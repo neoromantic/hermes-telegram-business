@@ -32,7 +32,14 @@ The product connects readable Telegram voice messages with useful personal corre
 - Settings in the private chat with the bot: `/telesec` or the ⚙️ Settings button turns transcription, history, and dossiers on or off for all chats, and `hermes telesec settings` does the same from the terminal. The old environment variables and the Desktop `history_enable` setting are moved into Settings once. [Settings](../README.md#settings).
 - Per-chat history and dossier controls: each chat's owner panel has **Save history** / **Don't save** and **Keep dossier** / **No dossier** rows in the style of transcription modes, and `hermes telesec chat` does the same from the terminal. Off pauses the chat and keeps what was saved. [Per-chat history and dossier](../README.md#per-chat-history-and-dossier).
 
+## Unreleased
+
+- Stats redesign ([#4](https://github.com/neoromantic/telesec/issues/4)): the panel's 📊 Stats section is a compact report in Russian or English with bars and sparklines. The owner's in-chat `/stats` (all history, or `7d`, `30d`, `90d`) edits the command into a shareable card that the contact sees too, without owner-only details; the command and card never reach history. With `/dossier`, it is one of the two owner commands typed in a Business chat. [Owner panel stats](STATS.md#in-telegram-owner-panel), [in-chat `/stats`](STATS.md#in-a-business-chat-stats).
+- Conversation metrics in `stats` ([#28](https://github.com/neoromantic/telesec/issues/28)): share, turns, reply times (median and p90), waiting, message length, edits, hours and weekdays, activity, streaks, the longest silence, and a comparison with the previous period. JSON `schema_version` 2. The stats time zone now defaults to the Hermes time zone. [Conversation metrics](STATS.md#conversation-metrics).
+
 ## Next
+
+- Voice notes in stats: history first needs a separate, metadata-only capture change (send time, side, and duration; no audio). Stats then add a voice row to the panel and the card. Until then, stats count text messages only.
 
 - Known limit: claimed panel taps and Business updates stop propagation before Hermes' group-99 dispatch counter, so the core "ingress healthy but deaf" warning can show a stale gap after quiet periods. The fix belongs in Hermes core (count dispatch in a group before every plugin group).
 
@@ -56,7 +63,7 @@ Deferred from #17: using dossiers in drafts (#18) and automatic replies (#19), c
 | [Raw-first transcripts #8](https://github.com/neoromantic/telesec/issues/8) | Show raw STT immediately, then edit the same caption/reply after cleanup; start with one output target. |
 | [Transcription controls #7](https://github.com/neoromantic/telesec/issues/7) | Implemented in 0.9.0: manual per-chat `both`, `own`, `peer`, and `off`. Automatic peer detection remains a separate investigation. |
 | [Scheduled sending #3](https://github.com/neoromantic/telesec/issues/3) | Recover the existing static-text send CLI; Hermes cron owns timing, with explicit targets and no ledger. |
-| [Correspondence insights #4](https://github.com/neoromantic/telesec/issues/4) | First slice in 0.9.0: the deterministic [`stats` command](STATS.md) with per-contact counts, active days, sessions, latest activity, and deletions. The same one-chat report is in the [owner panel](STATS.md#in-telegram-owner-panel) since 0.10.0. Remaining: opt-in owner notifications [#27](https://github.com/neoromantic/telesec/issues/27), response-time and turn metrics [#28](https://github.com/neoromantic/telesec/issues/28), and an all-contacts overview in the panel [#29](https://github.com/neoromantic/telesec/issues/29). |
+| [Correspondence insights #4](https://github.com/neoromantic/telesec/issues/4) | First slice in 0.9.0: the deterministic [`stats` command](STATS.md) with per-contact counts, active days, sessions, latest activity, and deletions. The same one-chat report is in the [owner panel](STATS.md#in-telegram-owner-panel) since 0.10.0. Response-time and turn metrics [#28](https://github.com/neoromantic/telesec/issues/28) are done and unreleased, with the redesigned panel view and the in-chat `/stats` card. Remaining: opt-in owner notifications [#27](https://github.com/neoromantic/telesec/issues/27), an all-contacts overview in the panel [#29](https://github.com/neoromantic/telesec/issues/29), and voice notes in stats (after the metadata capture change above). |
 | [Voice bursts #9](https://github.com/neoromantic/telesec/issues/9) | Opt-in same-sender grouping with ordering and explicit boundaries; avoid delaying every single note. |
 | [Release and launch #10](https://github.com/neoromantic/telesec/issues/10) | Align versions, verify installation, refresh visual docs, and publish accurate release/demo material. |
 

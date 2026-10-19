@@ -18,7 +18,7 @@ No gateway restart is needed: capture starts with the next update. **Don't save*
 
 By default, capture includes private chats Telegram delivers through the bot's Business connections. Connection and chat filters are optional. Your own chat with the bot (where the owner panel and your agent chat live) is never captured: Telegram also delivers it as Business updates, but it is not a Business chat. The plugin knows it by the bot's id (from the running bot, or from the digits before `:` in `TELEGRAM_BOT_TOKEN`), and readers (history, stats, dossiers, the panel) also skip such a chat if an older version captured it. Groups, supergroups, and channels require explicit configuration. The plugin does not retrieve conversations from before capture started.
 
-Text, edits, deletions, reply relationships, sender/direction, and available contact snapshots are recorded. Media bytes, media metadata, and captions are excluded. Missing original text is recorded as missing rather than reconstructed.
+Text, edits, deletions, reply relationships, sender/direction, and available contact snapshots are recorded. Media bytes, media metadata, and captions are excluded. Missing original text is recorded as missing rather than reconstructed. The owner's in-chat [`/stats` command](STATS.md#in-a-business-chat-stats), its card or notice, and their edits and deletion are control traffic. They are not recorded while the gateway remembers their message IDs: 24 hours, in memory. After that, or after a gateway restart, an edit or deletion of the card is recorded as an edit or deletion of a message that is not in history.
 
 ## One chat
 
@@ -76,9 +76,10 @@ These are observable text-similarity categories, not judgments about a person's 
 | `TELESEC_HISTORY_NEARBY_BEFORE_SECONDS` | `15` | Pre-delete replacement window, in seconds. |
 | `TELESEC_HISTORY_RETENTION_DAYS` | `0` | Closed-partition retention target; `0` disables age pruning. |
 | `TELESEC_HISTORY_MAX_BYTES` | `1073741824` | Total storage target before pruning old closed partitions. |
-| `TELESEC_TIMEZONE` | UTC | Default `--tz` for [correspondence stats](STATS.md); it does not affect capture. |
 
 Unknown chat types are excluded unless an exact chat ID or earlier canonical profile evidence establishes eligibility. No member-count requests run on capture.
+
+History has no time zone setting: it stores UTC timestamps. [Correspondence stats](STATS.md#time-and-time-zone) show them in the Hermes time zone (`HERMES_TIMEZONE`, or `timezone` in Hermes's `config.yaml`), else UTC, and `--tz` overrides it for one report.
 
 ## Storage and recovery
 
