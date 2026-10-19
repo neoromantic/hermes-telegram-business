@@ -15,6 +15,7 @@
 - Add `--format json` to `hermes telegram-business mode list` and `mode get`, with `mode`, `effective_mode`, and `source` (`stored`, `default`, or `disabled`).
 - Add a neutral system prompt section (`telegram-business.reference`, Hermes 0.21.5+) that points the agent to the `mode` and `stats` JSON commands and the bundled skills, and tells it that a reply to a panel message is about the panel's `chat <id>`.
 - Ignore the Business copies of the owner's own chat with the bot (the panel and the agent chat): they are no longer captured into history, transcribed, or counted, and history, stats, dossiers, and the panel skip such a chat that an older version captured. The bot's id comes from the running bot or from `TELEGRAM_BOT_TOKEN`.
+- Add a 📊 Stats view to the owner panel: the one-chat `stats` report for the last 7, 30, or 90 days or all history, shown only in the owner's private chat with the bot. Read-only, no LLM, nothing stored ([#4](https://github.com/neoromantic/hermes-telegram-business/issues/4)).
 
 ## 0.9.0 - 2026-10-19
 
