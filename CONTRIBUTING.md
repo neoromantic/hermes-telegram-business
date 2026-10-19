@@ -4,24 +4,15 @@ Thanks for helping. Questions and ideas go to [Discussions](https://github.com/n
 
 ## Set up and run the tests
 
-You need Python 3.11 or newer. The tests use fake Telegram objects, so they need no bot token, provider key, network, or running gateway.
+You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/). The tests use fake Telegram objects, so they need no bot token, provider key, network, or running gateway.
 
 ```bash
-python -m pip install pytest pytest-asyncio pyyaml python-telegram-bot==22.8
-python -m pytest -q
+uv sync               # dev tools from uv.lock: pytest, PTB 22.8, PyYAML, ruamel.yaml, Ruff
+uv run pytest -q
+uv run ruff check .
 ```
 
-The same with `uv`:
-
-```bash
-uv run --no-project --with pytest --with pytest-asyncio --with pyyaml --with python-telegram-bot==22.8 python -m pytest -q
-```
-
-CI runs the tests on Python 3.11 to 3.14. The Ruff config is in `pyproject.toml`. Older code does not pass it yet, so lint only the files you change:
-
-```bash
-uvx ruff check path/to/changed_file.py
-```
+CI runs Ruff and the tests on Python 3.11 to 3.14. The Ruff config is in `pyproject.toml`.
 
 To try a change in a real gateway, install your checkout into a test Hermes profile and follow [docs/VERIFY.md](docs/VERIFY.md). Use a test Business account, not real conversations.
 
