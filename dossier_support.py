@@ -313,6 +313,7 @@ def _clairic_status(setting: str) -> str:
 
 
 _WARNED: set[str] = set()  # warning codes already logged by this process
+_NOTE_CODES = frozenset({"cleanup_env"})  # set on purpose for voice cleanup: logged at INFO, not as a warning
 
 
 def load_config() -> DossierConfig:
@@ -335,7 +336,9 @@ def load_config() -> DossierConfig:
     for code in dict.fromkeys(codes):
         if code not in _WARNED:
             _WARNED.add(code)
-            logger.warning("%s: dossier config warning=%s", _history.PLUGIN_NAME, code)
+            level = logging.INFO if code in _NOTE_CODES else logging.WARNING
+            logger.log(level, "%s: dossier config %s=%s", _history.PLUGIN_NAME,
+                       "note" if code in _NOTE_CODES else "warning", code)
     gate_setting = settings.get("gate", GATE_DEFAULT)
     return DossierConfig(
         enabled=settings["enabled"],
@@ -1600,6 +1603,12 @@ def _persona_clip(text: str) -> str:
     return text if len(text) <= PERSONA_MSG_MAX_CHARS else text[: PERSONA_MSG_MAX_CHARS - 1].rstrip() + "…"
 
 
+def _owner_sent(view: ChatView, cutoff: datetime) -> list[Msg]:
+    """The owner's live text messages in one chat since ``cutoff``: what the persona may read."""
+    return [m for m in view.messages.values()
+            if m.label == "owner" and not m.deleted and m.text.strip() and m.order_at >= cutoff]
+
+
 def _persona_pool(cx: _Cycle, entries: list[dict[str, Any]]) -> list[Msg]:
     """The owner's messages for the persona: newest first capped, then trimmed from the oldest by size."""
     cutoff = cx.now - timedelta(days=cx.cfg.backfill_days)
@@ -1610,8 +1619,7 @@ def _persona_pool(cx: _Cycle, entries: list[dict[str, Any]]) -> list[Msg]:
         view = cx.views.get(key)
         if view is None:
             view = cx.views[key] = read_chat_view(entry, since=since)
-        pool.extend(m for m in view.messages.values()
-                    if m.label == "owner" and not m.deleted and m.text.strip() and m.order_at >= cutoff)
+        pool.extend(_owner_sent(view, cutoff))
     pool.sort(key=sort_key)
     pool = pool[-PERSONA_MAX_MESSAGES:]
     total = sum(len(_persona_clip(m.text)) for m in pool)
@@ -1620,6 +1628,29 @@ def _persona_pool(cx: _Cycle, entries: list[dict[str, Any]]) -> list[Msg]:
         total -= len(_persona_clip(pool[start].text))
         start += 1
     return pool[start:]
+
+
+def persona_first_due(doc: dict[str, Any] | None, *, now: datetime | None = None) -> bool:
+    """Whether the next cycle writes the first persona: enough eligible sent messages for ``persona_due``.
+
+    No writes. Reads chats until the count is reached, so an owner with many messages costs a chat or two.
+    """
+    now = now or _history._utcnow()
+    cfg = load_config()
+    need = 1 if doc is not None and _doc.note_sha(doc) != doc["note_sha"] else PERSONA_MIN_FIRST
+    cutoff, since = now - timedelta(days=cfg.backfill_days), fold_since(None, now, cfg)
+    count = 0
+    for entry in private_entries():
+        if not _entry_paused(entry):
+            count += len(_owner_sent(read_chat_view(entry, since=since), cutoff))
+            if count >= need:
+                return True
+    return False
+
+
+def persona_written(doc: dict[str, Any] | None) -> bool:
+    """A persona build stored its answer (a document or EMPTY), or the v1 migration left a document."""
+    return doc is not None and (doc.get("updated_at") is not None or bool(doc.get("document")))
 
 
 def persona_due(doc: dict[str, Any] | None, messages: list[Msg], now: datetime, *, forced: bool = False) -> bool:
@@ -1664,7 +1695,9 @@ def process_persona(cx: _Cycle, entries: list[dict[str, Any]], *, forced: bool =
     doc = _doc.read_doc(path)
     checked = _parse(doc.get("checked_at")) if doc else None
     note_changed = doc is not None and _doc.note_sha(doc) != doc["note_sha"]
-    if not forced and not note_changed and checked is not None and cx.now - checked < PERSONA_CHECK_EVERY:
+    # Until the first persona is written every cycle checks, so it comes at the cycle after the 10th message.
+    if not forced and not note_changed and checked is not None and cx.now - checked < PERSONA_CHECK_EVERY \
+            and persona_written(doc):
         return "not_due"
     eligible = [e for e in entries if not _entry_paused(e)]
     pool = _persona_pool(cx, eligible)

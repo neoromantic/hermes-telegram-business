@@ -169,16 +169,26 @@ def load_contact_snapshot(business_connection_id: Any, chat_id: Any, *, now: dat
         manage_global=manage_global, in_history=private)
 
 
+def _persona_due(doc: dict[str, Any] | None) -> bool:
+    """The next cycle writes the first persona; False when history can't be read."""
+    try:
+        return _ds.persona_first_due(doc)
+    except Exception:  # noqa: BLE001 - shown as "no persona yet"
+        return False
+
+
 def load_persona_snapshot() -> _view.DossierSnapshot:
     """Everything the persona screen needs. Blocking."""
     try:
         doc, corrupt = _ds.load_persona(), False
     except (OSError, ValueError):
         doc, corrupt = None, True
+    enabled, history_enabled = _ds.load_config().enabled, _history.capture_enabled()
+    # Only the screen without a persona needs the count, so a built persona reads no history.
+    due = not corrupt and not _ds.persona_written(doc) and enabled and history_enabled and _persona_due(doc)
     return _view.DossierSnapshot(
-        target="persona", doc=doc, corrupt=corrupt, enabled=_ds.load_config().enabled,
-        history_enabled=_history.capture_enabled(), llm_ready=llm_ready(),
-        failure=_failure(_ds.load_state(), "persona"), manage_global=True)
+        target="persona", doc=doc, corrupt=corrupt, enabled=enabled, history_enabled=history_enabled,
+        llm_ready=llm_ready(), failure=_failure(_ds.load_state(), "persona"), manage_global=True, persona_due=due)
 
 
 def load_snapshot(target: str, business_connection_id: Any, chat_id: Any, *, now: datetime | None = None,
@@ -428,7 +438,7 @@ async def _delete_command(bot: Any, business_connection_id: str, message_id: Any
 
 
 async def _tell_owner(bot: Any, owner_user_id: Any, text: str) -> None:
-    """Why ``/dossier`` posted nothing, in the owner's private chat with the bot (never the Business chat)."""
+    """Why ``/dossier`` posted nothing (or may have), in the owner's private chat with the bot, never the chat."""
     try:
         await bot.send_message(chat_id=_chat_id_value(owner_user_id), text=text, parse_mode=None)
     except Exception as exc:  # noqa: BLE001 - e.g. the owner never started the bot
@@ -438,8 +448,9 @@ async def _tell_owner(bot: Any, owner_user_id: Any, text: str) -> None:
 
 async def _refuse(bot: Any, owner_user_id: Any, lang: str, entry: dict[str, Any], name: str, reason: str,
                   error: str | None = None) -> None:
-    logger.info("%s: dossier not posted chat_ref=%s reason=%s error=%s", _history.PLUGIN_NAME, _ds._log_ref(entry),
-                reason, error or "-")
+    logger.info("%s: dossier %s chat_ref=%s reason=%s error=%s", _history.PLUGIN_NAME,
+                "post unconfirmed" if reason == "send_unsure" else "not posted", _ds._log_ref(entry), reason,
+                error or "-")
     await _tell_owner(bot, owner_user_id, _view.post_refusal(reason, lang, name=name, error=error))
 
 
@@ -470,6 +481,9 @@ def _recheck(entry: dict[str, Any], inputs: dict[str, str], gen0: int) -> tuple[
 
 # Telegram's refusals of the post itself; a timeout or a network error says nothing about the 24-hour window.
 _REJECTIONS = frozenset({"BadRequest", "Forbidden"})
+# A send that timed out or lost its connection may still be delivered. PTB's BadRequest is a NetworkError too,
+# so the rejections are told apart first.
+_UNSURE = frozenset({"TimedOut", "NetworkError", "TimeoutError", "ConnectionError"})
 # Telegram's error for a Business chat whose contact has not written in the last 24 hours (MTProto
 # BUSINESS_PEER_USAGE_MISSING), with "_" or " " between the words.
 _WINDOW_ERROR = "PEER_USAGE_MISSING"
@@ -479,12 +493,15 @@ def _send_failure(entry: dict[str, Any], exc: Exception) -> str:
     """The reason for a failed send: "window" only when Telegram's error says so.
 
     Any other refusal of a post whose window is not known open is "send_refused", which names the 24-hour
-    rule as a possible cause. The error text is compared here only, never logged or shown.
+    rule as a possible cause. A timeout or a network error is "send_unsure": the post may be in the chat.
+    The error text is compared here only, never logged or shown.
     """
     if _WINDOW_ERROR in str(exc).upper().replace(" ", "_"):
         return "window"
-    if type(exc).__name__ in _REJECTIONS and not _post.post_window_open(entry, now=_history._utcnow()):
-        return "send_refused"
+    if type(exc).__name__ in _REJECTIONS:
+        return "send_failed" if _post.post_window_open(entry, now=_history._utcnow()) else "send_refused"
+    if _UNSURE.intersection(cls.__name__ for cls in type(exc).__mro__):
+        return "send_unsure"
     return "send_failed"
 
 

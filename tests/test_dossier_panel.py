@@ -438,6 +438,32 @@ async def test_llm_ready_checks_complete(plug, ds, panel):
 
 
 @pytest.mark.asyncio
+async def test_the_persona_screen_and_status_say_when_the_first_persona_is_due(plug, ds, panel, monkeypatch):
+    ds.bind_llm(FakeLlm())
+    await seed(plug, CHAT, "anna_k", [(i, "out", f"owner line {i}", 60 - i) for i in range(1, 10)],
+               first_name="Anna")
+    nine = panel.load_persona_snapshot()
+    assert nine.persona_due is False  # nine sent messages: the 10-message text is still true
+    assert "at least 10 messages" in panel._view.render_overview(nine, "en").text
+    assert "owner persona no," in cli(plug, "dossier", "status")[1]
+
+    await seed(plug, CHAT, "anna_k", [(10, "out", "owner line 10", 30)], first_name="Anna")
+    ten = panel.load_persona_snapshot()
+    assert ten.persona_due is True
+    assert panel._view.render_overview(ten, "en").text.startswith(
+        "My persona\nNo persona yet. It is written at the next dossier cycle.")
+    assert "Она появится после следующего цикла обработки." in panel._view.render_overview(ten, "ru").text
+    assert "owner persona due at the next cycle," in cli(plug, "dossier", "status")[1]
+
+    assert cycle(ds, FakeLlm(doc(PERSONA)), target=("persona", None)).persona == "refreshed"
+    reads: list[str] = []
+    monkeypatch.setattr(ds, "read_chat_view", lambda *_a, **_k: reads.append("read"))
+    built = panel.load_persona_snapshot()
+    assert built.persona_due is False and reads == []  # a written persona reads no history for the screen
+    assert "owner persona yes," in cli(plug, "dossier", "status")[1] and reads == []
+
+
+@pytest.mark.asyncio
 async def test_overview_in_english_and_russian(plug, ds, panel):
     await build(plug, ds)
 
@@ -1269,8 +1295,19 @@ class Forbidden(Exception):
     pass
 
 
-class TimedOut(Exception):
+class NetworkError(Exception):  # PTB's names: TimedOut and BadRequest are NetworkErrors there
     pass
+
+
+class TimedOut(NetworkError):
+    pass
+
+
+class PtbBadRequest(NetworkError):
+    pass
+
+
+PtbBadRequest.__name__ = "BadRequest"
 
 
 WINDOW = ("The contact hasn't written in the last 24 hours, and Telegram lets a bot post only within 24 hours of "
@@ -1289,7 +1326,9 @@ MAYBE_WINDOW = "One possible cause: a bot can post in a Business chat only if th
      f"Telegram did not accept the summary (BadRequest). {MAYBE_WINDOW}", "send_refused"),
     (False, Forbidden("Forbidden: bot can't send messages to the user"),
      f"Telegram did not accept the summary (Forbidden). {MAYBE_WINDOW}", "send_refused"),
-    (False, TimedOut("Timed out"), "Telegram did not accept the summary (TimedOut).", "send_failed"),  # no refusal
+    (False, PtbBadRequest("Bad Request: can't parse entities"),
+     f"Telegram did not accept the summary (BadRequest). {MAYBE_WINDOW}", "send_refused"),  # not a lost connection
+    (False, RuntimeError("Unexpected"), "Telegram did not accept the summary (RuntimeError).", "send_failed"),
     (True, BadRequest("Bad Request: can't parse entities"), "Telegram did not accept the summary (BadRequest).",
      "send_failed"),
 ])
@@ -1311,6 +1350,29 @@ async def test_a_fresh_gateway_tries_the_post_and_tells_only_telegram_window_err
     assert sent["chat_id"] == OWNER_ID and sent["text"] == f"{HEAD}\n{expected}"
     assert f"reason={reason} error={type(error).__name__}" in caplog.text
     assert str(error) not in caplog.text  # compared in memory only
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [TimedOut("Timed out"), NetworkError("httpx.ReadError: Anna"),
+                                   TimeoutError("Anna"), ConnectionResetError("Anna")])
+async def test_a_send_that_timed_out_may_have_posted(plug, ds, panel, caplog, error):
+    await old_chat(plug)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    bot = PanelBot()
+    bot.api_error = error
+
+    with caplog.at_level(logging.INFO):
+        assert await run_command(panel, command_update(), bot) is True
+
+    assert len(posts(bot)) == 1  # it was sent once and never retried: the post may be in the chat
+    (sent,) = bot.sent
+    name = type(error).__name__
+    assert sent["chat_id"] == OWNER_ID and sent["text"] == (
+        "The summary may have been posted to the chat with @anna_k.\n"
+        f"Telegram did not confirm it ({name}). Check the chat before you send /dossier again.")
+    assert "Nothing was posted" not in sent["text"]
+    assert "dossier post unconfirmed chat_ref=" in caplog.text and f"reason=send_unsure error={name}" in caplog.text
+    assert "not posted" not in caplog.text and "Anna" not in caplog.text
 
 
 @pytest.mark.asyncio

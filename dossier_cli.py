@@ -167,6 +167,11 @@ def _text_lines(text: str) -> list[str]:
     return text.splitlines() or [""]
 
 
+def _doc_lines(text: str) -> list[str]:
+    """A document as the owner reads it: message refs such as [m123] stay in the file and in JSON only."""
+    return [_writer.REF_RE.sub("", line).rstrip() for line in _text_lines(text)]
+
+
 def _c1_escaped(text: str) -> str:
     """JSON text with DEL and C1 controls written as JSON escapes: the same JSON value, safe for a terminal."""
     return _C1_RE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
@@ -311,7 +316,7 @@ class _Stored:
         if self.doc is None:
             return False
         if self.kind == "persona":
-            return self.doc.get("checked_at") is not None
+            return self.doc.get("updated_at") is not None  # a check that found too few messages builds nothing
         return self.doc.get("window_start") is not None
 
     @property
@@ -429,13 +434,25 @@ def _gate_line(cfg: _ds.DossierConfig) -> str:
     return f"Message check: {GATE_TEXT.get(cfg.gate, cfg.gate)}"
 
 
-def _stored_line(items: list[_Stored]) -> str:
+def _persona_state(items: list[_Stored], cfg: _ds.DossierConfig) -> str:
+    """The persona in the Stored line, as the persona screen tells it: yes, unreadable, due or no."""
+    item = next((item for item in items if item.kind == "persona"), None)
+    if item is not None and item.corrupt:
+        return "unreadable"
+    if item is not None and _ds.persona_written(item.doc):
+        return "yes"
+    if cfg.enabled and _history.capture_enabled() and _ds.persona_first_due(None if item is None else item.doc):
+        return "due at the next cycle"
+    return "no"
+
+
+def _stored_line(items: list[_Stored], cfg: _ds.DossierConfig) -> str:
     contacts = [item for item in items if item.kind == "contact"]
     details = [(sum(1 for i in contacts if i.doc is not None and not i.built), "waiting for first build"),
                (sum(1 for i in contacts if i.built and not i.doc["document"]), "empty"),
                (sum(1 for i in contacts if i.corrupt), "unreadable")]
     shown = ", ".join(f"{count} {name}" for count, name in details if count)
-    persona = "yes" if any(item.kind == "persona" for item in items) else "no"
+    persona = _persona_state(items, cfg)
     notes = sum(1 for item in items if item.doc is not None and item.doc.get("note"))
     return (f"Stored: {_plural(len(contacts), 'contact dossier')}{f' ({shown})' if shown else ''}, "
             f"owner persona {persona}, {_plural(notes, 'owner note')}, {_plural(_ds.v1_backups(), 'v1 backup')}")
@@ -512,7 +529,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
                  f"up to {cfg.max_calls_per_minute} model calls a minute")
     lines.append(f"First build: up to {cfg.backfill_messages} messages from the last {cfg.backfill_days} days")
     lines.append(f"Storage: {_ds.dossier_root()}")
-    lines.append(_stored_line(items))
+    lines.append(_stored_line(items, cfg))
     lines.extend(_usage_lines(state["usage"]))
     lines.append(_failures_line(state["failures"], catalog))
     lines.extend(_last_cycle_lines(state.get("last_cycle")))
@@ -637,7 +654,7 @@ def _header_lines(target: Target, doc: dict[str, Any]) -> list[str]:
     if target[0] == "persona":
         head = "Owner persona"
         source = (f"from {_plural(doc['messages'], 'message')} in {_plural(len(doc['chats']), 'chat')}"
-                  if doc.get("checked_at") else None)
+                  if doc.get("updated_at") else None)
     else:
         head = f"Dossier: {_label(target)} ({_ident(target[1])})"
         source = f"from {_plural(doc['messages'], 'message')}" if doc.get("window_start") is not None else None
@@ -674,12 +691,12 @@ def _status_lines(target: Target, doc: dict[str, Any]) -> list[str]:
 
 
 def _body_lines(target: Target, doc: dict[str, Any], *, previous: bool) -> list[str]:
-    built = doc.get("checked_at") if target[0] == "persona" else doc.get("window_start") is not None
+    built = doc.get("updated_at") if target[0] == "persona" else doc.get("window_start") is not None
     if previous:
         lines = ["--- previous version ---"]
-        lines.extend(_text_lines(doc["previous"]) if doc.get("previous") else ["No previous version."])
+        lines.extend(_doc_lines(doc["previous"]) if doc.get("previous") else ["No previous version."])
     elif doc["document"]:
-        lines = _text_lines(doc["document"])
+        lines = _doc_lines(doc["document"])
     else:
         lines = ["Nothing worth keeping yet." if built else "Waiting for the first build."]
     if doc.get("note"):
@@ -725,7 +742,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return 0
     title = "# Owner persona" if target[0] == "persona" else f"# Dossier: {_label(target)}"
     lines = [title, EXPORT_HEADER, ""]
-    lines.extend(_text_lines(doc["document"]))
+    lines.extend(_doc_lines(doc["document"]))
     if doc.get("note"):
         lines.extend(["", "## Owner note"])
         lines.extend(_text_lines(doc["note"]))

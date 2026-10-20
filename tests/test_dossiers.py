@@ -387,6 +387,21 @@ def test_the_cleanup_provider_never_routes_dossiers(
     assert cfg.warnings == (legacy_warning("openrouter", "google/gemini-3.8-flash"),)
 
 
+def test_the_cleanup_provider_note_is_logged_once_at_info_and_stays_in_status(
+    plug: ModuleType, dossiers: ModuleType, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ds = dossiers
+    monkeypatch.setenv("TELESEC_CLEANUP_PROVIDER", "gemini")  # set on purpose, for voice cleanup
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(3):  # status calls and cycles in one process
+            ds.load_config()
+        code, out, _err = cli(plug, "dossier", "status")
+    records = [r for r in caplog.records if "cleanup_env" in r.getMessage()]
+    assert [(r.levelno, r.getMessage()) for r in records] == [(logging.INFO, "telesec: dossier config note=cleanup_env")]
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "dossier config" in r.getMessage()]
+    assert code == 0 and "note: dossiers no longer follow TELESEC_CLEANUP_PROVIDER;" in out
+
+
 def test_the_message_check_needs_the_setting_a_gateway_route_and_a_key(
     dossiers: ModuleType, dossier_env: Callable[..., None], monkeypatch: pytest.MonkeyPatch
 ) -> None:

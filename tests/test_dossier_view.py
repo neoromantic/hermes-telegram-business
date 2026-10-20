@@ -231,7 +231,8 @@ def test_converter_removes_control_and_bidi_characters(dv: ModuleType) -> None:
 
 def test_converter_strips_refs_everywhere(dv: ModuleType) -> None:
     md = (
-        "# Mira [m1]\n- Owns Orbit [m2,m3]\n| Logo [m4] | 120 [m5] |\n> Quote [m6]\n**Bold [m7]**\nText [m123456789012]"
+        "# Mira [m1]\n- Owns Orbit [m2,m3]\n| Logo [m4] | 120 [m5–m9] |\n> Quote [m6-7]\n**Bold [m7, m8–m9]**\n"
+        "Text [m123456789012]"
     )
 
     html = dv.markdown_html(md)
@@ -666,6 +667,23 @@ def test_persona_missing(dv: ModuleType, lang: str) -> None:
             f"<h3>{s(dv, lang, 'title_persona')}</h3><p>{s(dv, lang, 'st_persona_missing')}</p>"
         )
         assert view.buttons == (((s(dv, lang, "b_back_dossier"), "o.c"),),)
+
+
+PERSONA_DUE = {"en": "No persona yet. It is written at the next dossier cycle.",
+               "ru": "Персоны пока нет. Она появится после следующего цикла обработки."}
+
+
+@pytest.mark.parametrize("lang", ["en", "ru"])
+def test_a_persona_due_at_the_next_cycle_never_asks_for_10_messages(dv: ModuleType, lang: str) -> None:
+    empty = dv._doc.new_persona(NOW)
+    for doc in (None, empty, {**empty, "note": "Keep it short."}):
+        view = dv.render_overview(snap(dv, "persona", doc=doc, manage_global=True, persona_due=True), lang)
+
+        check_view(dv, view)
+        assert view.html.startswith(f"<h3>{s(dv, lang, 'title_persona')}</h3><p>{PERSONA_DUE[lang]}</p>")
+        assert "10" not in view.text
+    built = dv.render_overview(snap(dv, "persona", doc=persona_doc(dv), persona_due=True), lang)
+    assert PERSONA_DUE[lang] not in built.text  # a written persona shows itself
 
 
 def test_an_empty_persona_build_shows_its_header_and_empty(dv: ModuleType) -> None:
@@ -1106,6 +1124,7 @@ REFUSALS = {
         "send_refused": "Telegram did not accept the summary (TimeoutError). One possible cause: a bot can post in a "
         "Business chat only if the contact wrote there in the last 24 hours.",
         "send_failed": "Telegram did not accept the summary (TimeoutError).",
+        "send_unsure": "Telegram did not confirm it (TimeoutError). Check the chat before you send /dossier again.",
     },
     "ru": {
         "disabled": "Досье выключены. Включите их в Настройках (/telesec).",
@@ -1122,9 +1141,14 @@ REFUSALS = {
         "send_refused": "Telegram не принял итоги (TimeoutError). Возможная причина: бот может писать в бизнес-чат, "
         "только если собеседник писал туда за последние 24 часа.",
         "send_failed": "Telegram не принял итоги (TimeoutError).",
+        "send_unsure": "Telegram не подтвердил отправку (TimeoutError). Проверьте чат, прежде чем отправлять "
+        "/dossier ещё раз.",
     },
 }
 HEADS = {"en": "Nothing was posted to the chat with Mira Tanaka.", "ru": "В чат «Mira Tanaka» ничего не отправлено."}
+# A send that timed out may be in the chat, so its head never says that nothing was posted.
+UNSURE_HEADS = {"en": "The summary may have been posted to the chat with Mira Tanaka.",
+                "ru": "Итоги, возможно, отправлены в чат «Mira Tanaka»."}
 
 
 def test_post_reasons_are_exactly_the_v2_set(dv: ModuleType) -> None:
@@ -1140,6 +1164,7 @@ def test_post_reasons_are_exactly_the_v2_set(dv: ModuleType) -> None:
         "failed",
         "send_refused",
         "send_failed",
+        "send_unsure",
     )
     assert set(REFUSALS["en"]) == set(REFUSALS["ru"]) == set(dv.POST_REASONS)
 
@@ -1149,7 +1174,8 @@ def test_post_reasons_are_exactly_the_v2_set(dv: ModuleType) -> None:
 def test_post_refusal_for_every_reason(dv: ModuleType, lang: str, reason: str) -> None:
     text = dv.post_refusal(reason, lang, name=NAME, error="TimeoutError")
 
-    assert text == f"{HEADS[lang]}\n{REFUSALS[lang][reason]}"
+    head = UNSURE_HEADS[lang] if reason == "send_unsure" else HEADS[lang]
+    assert text == f"{head}\n{REFUSALS[lang][reason]}"
     assert "<" not in text and "\u202e" not in text
 
 
@@ -1243,6 +1269,7 @@ def test_snapshot_has_no_blocked_state(dv: ModuleType) -> None:
         "failure",
         "unqualified",
         "manage_global",
+        "persona_due",
         "in_history",
     } == names
 

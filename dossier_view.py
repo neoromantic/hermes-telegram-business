@@ -37,7 +37,7 @@ POST_RU_SHARE = 0.3  # the post is in Russian when at least this share of its le
 CLI = "hermes telesec dossier"
 TARGETS = {"contact": "c", "persona": "p"}
 POST_REASONS = ("disabled", "no_model", "history_off", "chat_off", "window", "empty", "busy", "changed",
-                "failed", "send_refused", "send_failed")
+                "failed", "send_refused", "send_failed", "send_unsure")
 NOTICE_KEYS = ("busy", "refresh_started", "unavailable", "up_to_date", "failed", "operator_only", "no_connection")
 
 Rows = tuple[tuple[tuple[str, str], ...], ...]
@@ -70,6 +70,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "st_clipped": f"Only the start fits here. The full text: {CLI} show {{target}}",
         "st_persona_missing": "No persona yet. It is written once you have sent at least 10 messages in chats "
                               "with dossiers.",
+        "st_persona_due": "No persona yet. It is written at the next dossier cycle.",
         "st_refreshing": "Refreshing now…",
         "st_off": "Dossiers are off. Turn them on in Settings.",
         "st_history_off": "History is off, so dossiers are paused. Turn it on in Settings.",
@@ -103,6 +104,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "post_title": "Summary of our chat",
         "post_footer": "Prepared automatically from this chat on {date}; it may contain mistakes.",
         "post_head": "Nothing was posted to the chat with {name}.",
+        "post_head_unsure": "The summary may have been posted to the chat with {name}.",
         "post": {"disabled": "Dossiers are off. Turn them on in Settings (/telesec).",
                  "no_model": "The model is not connected.",
                  "history_off": "History is off, so deleted messages can't be tracked. Turn history on in "
@@ -116,7 +118,9 @@ STRINGS: dict[str, dict[str, Any]] = {
                  "failed": "The summary could not be written ({error}).",
                  "send_refused": "Telegram did not accept the summary ({error}). One possible cause: a bot can post "
                                  "in a Business chat only if the contact wrote there in the last 24 hours.",
-                 "send_failed": "Telegram did not accept the summary ({error})."},
+                 "send_failed": "Telegram did not accept the summary ({error}).",
+                 "send_unsure": "Telegram did not confirm it ({error}). Check the chat before you send /dossier "
+                                "again."},
     },
     "ru": {
         "months": ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября",
@@ -142,6 +146,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "st_clipped": f"Здесь помещается только начало. Полный текст: {CLI} show {{target}}",
         "st_persona_missing": "Персоны пока нет. Она появится, когда вы отправите хотя бы 10 сообщений в чатах "
                               "с досье.",
+        "st_persona_due": "Персоны пока нет. Она появится после следующего цикла обработки.",
         "st_refreshing": "Обновляю…",
         "st_off": "Досье выключены. Включите их в Настройках.",
         "st_history_off": "История выключена, поэтому досье на паузе. Включите её в настройках.",
@@ -175,6 +180,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "post_title": "Краткое содержание переписки",
         "post_footer": "Составлено автоматически по этой переписке {date}; возможны неточности.",
         "post_head": "В чат «{name}» ничего не отправлено.",
+        "post_head_unsure": "Итоги, возможно, отправлены в чат «{name}».",
         "post": {"disabled": "Досье выключены. Включите их в Настройках (/telesec).",
                  "no_model": "Модель не подключена.",
                  "history_off": "История выключена, поэтому удалённые сообщения не отслеживаются. Включите "
@@ -188,7 +194,9 @@ STRINGS: dict[str, dict[str, Any]] = {
                  "failed": "Не удалось составить итоги ({error}).",
                  "send_refused": "Telegram не принял итоги ({error}). Возможная причина: бот может писать в "
                                  "бизнес-чат, только если собеседник писал туда за последние 24 часа.",
-                 "send_failed": "Telegram не принял итоги ({error})."},
+                 "send_failed": "Telegram не принял итоги ({error}).",
+                 "send_unsure": "Telegram не подтвердил отправку ({error}). Проверьте чат, прежде чем отправлять "
+                                "/dossier ещё раз."},
     },
 }
 
@@ -233,6 +241,7 @@ class DossierSnapshot:
     failure: str | None = None  # error type or validator code of the last failed attempt
     unqualified: bool = False  # no dossier can be written yet: messages from both sides are missing
     manage_global: bool = False  # may open the persona (it owns every connected account)
+    persona_due: bool = False  # no persona yet, but enough sent messages: the next cycle writes it
     in_history: bool = True  # the chat is a private chat in the history catalog (a refresh needs it)
 
 
@@ -719,7 +728,7 @@ def _body(snap: DossierSnapshot, lang: str) -> str:
     if snap.failure:
         return _failed_none(snap, s)
     if persona:
-        return s["st_persona_missing"]
+        return s["st_persona_due" if snap.persona_due else "st_persona_missing"]
     if not snap.in_history:  # Refresh needs the chat in history, so st_missing would point to a missing button
         return s["st_not_in_history"]
     return s["st_unqualified"] if snap.unqualified else s["st_missing"]
@@ -816,7 +825,7 @@ def enable_confirm(cfg: Any, lang: str) -> tuple[str, str, str]:
 
 
 # ---------------------------------------------------------------------------
-# /dossier: the post in the chat and the owner's message when nothing was posted
+# /dossier: the post in the chat and the owner's message when nothing was posted (or maybe was)
 # ---------------------------------------------------------------------------
 
 
@@ -839,9 +848,14 @@ def post_html(summary_md: str, now: datetime) -> str:
 
 
 def post_refusal(reason: str, lang: str, *, name: str, error: str | None = None) -> str:
-    """Plain text for the owner when ``/dossier`` posted nothing: the head line, then the reason line."""
+    """Plain text for the owner when ``/dossier`` posted nothing: the head line, then the reason line.
+
+    ``send_unsure`` is a send that timed out or lost its connection: the post may be in the chat, so its
+    head says so instead of "nothing was posted".
+    """
     if reason not in POST_REASONS:
         raise ValueError(f"unknown post reason {reason!r}")
     s = _s(lang)
-    head = s["post_head"].format(name=_clip(name, NAME_CHARS) or "?")
+    head = s["post_head_unsure" if reason == "send_unsure" else "post_head"]
+    head = head.format(name=_clip(name, NAME_CHARS) or "?")
     return f"{head}\n{s['post'][reason].format(error=_clip(error, ERROR_CHARS) or '?')}"
