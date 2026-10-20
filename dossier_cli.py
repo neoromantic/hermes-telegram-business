@@ -3,7 +3,8 @@
 A dossier is one Markdown document per contact that the model rewrites; the owner corrects it with
 a note. Every text line goes through ``history_support._escape_terminal_text``: dossier text is
 derived from chat messages and must never drive the terminal. ``preview`` prints the system prompt
-and the user JSON exactly as ``run`` (or ``/dossier`` with ``--post``) would send them.
+and the user JSON exactly as ``run`` (or ``/dossier`` with ``--post``) would send them, except the fact
+extraction hints, which exist only after the call to Cloudflare.
 """
 
 from __future__ import annotations
@@ -381,17 +382,17 @@ def _switch_line(settings: dict[str, Any]) -> str:
 
 def _model_line(cfg: _ds.DossierConfig) -> str:
     route = f"Model: {cfg.provider} / {cfg.model}"
-    # An explicit route sends its own output cap and cannot ask for zero data retention.
-    explicit = (f"max_tokens {cfg.max_tokens}; zero data retention not requested; "
-                f"needs plugins.entries.{_history.PLUGIN_NAME}.llm trust config")
+    cap = f"max_tokens {cfg.max_tokens}" if cfg.max_tokens else "max_tokens not capped"
+    # An explicit route asks for its own output cap (Hermes drops it for ai-gateway) and cannot ask for zero
+    # data retention.
+    explicit = f"{cap}; zero data retention not requested; needs plugins.entries.{_history.PLUGIN_NAME}.llm trust config"
     if cfg.legacy_env:
         return f"{route} (from {_ds.PROVIDER_ENV}/{_ds.MODEL_ENV}; {explicit})"
     if not cfg.task_registered:
         return f"{route} (explicit route: the Telesec dossiers task is not registered; {explicit})"
     if cfg.provider == "auto":
         return "Model: auto (main model)"
-    details = ["Telesec dossiers task", f"reasoning {cfg.reasoning or 'provider default'}",
-               f"max_tokens {cfg.max_tokens}" if cfg.max_tokens else "max_tokens not capped"]
+    details = ["Telesec dossiers task", f"reasoning {cfg.reasoning or 'provider default'}", cap]
     if cfg.provider.lower() in _writer.GATEWAY_ALIASES:
         details.append(f"zero data retention {'on' if cfg.zdr else 'off'}")
     return f"{route} ({'; '.join(details)})"

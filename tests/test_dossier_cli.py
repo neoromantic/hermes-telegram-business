@@ -312,7 +312,7 @@ def test_status_uses_the_legacy_env_route_with_its_warning(plug: ModuleType, ds:
         "example/dossier-large from them. Remove them to use the Telesec dossiers task (choose its model with "
         "'hermes model').")
     assert ("Model: openrouter / example/dossier-large (from TELESEC_DOSSIER_PROVIDER/TELESEC_DOSSIER_MODEL; "
-            "max_tokens 8192; zero data retention not requested; needs plugins.entries.telesec.llm trust config)"
+            "max_tokens 16384; zero data retention not requested; needs plugins.entries.telesec.llm trust config)"
             ) in lines_of(out)
     assert "Message check: off (writer is not on ai-gateway)" in lines_of(out)
     assert "Dossiers: enabled (" in out and "paused" not in out and "blocked" not in out.lower()
@@ -332,7 +332,7 @@ def test_status_uses_the_legacy_env_route_with_its_warning(plug: ModuleType, ds:
       "zero data retention off)")),
     (None, False, "warning: the Telesec dossiers model task is not registered",
      ("Model: ai-gateway / google/gemini-3.8-flash (explicit route: the Telesec dossiers task is not registered; "
-      "max_tokens 8192; zero data retention not requested; needs plugins.entries.telesec.llm trust config)")),
+      "max_tokens not capped; zero data retention not requested; needs plugins.entries.telesec.llm trust config)")),
     ({"provider": "anthropic", "model": "claude-example"}, True,
      "warning: auxiliary.telesec_dossier.extra_body has providerOptions, which only ai-gateway accepts, so anthropic",
      "Model: anthropic / claude-example (Telesec dossiers task; reasoning low; max_tokens 8192)"),

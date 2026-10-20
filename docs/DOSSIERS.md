@@ -90,18 +90,17 @@ auxiliary:
       model: gemini-3.8-flash
       timeout: 120
       reasoning_effort: low
-      extra_body:
-        max_tokens: 8192
+      extra_body: {}
   ```
 
-  Use `extra_body: {}` for a provider that rejects `max_tokens` in the body too. On `ai-gateway`, copy both `max_tokens` and `providerOptions` into your `extra_body`.
+  Hermes builds the request for the native `gemini` provider itself. It ignores `max_tokens` and `providerOptions` in `extra_body`, so an answer can use the model's whole output limit: this provider has no output cap, and `status` says so. A provider that gets the body as it is, such as OpenRouter, keeps the cap with `extra_body: {max_tokens: 8192}`. GPT-5 models on OpenAI's own API reject `max_tokens` in the body, so use `extra_body: {}` there. On `ai-gateway`, copy both `max_tokens` and `providerOptions` into your `extra_body`.
 - **Warnings.** `status` warns when the task follows the main model (`auto`), uses reasoning other than `low` (about 3 times the cost), has no output cap, reaches the gateway without zero data retention, or keeps `providerOptions` on another provider. Settings shows that last warning under the dossier model too.
 - **Host fallback.** If the dossier model fails (a timeout, a rate limit, a connection or payment error, or an invalid answer), Hermes may retry with the task's `fallback_chain` and then with the main model. Telesec cannot turn this off, and the task setting does not prevent it. The text that can reach the main model this way is the same as the dossier model gets: the writer input with the owner note, the persona input, and the `/dossier` input. Telesec records the model that answered: `status` prints it as `Last answer` and adds `(host fallback: differs from the configured route)` when it is not the configured model.
 - **Calls.** Host audit lines name the purpose: `telesec_dossier` (a contact), `telesec_persona`, `telesec_post` (`/dossier`), or `telesec_shorten`. On the task route each call uses the task's `timeout` (120 seconds unless you change it). The two explicit routes below use 120 seconds per worker call and 90 seconds per `/dossier` call. Hermes retries transient errors itself.
 
 A trust-gate denial, which only the two explicit routes below can get, stops the whole cycle. `status` then prints `Last cycle aborted: model call denied by the Hermes trust gate; check plugins.entries.telesec.llm`, and `dossier run` prints the host's message. Any other error, such as a timeout or an unusable answer, fails only that contact (or the persona).
 
-**Explicit routes.** Two cases still pass a provider and model and so need the trust config to allow them. They send an output cap of 8,192 tokens (`max_tokens`) with every call but cannot ask for zero data retention, and `status` shows both:
+**Explicit routes.** Two cases still pass a provider and model and so need the trust config to allow them. They ask for an output cap of 16,384 tokens (`max_tokens`) with every call, as 0.14 did. Hermes passes it on to some providers, such as native `gemini`, but never to `ai-gateway`, so the direct `ai-gateway` call has no cap. They cannot ask for zero data retention. `status` shows both:
 
 - On a Hermes without plugin model tasks, dossiers call `ai-gateway` / `google/gemini-3.8-flash` directly, and `status` warns.
 - `TELESEC_DOSSIER_PROVIDER` and `TELESEC_DOSSIER_MODEL` are deprecated. While `TELESEC_DOSSIER_PROVIDER` is set and `config.yaml` names no `auxiliary.telesec_dossier.provider`, dossiers use that provider with `TELESEC_DOSSIER_MODEL`, or `gemini-3.8-flash` for `gemini` or `google`, or `google/gemini-3.8-flash` for any other provider. `status` warns. `TELESEC_DOSSIER_MODEL` alone is ignored, and so are both once `config.yaml` names a provider for the task. Remove them to use the task.
@@ -265,8 +264,8 @@ The summary is a clean-room build: it is written at that moment from the chat's 
 | G3 | The post never contains the private dossier, its previous version, the persona, or another chat. |
 | G4 | Only your exact `/dossier` triggers a post. |
 | **Limits** | |
-| | A deletion Telegram never delivered is unknown: the bot was down longer than Telegram keeps updates, or history was off at the time. |
-| | An edit Telesec never recorded is unknown, so the text before it is used: Telegram never delivered the edit, or it was made while history was off, the chat was set to [Don't save](#one-chat), or the old scope rule kept the chat out. |
+| | A deletion Telesec never recorded is unknown: it was made while the gateway was stopped (by default Hermes drops the updates that waited for it when it starts), or while history was off. |
+| | An edit Telesec never recorded is unknown, so the text before it is used: it was made while the gateway was stopped, or while history was off, the chat was set to [Don't save](#one-chat), or the old scope rule kept the chat out. |
 | | A deletion in the last moment between the final check and the post is not covered. |
 | | The model can invent text. It can never copy deleted text, because it never saw it. |
 | | A live message that quotes a deleted one is live content. |
@@ -320,7 +319,7 @@ If Hermes reloads the plugin, a host with `on_unload` stops the old worker, any 
 $HERMES_HOME/data/telesec/dossiers/
   chats/<connection-key>/<chat-id>/document.json
   chats/<connection-key>/<chat-id>/v1-dossier.json   (only until the first refresh after an upgrade, or a forget;
-  chats/<connection-key>/<chat-id>/v1-dossier.1.json  a later old file goes to the next free number)
+  chats/<connection-key>/<chat-id>/v1-dossier.1.json  a later old file gets the next higher number)
   persona/document.json
   settings.json
   state.json

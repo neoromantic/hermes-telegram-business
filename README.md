@@ -252,7 +252,7 @@ hermes telesec dossier show --contact @alice --previous
 
 In Telegram, the panel's **Dossier** section shows the chat's dossier as a rich message in your app's language (Russian or English): the document, your note marked as not posted, and one status line, with **Refresh** and **My persona** (the owner persona) buttons. The on/off switch is in Settings.
 
-Sending exactly `/dossier` in a private Business chat, as the owner, deletes the command and posts a fresh summary of the chat, titled "Summary of our chat" («Краткое содержание переписки»). It is written at that moment from the chat's live messages only: never from the private dossier, your note, the persona, or another chat, and never from deleted messages or the text before an edit Telesec recorded (an edit it never saw, such as one made while history was off, leaves the older text in). If a message is deleted or edited while the summary is written, nothing is posted. Telegram allows the post only if the contact wrote in the last 24 hours; any message counts, including voice, photos, stickers, and files. Telesec refuses at once only when it knows the contact has not written for 24 hours; otherwise it tries, and Telegram's refusal gives the same reason. Unlike the owner panel, `/dossier` is deliberately visible to the contact: its purpose is to share the summary with them. When nothing is posted, the bot tells you why in your private chat with it instead ([`/dossier` in a chat](docs/DOSSIERS.md#dossier-in-a-chat)).
+Sending exactly `/dossier` in a private Business chat, as the owner, deletes the command and posts a fresh summary of the chat, titled "Summary of our chat" («Краткое содержание переписки»). It is written at that moment from the chat's live messages only: never from the private dossier, your note, the persona, or another chat, and never from deleted messages or the text before an edit Telesec recorded (an edit it never saw, such as one made while history was off, leaves the older text in). If a message is deleted or edited while the summary is written, nothing is posted. Telegram allows the post only if the contact wrote in the last 24 hours; any message counts, including voice, photos, stickers, and files. Telesec refuses at once only when it knows the contact has not written for 24 hours; otherwise it tries, and if Telegram refuses and Telesec saw no recent message from the contact, you get the same reason. Unlike the owner panel, `/dossier` is deliberately visible to the contact: its purpose is to share the summary with them. When nothing is posted, the bot tells you why in your private chat with it instead ([`/dossier` in a chat](docs/DOSSIERS.md#dossier-in-a-chat)).
 
 Screenshots of the Dossier screen and of a `/dossier` summary, over a fictional contact, will be added here.
 
@@ -400,11 +400,10 @@ auxiliary:
     model: gemini-3.8-flash
     timeout: 120
     reasoning_effort: low
-    extra_body:
-      max_tokens: 8192
+    extra_body: {}
 ```
 
-Use `extra_body: {}` for a provider that rejects `max_tokens` in the body too. On `ai-gateway`, copy both `max_tokens` and `providerOptions` into your `extra_body`. `hermes telesec dossier status` shows the model in effect and the model that answered last, and warns when the task follows the main model (`auto`), uses reasoning other than `low`, has no output cap or zero data retention, or keeps `providerOptions` on another provider. Settings shows that last warning under the dossier model too.
+Hermes builds the request for the native `gemini` provider itself. It ignores `max_tokens` and `providerOptions` in `extra_body`, so an answer can use the model's whole output limit: this provider has no output cap, and `status` says so. A provider that gets the body as it is, such as OpenRouter, keeps the cap with `extra_body: {max_tokens: 8192}`. GPT-5 models on OpenAI's own API reject `max_tokens` in the body, so use `extra_body: {}` there. On `ai-gateway`, copy both `max_tokens` and `providerOptions` into your `extra_body`. `hermes telesec dossier status` shows the model in effect and the model that answered last, and warns when the task follows the main model (`auto`), uses reasoning other than `low`, has no output cap or zero data retention, or keeps `providerOptions` on another provider. Settings shows that last warning under the dossier model too.
 
 If the dossier model fails, Hermes may retry with its fallback chain and then with the main model. Telesec cannot turn this off; `status` flags an answer from another model as a host fallback.
 
@@ -412,7 +411,7 @@ On a Hermes without plugin model tasks, dossiers call `ai-gateway` / `google/gem
 
 `TELESEC_DOSSIER_PROVIDER` and `TELESEC_DOSSIER_MODEL` are deprecated. While `TELESEC_DOSSIER_PROVIDER` is set and `config.yaml` names no `auxiliary.telesec_dossier.provider`, dossiers use that provider with `TELESEC_DOSSIER_MODEL` (else `gemini-3.8-flash` for `gemini` or `google`, and `google/gemini-3.8-flash` for any other provider). This route still needs the trust config, and `status` warns. `TELESEC_DOSSIER_MODEL` alone is ignored. Remove both to use the task. `TELESEC_CLEANUP_PROVIDER` and `TELESEC_CLEANUP_MODEL` no longer affect dossiers.
 
-These two direct routes are the only dossier calls that the trust config's `allowed_providers` and `allowed_models` apply to; the task route needs no trust config. They send an output cap of 8,192 tokens with every call but cannot ask for zero data retention, and `status` shows both.
+These two direct routes are the only dossier calls that the trust config's `allowed_providers` and `allowed_models` apply to; the task route needs no trust config. They ask for an output cap of 16,384 tokens with every call, as 0.14 did. Hermes passes it on to some providers, such as native `gemini`, but never to `ai-gateway`, so the direct `ai-gateway` call has no cap. They cannot ask for zero data retention. `status` shows both.
 
 Two optional steps send chat text to one more processor each. Both are off by default:
 

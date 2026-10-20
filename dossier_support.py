@@ -116,7 +116,7 @@ class DossierConfig:
     provider: str  # effective writer provider; "auto" when the task follows the main model
     model: str  # effective writer model; "main model" when provider is "auto"
     reasoning: str = "low"  # effective reasoning_effort; "" = provider default; NOT_SET on an explicit route
-    max_tokens: int | None = 8192  # None when extra_body has no max_tokens
+    max_tokens: int | None = 8192  # None when extra_body has no max_tokens, or on an explicit ai-gateway route
     zdr: bool = True  # extra_body asks the gateway for zero data retention; never on an explicit route
     task_registered: bool = True
     legacy_env: bool = False  # TELESEC_DOSSIER_PROVIDER routes the writer
@@ -191,6 +191,11 @@ class _Effective:
     notes: tuple[tuple[str, str], ...]  # (log code, warning line)
 
 
+def _explicit_cap(provider: str) -> int | None:
+    """The output cap of an explicit route: every call asks for it, but Hermes never passes it on to ai-gateway."""
+    return None if provider.strip().lower() in _writer.GATEWAY_ALIASES else _writer.EXPLICIT_MAX_TOKENS
+
+
 def _effective() -> _Effective:
     """The writer route and its effective settings, merged the way Hermes merges task defaults."""
     user = _host_task_config()
@@ -204,7 +209,7 @@ def _effective() -> _Effective:
         text = (f"warning: {PROVIDER_ENV}/{MODEL_ENV} are deprecated; dossiers use {shown_provider} / {shown_model} "
                 "from them. Remove them to use the Telesec dossiers task (choose its model with 'hermes model').")
         return _Effective(_writer.Route(None, env_provider, model), shown_provider, shown_model, NOT_SET,
-                          _writer.MAX_OUTPUT_TOKENS, False, True, (("legacy_env", text),))
+                          _explicit_cap(env_provider), False, True, (("legacy_env", text),))
     if env_provider or env_model:
         notes.append(("env_ignored", f"warning: {PROVIDER_ENV}/{MODEL_ENV} are ignored; remove them."))
     if not _TASK_REGISTERED:
@@ -213,7 +218,7 @@ def _effective() -> _Effective:
                 f"plugins.entries.{_history.PLUGIN_NAME}.llm trust config.")
         notes.append(("not_registered", text))
         eff = _Effective(_writer.Route(None, FALLBACK_PROVIDER, FALLBACK_MODEL), FALLBACK_PROVIDER, FALLBACK_MODEL,
-                         NOT_SET, _writer.MAX_OUTPUT_TOKENS, False, False, ())
+                         NOT_SET, _explicit_cap(FALLBACK_PROVIDER), False, False, ())
     else:
         eff = _task_effective({**TASK_DEFAULTS, **user}, notes)
     if os.environ.get(CLEANUP_PROVIDER_ENV, "").strip() and not env_provider:

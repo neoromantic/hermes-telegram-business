@@ -13,6 +13,7 @@ import json
 import logging
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from datetime import timedelta
 from types import MappingProxyType, ModuleType, SimpleNamespace
@@ -316,6 +317,8 @@ async def test_a_migrated_dossier_is_readable_where_no_refresh_can_run(plug, ds,
         code, out, _err = cli(plug, "dossier", command, *ids)  # 'show --chat' is the line a clipped screen names
         assert code == 0 and f"- {V1_FACT}" in out.splitlines(), (command, out)
         assert "Waiting for the first build" not in out
+        converted = "Converted from the old dossier; the first refresh rewrites it." in out.splitlines()
+        assert converted is (command == "show"), (command, out)  # export prints the document only
 
     if case == "paused":
         plug._chat_settings.default_store().set_flag(OWNER_ID, CHAT, "dossier", True, via="cli")
@@ -1003,7 +1006,7 @@ async def test_edited_command_and_echo_are_claimed_without_executing(plug, ds, p
 
 def up_two_days(plug: ModuleType) -> None:
     """This gateway process has run longer than the window, so it would have noted any newer contact message."""
-    plug._dossier_panel._post._STARTED_AT = NOW - timedelta(days=2)  # a fresh plugin copy per test
+    plug._dossier_panel._post._STARTED_AT = time.monotonic() - 2 * 86400  # a fresh plugin copy per test
 
 
 async def old_chat(plug: ModuleType) -> None:

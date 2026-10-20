@@ -26,7 +26,7 @@ PURPOSE_CONTACT = "telesec_dossier"
 PURPOSE_PERSONA = "telesec_persona"
 PURPOSE_POST = "telesec_post"
 PURPOSE_SHORTEN = "telesec_shorten"
-GATEWAY_ALIASES = frozenset({"ai-gateway", "vercel", "aigateway", "vercel-ai-gateway"})
+GATEWAY_ALIASES = frozenset({"ai-gateway", "vercel", "aigateway", "ai_gateway", "vercel-ai-gateway"})
 END_MARKER = "<<END>>"
 NO_CHANGE = "NO_CHANGE"
 EMPTY = "EMPTY"
@@ -38,6 +38,8 @@ POST_TARGET_CHARS = 2500
 SHORTEN_TO = 2600
 # The output cap of every call. The task route sets it in the task's extra_body; an explicit route passes it.
 MAX_OUTPUT_TOKENS = 8192
+# v1's cap, kept on an explicit route: it sets no reasoning level, so the model's own thinking shares the cap.
+EXPLICIT_MAX_TOKENS = 16_384
 MSG_MAX_CHARS = 4000  # one message text, clipped with "…"
 CONTEXT_MAX = 10
 CONTEXT_MAX_CHARS = 4000
@@ -447,7 +449,7 @@ def parse_output(text: str, *, kind: str, mode: str = "first", current: str | No
 def _route_kwargs(route: Route) -> dict[str, Any]:
     fields: dict[str, Any] = {"task": route.task, "provider": route.provider, "model": route.model}
     if route.task is None:
-        fields["max_tokens"] = MAX_OUTPUT_TOKENS  # the task route caps output in its extra_body
+        fields["max_tokens"] = EXPLICIT_MAX_TOKENS  # the task route caps output in its extra_body
     return {key: value for key, value in fields.items() if value is not None}
 
 

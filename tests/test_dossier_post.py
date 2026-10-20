@@ -16,6 +16,7 @@ import io
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -336,12 +337,38 @@ async def test_a_gateway_up_less_than_24_hours_tries_the_post(plug, ds, post):
                first_name="Anna")
     entry = catalog_entry(plug, CHAT)
     ds.bind_llm(FakeLlm())
-    post._STARTED_AT = NOW - timedelta(hours=23)  # a voice note just before the start would not have been seen
+    post._STARTED_AT = time.monotonic() - 23 * 3600  # a voice note just before the start would not have been seen
 
     assert post.post_precheck(entry, now=NOW) is None
     assert post.post_window_open(entry, now=NOW) is False  # not known open: Telegram's refusal means the window
-    post._STARTED_AT = NOW - timedelta(hours=25)
+    # Uptime is not wall-clock time: a clock set two days forward after the start (a machine that booted with
+    # the wrong time) makes the gateway no older.
+    assert post.post_precheck(entry, now=NOW + timedelta(days=2)) is None
+    post._STARTED_AT = time.monotonic() - 25 * 3600
     assert post.post_precheck(entry, now=NOW) == "window"
+
+
+@pytest.mark.asyncio
+async def test_a_chat_the_inbound_cap_may_have_dropped_is_not_known_closed(plug, ds, post, monkeypatch):
+    await seed(plug, CHAT, "anna_k", [(10, "in", ASK, timedelta(hours=30)), (11, "out", AGREE, timedelta(hours=29))],
+               first_name="Anna")
+    entry = catalog_entry(plug, CHAT)
+    ds.bind_llm(FakeLlm())
+    tdp.up_two_days(plug)
+    monkeypatch.setattr(post, "INBOUND_MAX", 2)
+
+    post.note_inbound(BUSINESS_ID, CHAT, ago(26 * 60))  # too old to matter when the cap drops it
+    post.note_inbound(BUSINESS_ID, 9001, ago(50))
+    post.note_inbound(BUSINESS_ID, 9002, ago(40))
+    assert len(post._LAST_INBOUND) == 2 and post.post_precheck(entry, now=NOW) == "window"
+
+    post.note_inbound(BUSINESS_ID, CHAT, ago(30))  # a sticker from the contact, dropped by the next two chats
+    post.note_inbound(BUSINESS_ID, 9003, ago(20))
+    post.note_inbound(BUSINESS_ID, 9004, ago(10))
+    assert (BUSINESS_ID, str(CHAT)) not in post._LAST_INBOUND
+    assert post.post_precheck(entry, now=NOW) is None  # unknown, so the post is tried
+    assert post.post_window_open(entry, now=NOW) is False  # and Telegram's refusal is told as the window
+    assert post.post_precheck(entry, now=ago(30) + timedelta(hours=24) + SECOND) == "window"
 
 
 @pytest.mark.asyncio

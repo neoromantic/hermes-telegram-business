@@ -240,6 +240,10 @@ async def test_default_config_routes_through_the_registered_task(
      ("gemini", "gemini-3.8-flash", "low", 8192, False), []),
     ({"provider": "vercel", "model": "google/gemini-3.9-pro"}, ("vercel", "google/gemini-3.9-pro", "low", 8192, True),
      []),
+    ({"provider": "AI_Gateway"}, ("AI_Gateway", "google/gemini-3.8-flash", "low", 8192, True), []),  # a Hermes alias
+    # The native Gemini client reads neither field of extra_body, and thinking may use the whole output limit.
+    ({"provider": "gemini", "model": "gemini-3.8-flash", "extra_body": {}}, ("gemini", "gemini-3.8-flash", "low", None,
+                                                                            False), [MAX_TOKENS_WARNING]),
     ({"reasoning_effort": ""}, ("ai-gateway", "google/gemini-3.8-flash", "", 8192, True),
      [reasoning_warning("provider default")]),
     ({"reasoning_effort": "high"}, ("ai-gateway", "google/gemini-3.8-flash", "high", 8192, True),
@@ -269,8 +273,9 @@ async def test_an_unregistered_task_uses_the_explicit_fallback_route(plug: Modul
     ds = dossiers
     ds.set_task_registered(False)
     cfg = ds.load_config()
+    # Not capped: Hermes never passes an explicit max_tokens on to ai-gateway.
     assert (cfg.provider, cfg.model, cfg.reasoning, cfg.max_tokens, cfg.zdr, cfg.task_registered) == (
-        "ai-gateway", "google/gemini-3.8-flash", ds.NOT_SET, 8192, False, False)
+        "ai-gateway", "google/gemini-3.8-flash", ds.NOT_SET, None, False, False)
     assert cfg.warnings == (NOT_REGISTERED_WARNING,)
     assert route_of(ds) == (None, "ai-gateway", "google/gemini-3.8-flash")
 
@@ -281,7 +286,7 @@ async def test_an_unregistered_task_uses_the_explicit_fallback_route(plug: Modul
     assert (call["provider"], call["model"]) == ("ai-gateway", "google/gemini-3.8-flash")
     assert "task" not in call  # never task= for a task the host does not know
     assert call["timeout"] == ds.MODEL_TIMEOUT_SECONDS  # no task config to read it from
-    assert call["max_tokens"] == 8192  # nor an extra_body to cap the output
+    assert call["max_tokens"] == 16_384  # nor an extra_body to cap the output; asked for anyway
 
 
 @pytest.mark.asyncio
@@ -301,7 +306,8 @@ async def test_the_legacy_provider_env_is_an_explicit_route_with_a_warning(
     dossier_env(PROVIDER=f" {provider} ", MODEL=model)
     cfg = ds.load_config()
     assert (cfg.provider, cfg.model, cfg.legacy_env) == (provider, expected_model, True)
-    assert (cfg.reasoning, cfg.max_tokens, cfg.zdr) == (ds.NOT_SET, 8192, False)
+    shown_cap = None if provider == "ai-gateway" else 16_384  # Hermes passes the cap on, except to ai-gateway
+    assert (cfg.reasoning, cfg.max_tokens, cfg.zdr) == (ds.NOT_SET, shown_cap, False)
     assert cfg.warnings == (legacy_warning(provider, expected_model),)
     assert route_of(ds) == (None, provider, expected_model)
 
@@ -310,7 +316,7 @@ async def test_the_legacy_provider_env_is_an_explicit_route_with_a_warning(
     assert cycle(ds, fake).refreshed == 1
     (call,) = contact_calls(fake)
     assert (call["provider"], call["model"]) == (provider, expected_model) and "task" not in call
-    assert call["max_tokens"] == 8192
+    assert call["max_tokens"] == 16_384
 
 
 def test_a_legacy_route_with_url_credentials_is_shown_without_them(

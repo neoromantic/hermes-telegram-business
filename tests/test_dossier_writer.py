@@ -464,7 +464,7 @@ def test_an_explicit_route_caps_every_call_including_the_shorten_call(dw: Module
           route=dw.Route(task=None, provider="gemini", model="gemini-3.8-flash"))
 
     assert [call["purpose"] for call in llm.calls][1] == "telesec_shorten"
-    assert [call["max_tokens"] for call in llm.calls] == [8192, 8192]
+    assert [call["max_tokens"] for call in llm.calls] == [16_384, 16_384]  # v1's cap: no reasoning level here
     assert dw.MAX_OUTPUT_TOKENS == 8192
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -37,9 +38,13 @@ INBOUND_MAX = 10_000  # chats whose last contact message this process remembers
 # stickers and files here too (note_inbound). Times only, never text, and in memory only.
 _INBOUND_LOCK = threading.Lock()
 _LAST_INBOUND: dict[tuple[str, str], datetime] = {}
-# Since when _LAST_INBOUND has been noting. Once that is more than WINDOW_HOURS ago, it has seen every message
-# that can still keep a window open. Tests move it.
-_STARTED_AT = _history._utcnow()
+# The newest time the INBOUND_MAX cap dropped. While it is inside the window, a chat with no newer time noted
+# may have lost its own, so its window is unknown.
+_DROPPED_AT: datetime | None = None
+# Since when _LAST_INBOUND has been noting, by time.monotonic(). Once that is more than WINDOW_HOURS ago, it has
+# seen every message that can still keep a window open. A monotonic clock, so a wall clock set forward after the
+# start (a machine that booted with the wrong time) never makes the process look older. Tests move it.
+_STARTED_AT = time.monotonic()
 
 
 @dataclass(frozen=True)
@@ -80,12 +85,14 @@ def _qualified(inputs: list[_ds.Msg]) -> bool:
 
 def note_inbound(business_connection_id: Any, chat_id: Any, at: datetime) -> None:
     """The contact sent a new message of any kind at ``at``; an edit or a deletion is not one."""
+    global _DROPPED_AT
     key = (str(business_connection_id), str(chat_id))
     with _INBOUND_LOCK:
         last = _LAST_INBOUND.pop(key, None)
         _LAST_INBOUND[key] = at if last is None else max(last, at)
         while len(_LAST_INBOUND) > INBOUND_MAX:
-            del _LAST_INBOUND[next(iter(_LAST_INBOUND))]
+            dropped = _LAST_INBOUND.pop(next(iter(_LAST_INBOUND)))
+            _DROPPED_AT = dropped if _DROPPED_AT is None else max(_DROPPED_AT, dropped)
 
 
 def _window(view: _ds.ChatView, now: datetime) -> bool | None:
@@ -99,9 +106,12 @@ def _window(view: _ds.ChatView, now: datetime) -> bool | None:
         return True
     with _INBOUND_LOCK:
         last = _LAST_INBOUND.get((str(view.entry.get("business_connection_id")), str(view.entry.get("chat_id"))))
+        dropped = _DROPPED_AT
     if last is not None and last >= since:
         return True
-    return False if now - _STARTED_AT > timedelta(hours=WINDOW_HOURS) else None
+    if dropped is not None and dropped >= since:
+        return None  # the cap dropped a recent time, maybe this chat's
+    return False if time.monotonic() - _STARTED_AT > WINDOW_HOURS * 3600 else None
 
 
 def _check(entry: dict[str, Any], now: datetime, *, gateway: bool) -> tuple[str | None, list[_ds.Msg]]:

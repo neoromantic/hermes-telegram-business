@@ -114,8 +114,7 @@ STRINGS: dict[str, dict[str, Any]] = {
                  "busy": "A summary for this chat is already being prepared.",
                  "changed": "Messages changed while the summary was being written. Send /dossier again.",
                  "failed": "The summary could not be written ({error}).",
-                 "send_failed": "Telegram did not accept the summary ({error}). A bot can post in a "
-                                "Business chat only if the contact wrote there in the last 24 hours."},
+                 "send_failed": "Telegram did not accept the summary ({error})."},
     },
     "ru": {
         "months": ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября",
@@ -185,8 +184,7 @@ STRINGS: dict[str, dict[str, Any]] = {
                  "busy": "Итоги для этого чата уже готовятся.",
                  "changed": "Пока составлялись итоги, сообщения изменились. Отправьте /dossier ещё раз.",
                  "failed": "Не удалось составить итоги ({error}).",
-                 "send_failed": "Telegram не принял итоги ({error}). Бот может писать в бизнес-чат, "
-                                "только если собеседник писал туда за последние 24 часа."},
+                 "send_failed": "Telegram не принял итоги ({error})."},
     },
 }
 

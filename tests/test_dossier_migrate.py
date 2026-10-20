@@ -747,6 +747,24 @@ def test_a_later_v1_file_never_overwrites_a_kept_backup(
     assert sorted(path.name for path in target.iterdir()) == ["document.json", "v1-dossier.2.json", "v1-dossier.json"]
 
 
+def test_the_highest_backup_number_is_always_the_newest_file(dm: ModuleType, root: Path) -> None:
+    """The rollback docs say to rename the backup with the highest number: a freed lower name is never reused."""
+    target = contact_dir(dm, root)
+    put(target, v1_contact(fact("f1", "Never call on Sundays.", kind="owner")))
+    dm.migrate_root(root, NOW)
+    put(target, b"{not json")  # e.g. a 0.14 gateway that was still running
+    dm.migrate_root(root, NOW)
+    dm.drop_migrated_backups("contact", target)  # the first v2 pass: only the unreadable .1 stays
+    assert sorted(path.name for path in target.iterdir()) == ["document.json", "v1-dossier.1.json"]
+    newest = put(target, v1_contact(fact("f2", "Pays on the 5th.", kind="owner")))
+
+    assert dm.migrate_root(root, NOW) == {"migrated": 1, "unreadable": 0, "backups": 2}
+
+    assert (target / "v1-dossier.2.json").read_bytes() == newest
+    assert not (target / "v1-dossier.json").exists()
+    assert read_doc(target)["note"] == "Never call on Sundays.\n\nPays on the 5th."
+
+
 def test_a_corrupt_document_leaves_the_directory_untouched(
     dm: ModuleType, root: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

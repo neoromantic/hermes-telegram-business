@@ -1098,8 +1098,8 @@ REFUSALS = {
         "busy": "A summary for this chat is already being prepared.",
         "changed": "Messages changed while the summary was being written. Send /dossier again.",
         "failed": "The summary could not be written (TimeoutError).",
-        "send_failed": "Telegram did not accept the summary (TimeoutError). A bot can post in a Business "
-        "chat only if the contact wrote there in the last 24 hours.",
+        # Not the 24 hours: a refusal while that window was not known open is told as "window".
+        "send_failed": "Telegram did not accept the summary (TimeoutError).",
     },
     "ru": {
         "disabled": "Досье выключены. Включите их в Настройках (/telesec).",
@@ -1113,8 +1113,7 @@ REFUSALS = {
         "busy": "Итоги для этого чата уже готовятся.",
         "changed": "Пока составлялись итоги, сообщения изменились. Отправьте /dossier ещё раз.",
         "failed": "Не удалось составить итоги (TimeoutError).",
-        "send_failed": "Telegram не принял итоги (TimeoutError). Бот может писать в бизнес-чат, только "
-        "если собеседник писал туда за последние 24 часа.",
+        "send_failed": "Telegram не принял итоги (TimeoutError).",
     },
 }
 HEADS = {"en": "Nothing was posted to the chat with Mira Tanaka.", "ru": "В чат «Mira Tanaka» ничего не отправлено."}
