@@ -29,7 +29,8 @@ BUDGET_BLOCKS = 450
 TEXT_MAX_CHARS = 4096
 ARGS_MAX_BYTES = 30  # the panel adds its own prefix; Telegram callback_data is <= 64 bytes
 NAME_CHARS = 64  # UTF-16 units of a contact name in a title or a message to the owner
-NOTE_DISPLAY_UNITS = 500  # a note typed in the CLI shows whole; a longer migrated note is clipped
+NOTE_DISPLAY_UNITS = 500  # a note typed in the CLI shows whole; a longer one (converted or appended) is clipped
+CLIPPED_DOC_UNITS = 3000  # the start of a converted v1 document over the limit, with room for the 'show' line
 NOTE_DISPLAY_LINES = 10  # the plain fallback puts "> " before each quoted line, so lines cost room too
 ERROR_CHARS = 64
 POST_RU_SHARE = 0.3  # the post is in Russian when at least this share of its letters is Cyrillic
@@ -63,6 +64,10 @@ STRINGS: dict[str, dict[str, Any]] = {
                              "arrive.",
         "st_unqualified": "No dossier yet: it needs messages from both you and the contact.",
         "st_empty": "Nothing worth keeping yet.",
+        "st_converted": "Converted from the old dossier. The first refresh rewrites it.",
+        "st_converted_waiting": "Converted from the old dossier. It is rewritten once the chat has saved messages "
+                                "from both you and the contact.",
+        "st_clipped": f"Only the start fits here. The full text: {CLI} show --chat {{chat_id}}",
         "st_persona_missing": "No persona yet. It is written once you have sent at least 10 messages in chats "
                               "with dossiers.",
         "st_refreshing": "Refreshing now…",
@@ -130,6 +135,10 @@ STRINGS: dict[str, dict[str, Any]] = {
                              "сообщений.",
         "st_unqualified": "Досье пока нет: нужны сообщения и от вас, и от собеседника.",
         "st_empty": "Пока нечего сохранить.",
+        "st_converted": "Перенесено из старого досье. Первое обновление перепишет его.",
+        "st_converted_waiting": "Перенесено из старого досье. Оно будет переписано, когда в чате сохранятся "
+                                "сообщения и от вас, и от собеседника.",
+        "st_clipped": f"Здесь помещается только начало. Полный текст: {CLI} show --chat {{chat_id}}",
         "st_persona_missing": "Персоны пока нет. Она появится, когда вы отправите хотя бы 10 сообщений в чатах "
                               "с досье.",
         "st_refreshing": "Обновляю…",
@@ -653,8 +662,11 @@ def _failed_none(snap: DossierSnapshot, s: dict[str, Any]) -> str:
     return s[key].format(error=_e(snap.failure, ERROR_CHARS))
 
 
-def _status(snap: DossierSnapshot, lang: str, *, empty: bool) -> str:
-    """The one status line under a document, by priority; "" when there is nothing to say."""
+def _status(snap: DossierSnapshot, lang: str, *, empty: bool, converted: bool = False) -> str:
+    """The one status line under a document, by priority; "" when there is nothing to say.
+
+    ``converted`` marks a document the migration wrote from v1 facts that no refresh has rewritten yet.
+    """
     s = _s(lang)
     if not snap.enabled:
         return _off(snap, s)
@@ -668,7 +680,14 @@ def _status(snap: DossierSnapshot, lang: str, *, empty: bool) -> str:
         return s["st_refreshing"]
     if snap.failure:  # an empty document has no earlier version to show
         return _failed_none(snap, s) if empty else s["st_failed"].format(error=_e(snap.failure, ERROR_CHARS))
+    if converted:  # Refresh is hidden while a first build has nothing to read
+        return s["st_converted_waiting" if snap.unqualified or not snap.in_history else "st_converted"]
     return s["st_empty"] if empty else ""
+
+
+def _chat_arg(snap: DossierSnapshot) -> str:
+    """The chat id as a shell argument for a CLI line on the screen, HTML-escaped."""
+    return _html.escape(shlex.quote(_clip(snap.chat_id, 64)), quote=False)
 
 
 def _body(snap: DossierSnapshot, lang: str) -> str:
@@ -677,7 +696,7 @@ def _body(snap: DossierSnapshot, lang: str) -> str:
     if snap.corrupt:
         if persona:
             return s["st_corrupt_persona"]
-        return s["st_corrupt"].format(chat_id=_html.escape(shlex.quote(_clip(snap.chat_id, 64)), quote=False))
+        return s["st_corrupt"].format(chat_id=_chat_arg(snap))
     if not snap.enabled:
         return _off(snap, s)
     if not snap.history_enabled:
@@ -698,7 +717,10 @@ def _body(snap: DossierSnapshot, lang: str) -> str:
 
 
 def _buttons(snap: DossierSnapshot, lang: str, *, shown: bool) -> Rows:
-    """Rows under a screen; ``shown`` is True when the screen shows a document rather than a state."""
+    """Rows under a screen; ``shown`` is True when the screen shows a built document rather than a state.
+
+    A document converted from v1 is not built yet: like a missing one, it has no Refresh while unqualified.
+    """
     s = _s(lang)
     if snap.target == "persona":
         return _rows([(s["b_back_dossier"], build_args("overview"))])
@@ -716,7 +738,8 @@ def render_overview(snap: DossierSnapshot, lang: str) -> View:
 
     The header appears once messages were processed: ``checked_at`` for a contact, ``updated_at`` (the
     last build) for the persona. Without a document the state text is the body. Only the document and
-    the note are shown: ``previous`` and every other field stay out of Telegram.
+    the note are shown: ``previous`` and every other field stay out of Telegram. Only a document converted
+    from v1 can be longer than the limit: the screen shows its start and names ``show`` for the rest.
     """
     if snap.target not in TARGETS:
         raise ValueError(f"unknown dossier target {snap.target!r}")
@@ -724,18 +747,22 @@ def render_overview(snap: DossierSnapshot, lang: str) -> View:
     doc = snap.doc if isinstance(snap.doc, dict) and not snap.corrupt else None
     title = s["title_persona"] if persona else (_e(snap.name, NAME_CHARS) or "?")
     head = f"<h3>{title}</h3>"
-    document = _clip_text(_doc_text(doc, "document"), _doc.DOC_MAX_UNITS)
+    text = _doc_text(doc, "document")
+    clipped = _units(text) > _doc.DOC_MAX_UNITS
+    document = _clip_text(text, CLIPPED_DOC_UNITS if clipped else _doc.DOC_MAX_UNITS)
+    converted = doc is not None and not persona and _doc.converted(doc)
     at = _dt(_doc_text(doc, "updated_at" if persona else "checked_at"))
     note = _note_html(_doc_text(doc, "note"), s["persona_note_label" if persona else "note_label"])
     shown = doc is not None and (bool(document) or at is not None)
     if shown:
         if at is not None:
             head += f"<p><i>{_header(snap, doc, at, lang)}</i></p>"
-        status = _status(snap, lang, empty=not document)
-        html = _framed(head, document, note + (f"<p><i>{status}</i></p>" if status else ""))
+        status = _status(snap, lang, empty=not document, converted=converted)
+        after = f"<p><i>{s['st_clipped'].format(chat_id=_chat_arg(snap))}</i></p>" if clipped else ""
+        html = _framed(head, document, after + note + (f"<p><i>{status}</i></p>" if status else ""))
     else:
         html = f"{head}<p>{_body(snap, lang)}</p>{note}"
-    return _view(html, _buttons(snap, lang, shown=shown))
+    return _view(html, _buttons(snap, lang, shown=shown and not converted))
 
 
 def notice_text(key: str, lang: str, **fmt: Any) -> str:

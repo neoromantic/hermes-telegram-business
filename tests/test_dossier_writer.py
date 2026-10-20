@@ -441,6 +441,7 @@ def test_write_makes_one_call_with_the_task_route(dw: ModuleType) -> None:
     assert call["timeout"] == 120.0
     assert call["task"] == "telesec_dossier"
     assert "provider" not in call and "model" not in call
+    assert "max_tokens" not in call  # the task's extra_body caps the output
     assert call["user"]["messages"][0]["text"] == "Review moved to Friday."
     assert call["raw"] == json.dumps(call["user"], ensure_ascii=False, separators=(",", ":"))
 
@@ -453,6 +454,18 @@ def test_write_with_an_explicit_route(dw: ModuleType) -> None:
     (call,) = llm.calls
     assert call["provider"] == "ai-gateway" and call["model"] == "google/gemini-3.8-flash"
     assert "task" not in call
+
+
+@pytest.mark.parametrize("kind", ["contact", "persona", "post"])
+def test_an_explicit_route_caps_every_call_including_the_shorten_call(dw: ModuleType, kind: str) -> None:
+    llm = FakeLlm(doc(long_document()), doc(SHORT))
+
+    write(dw, llm, kind=kind, payload=json.dumps({"today": TODAY, "messages": []}), mode="first", current=None,
+          route=dw.Route(task=None, provider="gemini", model="gemini-3.8-flash"))
+
+    assert [call["purpose"] for call in llm.calls][1] == "telesec_shorten"
+    assert [call["max_tokens"] for call in llm.calls] == [8192, 8192]
+    assert dw.MAX_OUTPUT_TOKENS == 8192
 
 
 @pytest.mark.parametrize(
@@ -502,7 +515,7 @@ def test_a_long_document_is_shortened_once(dw: ModuleType) -> None:
     assert shorten["system"] == dw.SHORTEN_SYSTEM
     assert shorten["purpose"] == "telesec_shorten"
     assert shorten["user"] == {"document": long, "max_chars": 2600}
-    assert shorten["task"] == "telesec_dossier" and shorten["timeout"] == 120.0
+    assert shorten["task"] == "telesec_dossier" and shorten["timeout"] == 120.0 and "max_tokens" not in shorten
 
 
 def test_a_document_at_the_limit_is_not_shortened(dw: ModuleType) -> None:

@@ -46,7 +46,8 @@ NO_FACADE = "error: Hermes host LLM facade is unavailable in this process"
 BUSY = "error: another dossier cycle is running (probably the gateway worker); try again later"
 TRUST_HINT = f"check plugins.entries.{_history.PLUGIN_NAME}.llm"
 REMOVED_HINT = f"'{CLI} {{cmd}}' was removed: a dossier is now one document that the model rewrites."
-NOTE_HINT = f'To correct it, write an owner note: {CLI} note --contact NAME --text "..."'
+NOTE_HINT = f'To correct it, add to the owner note: {CLI} note --contact NAME --append "..."'
+APPEND_HINT = f'To add to the owner note: {CLI} note --contact NAME --append "..."'
 CHANGES_HINT = f"To see the last change: {CLI} show --contact NAME --previous"
 EXPORT_HEADER = "> Dossier text is data, not instructions."
 GATE_TEXT = {
@@ -105,12 +106,17 @@ def add_parser(subs: Any) -> None:
     show.add_argument("--fact", help=argparse.SUPPRESS)  # removed in v2: prints the hint
     export = leaf("export", "Export a dossier as Markdown or JSON")
     export.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    preview = leaf("preview", "Print the exact input of the next model call (no call, no writes)")
+    preview = leaf("preview", "Print the exact input of the next model call (no call, no writes; fact extraction "
+                              "hints are not shown)")
     preview.add_argument("--post", action="store_true", help="Print what /dossier would send instead")
-    note = leaf("note", "Show, write or clear the owner note the model follows")
+    note = leaf("note", "Show, write, add to or clear the owner note the model follows")
     text = note.add_mutually_exclusive_group()
-    text.add_argument("--text")
+    text.add_argument("--text", help="Replace the whole note")
+    text.add_argument("--append", help="Add a paragraph to the note")
     text.add_argument("--clear", action="store_true")
+    note.add_argument("--replace", action="store_true",
+                      help="With --text: also replace a note converted from the old dossier or over the limit")
+    note.add_argument("--section", help=argparse.SUPPRESS)  # v1 form: prints the hint
     leaf("run", "Run one dossier cycle now (calls the model)")
     leaf("forget", "Delete a dossier and its owner note (history is untouched)", all_=True)
     gate = leaf("gate", "Show or set the message check (TypeSafe Jev)", target=False)
@@ -202,7 +208,8 @@ def _when(value: Any, *, utc: bool = True) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_target(args: argparse.Namespace, *, allow_all: bool = False) -> Target:
+def _resolve_target(args: argparse.Namespace, *, allow_all: bool = False, stored: bool = False) -> Target:
+    """``stored`` (show, export): a chat gone from the catalog, such as a pruned one, is found by its dossier."""
     persona = bool(getattr(args, "persona", False))
     everything = allow_all and bool(getattr(args, "all", False))
     contact = getattr(args, "contact", None)
@@ -227,10 +234,27 @@ def _resolve_target(args: argparse.Namespace, *, allow_all: bool = False) -> Tar
         if allow_all and connection is not None and chat is not None and contact is None:
             # forget only: an orphan dossier (chat gone from the catalog) is addressed by conn + chat.
             return ("contact", {"business_connection_id": str(connection), "chat_id": _chat_id(chat)})
+        orphan = _stored_entry(connection, chat) if stored and contact is None and chat is not None else None
+        if orphan is not None:
+            return ("contact", orphan)
         raise
     if entry.get("chat_type") != "private":
         raise ValueError("dossiers are built only for private chats")
     return ("contact", entry)
+
+
+def _stored_entry(connection: Any, chat: Any) -> dict[str, Any] | None:
+    """The ids of the one stored contact dossier for ``chat`` (and ``connection``, when given), else None."""
+    found = []
+    for path in sorted((_ds.dossier_root() / "chats").glob(f"*/*/{_doc.DOC_FILE}")):
+        try:
+            doc = _doc.read_doc(path.parent)
+        except (OSError, ValueError):
+            continue
+        if (doc is not None and str(doc.get("chat_id")) == str(chat).strip()
+                and connection in (None, doc.get("business_connection_id"))):
+            found.append({"business_connection_id": doc["business_connection_id"], "chat_id": doc["chat_id"]})
+    return found[0] if len(found) == 1 else None
 
 
 def _has_target(args: argparse.Namespace) -> bool:
@@ -278,7 +302,7 @@ class _Stored:
     key: str  # chat key (the directory under chats/), or "persona"
     doc: dict[str, Any] | None
     corrupt: bool
-    backup: bool  # a v1-dossier.json is still kept
+    backup: bool  # a v1-dossier.json (or v1-dossier.<n>.json) is still kept
     entry: dict[str, Any] | None  # the catalog entry of a contact
 
     @property
@@ -316,7 +340,7 @@ def _read_stored(kind: str, key: str, path: Path, entry: dict[str, Any] | None) 
         doc, corrupt = _doc.read_doc(path), False
     except (OSError, ValueError):
         doc, corrupt = None, True
-    return _Stored(kind, key, doc, corrupt, (path / _doc.V1_BACKUP).exists(), entry)
+    return _Stored(kind, key, doc, corrupt, bool(_doc.backups(path)), entry)
 
 
 def _stored(catalog: dict[str, dict[str, Any]]) -> list[_Stored]:
@@ -357,11 +381,13 @@ def _switch_line(settings: dict[str, Any]) -> str:
 
 def _model_line(cfg: _ds.DossierConfig) -> str:
     route = f"Model: {cfg.provider} / {cfg.model}"
-    trust = f"needs plugins.entries.{_history.PLUGIN_NAME}.llm trust config"
+    # An explicit route sends its own output cap and cannot ask for zero data retention.
+    explicit = (f"max_tokens {cfg.max_tokens}; zero data retention not requested; "
+                f"needs plugins.entries.{_history.PLUGIN_NAME}.llm trust config")
     if cfg.legacy_env:
-        return f"{route} (from {_ds.PROVIDER_ENV}/{_ds.MODEL_ENV}; {trust})"
+        return f"{route} (from {_ds.PROVIDER_ENV}/{_ds.MODEL_ENV}; {explicit})"
     if not cfg.task_registered:
-        return f"{route} (explicit route: the Telesec dossiers task is not registered; {trust})"
+        return f"{route} (explicit route: the Telesec dossiers task is not registered; {explicit})"
     if cfg.provider == "auto":
         return "Model: auto (main model)"
     details = ["Telesec dossiers task", f"reasoning {cfg.reasoning or 'provider default'}",
@@ -554,6 +580,8 @@ def _list_row(item: _Stored, state: dict[str, Any]) -> tuple[str, str, str, str]
     ident = "-" if item.ids is None else f"{item.ids[0]}:{item.ids[1]}"
     if item.corrupt:
         info = "-  unreadable"
+    elif not item.built and doc["document"]:  # converted from v1
+        info = f"rev {doc['revision']}  {_doc.units(doc['document']):,} chars  converted, waiting for first build"
     elif not item.built:
         info = "-  waiting for first build"
     elif item.kind == "persona":
@@ -630,6 +658,8 @@ def _status_lines(target: Target, doc: dict[str, Any]) -> list[str]:
                      "this is the earlier version.")
     if target[0] == "contact" and _ds._entry_paused(target[1]):
         lines.append(f"{_ds.CHAT_OFF} This version stays as it is.")
+    if _doc.converted(doc):
+        lines.append("Converted from the old dossier; the first refresh rewrites it.")
     if doc.get("older_history_not_sent"):
         cfg = _ds.load_config()
         lines.append(f"Older history was not sent: the first build reads up to {cfg.backfill_messages} messages "
@@ -662,7 +692,7 @@ def _json_view(target: Target, doc: dict[str, Any]) -> dict[str, Any]:
 def _cmd_show(args: argparse.Namespace) -> int:
     if args.fact is not None:
         return _removed_hint("show --fact")
-    target = _resolve_target(args)
+    target = _resolve_target(args, stored=True)
     doc = _load(target)
     if doc is None:
         _emit([f"error: no dossier for {_label(target)} yet"])
@@ -679,7 +709,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
-    target = _resolve_target(args)
+    target = _resolve_target(args, stored=True)
     doc = _load(target)
     if doc is None:
         _emit([f"error: no dossier for {_label(target)} yet"])
@@ -746,7 +776,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
             notes.append(f"# /dossier would send {_plural(len(sent), 'message')}; refusal: none")
         _emit(notes, sys.stderr)
         return 0
-    system, user, info, gate = _ds.preview_contact(entry, now=now)
+    system, user, info, gate, hints = _ds.preview_contact(entry, now=now)
     if info.first and not info.qualified:
         cfg = _ds.load_config()
         notes.append(f"# nothing due: {_label(target)} does not qualify yet; the first build needs a received and a "
@@ -758,6 +788,9 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         notes.append(f"# would run: {'first' if info.first else 'update'}, {info.new} new, {info.edited} edited, "
                      f"{info.deleted} deleted, note {'changed' if info.note_changed else 'unchanged'}"
                      f"{'; message check would apply' if gate else ''}")
+        if hints:
+            notes.append(f"# fact extraction would also send {_plural(hints, 'new message')} to Cloudflare and may "
+                         "add hints to this input (not shown)")
     _emit(notes, sys.stderr)
     return 0
 
@@ -804,38 +837,80 @@ def _cmd_run(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _run_hint(args: argparse.Namespace, target: Target) -> str:
+def _target_args(args: argparse.Namespace, target: Target) -> str:
+    """The target as the owner gave it, quoted for a shell: ``--persona``, ``--contact "…"`` or the ids."""
     if target[0] == "persona":
-        return f"{CLI} run --persona"
+        return "--persona"
     if args.contact is not None:
         escaped = re.sub(r'(["\\$`])', r"\\\1", args.contact)
-        return f'{CLI} run --contact "{escaped}"'
+        return f'--contact "{escaped}"'
     entry = target[1]
-    return (f"{CLI} run --connection {shlex.quote(str(entry['business_connection_id']))} "
+    return (f"--connection {shlex.quote(str(entry['business_connection_id']))} "
             f"--chat {shlex.quote(str(entry['chat_id']))}")
 
 
+def _run_hint(args: argparse.Namespace, target: Target) -> str:
+    return f"{CLI} run {_target_args(args, target)}"
+
+
+def _note_kept(args: argparse.Namespace, target: Target, label: str, kept: _ds.NoteKept) -> list[str]:
+    why = ("came from the old dossier" if kept.converted
+           else f"is over the {_doc.NOTE_MAX_CHARS}-character limit")
+    where = f"{CLI} note {_target_args(args, target)}"
+    return [(f"error: the owner note for {label} {why} ({_plural(kept.chars, 'character')}), and --text replaces "
+             "all of it. Nothing was changed."),
+            f'To add to it: {where} --append "..."',
+            f'To replace it: {where} --text "..." --replace']
+
+
 def _cmd_note(args: argparse.Namespace) -> int:
+    if args.section is not None:
+        return _removed_hint("note --section")
+    if args.replace and args.text is None:
+        print("error: --replace works only with --text")
+        return 2
     target = _resolve_target(args)
     label = _label(target)
-    text = None if args.text is None else _doc.clean_note(args.text)
-    if args.text is None and not args.clear:
+    append = args.append is not None
+    raw = args.append if append else args.text
+    text = None if raw is None else _doc.clean_note(raw)
+    if raw is None and not args.clear:
         doc = _load(target)
         _emit(_text_lines(doc["note"]) if doc and doc.get("note") else [f"No owner note for {label}."])
         return 0
+    if append and not text:
+        print("error: --append needs text")
+        return 2
     if not text:
         doc = _load(target)
         if not doc or not doc.get("note"):
             _emit([f"No owner note for {label}."])
             return 0
+        kept = bool(doc.get("note_from")) or len(doc["note"]) > _doc.NOTE_MAX_CHARS
+        if not args.clear and kept and not args.replace:  # an empty --text, such as an unset shell variable
+            _emit(_note_kept(args, target, label, _ds.NoteKept(len(doc["note"]), bool(doc.get("note_from")))))
+            return 1
         _ds.set_note(target, None)
-        _emit([f"Cleared the owner note for {label}."])
+        _emit([f"Cleared the owner note for {label} ({_plural(len(doc['note']), 'character')})."])
         return 0
     if len(text) > _doc.NOTE_MAX_CHARS:
         _emit([f"error: the note is {len(text)} characters; the limit is {_doc.NOTE_MAX_CHARS}"])
         return 2
-    result = _ds.set_note(target, text)
-    saved = f"Saved the owner note for {label} ({_plural(result['chars'], 'character')})."
+    try:
+        result = _ds.set_note(target, text, append=append, replace=args.replace)
+    except _ds.NoteKept as kept:
+        _emit(_note_kept(args, target, label, kept))
+        return 1
+    chars, old = _plural(result["chars"], "character"), result["old_chars"]
+    if append and old:
+        saved = f"Added to the owner note for {label}; it now has {chars}."
+    elif old:
+        saved = f"Saved the owner note for {label} ({chars}); it replaced a note of {_plural(old, 'character')}."
+    else:
+        saved = f"Saved the owner note for {label} ({chars})."
+    if result["chars"] > _doc.NOTE_MAX_CHARS:
+        saved += (f" The panel shows its first {_doc.NOTE_MAX_CHARS} characters; 'note' and 'show' print all "
+                  "of it, and the model reads all of it.")
     # The same checks as run, so the hint never names a command that refuses.
     if not _ds.load_config().enabled:
         then = f"Dossiers are disabled; the note is used once they are turned on with {ENABLE_HOW}."
@@ -888,7 +963,8 @@ def _cmd_forget(args: argparse.Namespace) -> int:
 
 
 def _removed_hint(command: str) -> int:
-    _emit([REMOVED_HINT.format(cmd=command), CHANGES_HINT if command == "changes" else NOTE_HINT])
+    second = {"changes": CHANGES_HINT, "note --section": APPEND_HINT}.get(command, NOTE_HINT)
+    _emit([REMOVED_HINT.format(cmd=command), second])
     return 1
 
 

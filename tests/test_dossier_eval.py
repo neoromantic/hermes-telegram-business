@@ -7,6 +7,7 @@ eval's own ``--dry-run`` opener, and the ``no_network`` fixture refuses every so
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -24,13 +25,14 @@ from model_fakes import FakeOpener
 
 ROOT = Path(__file__).resolve().parents[1]
 
-V1_WORKTREE = Path("/tmp/telesec-v1")  # run.main prints this path in its git worktree instruction
+V1_ENV = "TELESEC_EVAL_V1_WORKTREE"  # opt-in: a v0.13.0 worktree for the v1 arm test
 O6_SCENARIOS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S12"]
 FACT_KINDS = ("other", "date", "amount", "contact")
 PHONE_RE = re.compile(r"\+?\d(?:[\s().-]*\d){8,}")
 MADE_UP_PHONE_RE = re.compile(r"\+7 912 345-67-\d\d")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 HOME_PATH_RE = re.compile(r"/(?:Users|home)/\w|[A-Za-z]:\\\\Users")
+SHARED_TMP_RE = re.compile(r"(?<![\w.~])/tmp/")
 KEY_ENV = ("AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
 
 
@@ -40,8 +42,15 @@ def _has_v2_api() -> bool:
 
 
 needs_v2 = pytest.mark.skipif(not _has_v2_api(), reason="dossier_support does not have the v2 API yet")
-needs_v1 = pytest.mark.skipif(not (V1_WORKTREE / "dossier_support.py").is_file(),
-                              reason="no v0.13.0 worktree for the v1 arm")
+
+
+def _v1_worktree() -> Path | None:
+    """The v1 arm runs the code at this path, so only an explicit opt-in names it; never a fixed shared path."""
+    value = os.environ.get(V1_ENV, "").strip()
+    return Path(value) if value else None
+
+
+needs_v1 = pytest.mark.skipif(_v1_worktree() is None, reason=f"set {V1_ENV} to a v0.13.0 worktree")
 
 
 @pytest.fixture(autouse=True)
@@ -220,6 +229,28 @@ def test_the_deleted_voice_is_a_legacy_transcript() -> None:
     assert chunks[0].reply_to is not None and all(m.reply_to is None for m in chunks[1:])
 
 
+def test_the_deleted_voice_in_a_post_is_reported_not_a_blocker() -> None:
+    # Its transcript stays in the chat, so it is live content that /dossier may repeat (DOSSIERS.md, G2 limits).
+    s5 = sc.BY_ID["S5"]
+    cp = s5.checkpoints()[-1]
+    assert cp.post and s5.canary("voice").hard == ()
+    canaries = run._canaries(s5, cp, "post")
+    empty = {"hard": [], "reported": []}
+
+    def checks(text: str) -> dict[str, Any]:
+        row = {"document": "", "canaries": empty,
+               "post": {"status": "ok", "text": text, "canaries": run._canary_result(text, canaries, "post")}}
+        step = {"id": cp.id, "report": {}, "chats": {str(next(iter(s5.chats))): row},
+                "persona": {"document": "", "canaries": empty}}
+        return run.check_scores([{"scenario": "S5", "steps": [step]}], run.ARMS["v2"])
+
+    voice = checks("- Marek wants to talk about the Mokotów corner spot.")
+    assert voice["blockers"] == [] and voice["canaries_reported"] == {"deleted:post": 1}
+    rise = checks("- Prices go up 17 percent in November; Mokotow corner spot.")
+    assert rise["blockers"] == [f"S5/{cp.id}: deleted canary rise in the post"]
+    assert rise["canaries_hard"] == rise["canaries_reported"] == {"deleted:post": 1}
+
+
 @pytest.mark.parametrize("scenario", sc.ALL, ids=lambda s: s.id)
 def test_scenario_uses_made_up_data_only(scenario: sc.Scenario) -> None:
     for text in _all_texts(scenario):
@@ -237,6 +268,20 @@ def test_eval_sources_use_made_up_data_only() -> None:
         assert all(mail.endswith("@example.com") for mail in EMAIL_RE.findall(source)), path.name
 
 
+def test_no_fixed_path_in_the_shared_temp_directory() -> None:
+    # The v1 arm runs the code in its worktree; a fixed path there is one any local user could plant.
+    docs = [ROOT / "README.md", ROOT / "CONTRIBUTING.md", *sorted((ROOT / "docs").glob("*.md"))]
+    for path in [*sorted((ROOT / "tests" / "dossier_eval").glob("*.py")), *docs]:
+        assert not SHARED_TMP_RE.search(path.read_text(encoding="utf-8")), path.name
+
+
+def test_the_v1_arm_test_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(V1_ENV, raising=False)
+    assert _v1_worktree() is None
+    monkeypatch.setenv(V1_ENV, " ../telesec-v1 ")
+    assert _v1_worktree() == Path("../telesec-v1")
+
+
 def test_consecutive_bursts_are_written_together() -> None:
     groups = run.grouped_steps(sc.BY_ID["S6"].steps)
     assert isinstance(groups[0], list) and {b.chat for b in groups[0]} == set(sc.BY_ID["S6"].chats)
@@ -247,6 +292,16 @@ def test_consecutive_bursts_are_written_together() -> None:
 # ---------------------------------------------------------------------------
 # Model calls: request shapes, budget, retries
 # ---------------------------------------------------------------------------
+
+
+def test_a_live_run_reads_the_gateway_base_url_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The plugin reads the base URL through the secret scope only, so the eval puts it there.
+    monkeypatch.setenv("AI_GATEWAY_BASE_URL", "https://eval-proxy.example.com/v1")
+    ll.install_secret_scope(run._secrets(False))
+    opener = FakeOpener([(200, _chat_payload("**Doc.**\n<<END>>"))])
+    ll.LiveLlm(ll.Meter(ll.Budget(1.0), key="test-key", opener=opener)).complete(
+        [{"role": "user", "content": "hi"}], purpose="telesec_dossier")
+    assert opener.calls[0]["url"] == "https://eval-proxy.example.com/v1/chat/completions"
 
 
 def test_v2_writer_request_shape() -> None:
@@ -561,7 +616,7 @@ def test_the_v1_arm_needs_a_worktree(tmp_path: Path, capsys: pytest.CaptureFixtu
     for extra in ([], ["--v1-worktree", str(tmp_path / "missing")]):
         code = run.main(["--dry-run", "--arms", "v1", "--scenarios", "S9", "--out", str(tmp_path / "out"), *extra])
         assert code == 2
-        assert "git worktree add /tmp/telesec-v1 v0.13.0" in capsys.readouterr().err
+        assert "git worktree add ../telesec-v1 v0.13.0" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
 
 
@@ -649,7 +704,9 @@ def test_an_unexpected_error_keeps_the_other_runs(tmp_path: Path, monkeypatch: p
 
 @needs_v1
 def test_dry_run_of_the_v1_arm(tmp_path: Path) -> None:
-    code = run.main(["--dry-run", "--arms", "v1", "--v1-worktree", str(V1_WORKTREE), "--scenarios", "S5,S7,S12",
+    worktree = _v1_worktree()
+    assert worktree is not None and (worktree / "dossier_support.py").is_file(), f"{V1_ENV} is not a v0.13.0 worktree"
+    code = run.main(["--dry-run", "--arms", "v1", "--v1-worktree", str(worktree), "--scenarios", "S5,S7,S12",
                      "--out", str(tmp_path)])
     assert code == 0
     v1 = json.loads((_out_dir(tmp_path) / "v1.json").read_text(encoding="utf-8"))

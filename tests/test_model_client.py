@@ -166,10 +166,22 @@ def test_gateway_key_is_none_when_the_secret_scope_is_missing(mc):
         ("https://gw.example.com:8443/proxy/v1", "https://gw.example.com:8443/proxy"),
     ],
 )
-def test_gateway_base(mc, monkeypatch, value, expected):
-    if value is not None:
-        monkeypatch.setenv("AI_GATEWAY_BASE_URL", value)
-    assert mc.gateway_base() == expected
+def test_gateway_base(mc, value, expected):
+    with fake_secret_scope({} if value is None else {mc.BASE_ENV: value}):
+        assert mc.gateway_base() == expected
+
+
+def test_gateway_base_reads_the_profile_secret_scope_not_the_process_environment(mc, monkeypatch):
+    # Under a multiplexing gateway os.environ holds the launch profile's URL; the key must go to this profile's.
+    monkeypatch.setenv("AI_GATEWAY_BASE_URL", "https://launch-profile.example.com/v1")
+    with fake_secret_scope({mc.BASE_ENV: "https://routed-profile.example.com/v1"}) as scope:
+        assert mc.gateway_base() == "https://routed-profile.example.com"
+        assert scope.reads == [mc.BASE_ENV]
+        del scope.secrets[mc.BASE_ENV]
+        assert mc.gateway_base() == "https://ai-gateway.vercel.sh"
+        scope.unscoped = True
+        assert mc.gateway_base() == "https://ai-gateway.vercel.sh"
+    assert mc.gateway_base() == "https://ai-gateway.vercel.sh"  # ImportError: no Hermes secret scope
 
 
 @pytest.mark.parametrize(
@@ -190,9 +202,9 @@ def test_gateway_base(mc, monkeypatch, value, expected):
         "https://шлюз.example.com",
     ],
 )
-def test_gateway_base_is_none_unless_https_with_a_host(mc, monkeypatch, value):
-    monkeypatch.setenv("AI_GATEWAY_BASE_URL", value)
-    assert mc.gateway_base() is None
+def test_gateway_base_is_none_unless_https_with_a_host(mc, value):
+    with fake_secret_scope({mc.BASE_ENV: value}):
+        assert mc.gateway_base() is None
 
 
 # ---------------------------------------------------------------------------
@@ -360,9 +372,9 @@ def test_post_json_reads_at_most_one_mib(mc):
         ("https://gw.example.com/v1/", "https://gw.example.com/v1/evaluate"),
     ],
 )
-def test_jev_url_with_and_without_v1(mc, scope, monkeypatch, base, url):
+def test_jev_url_with_and_without_v1(mc, scope, base, url):
     if base is not None:
-        monkeypatch.setenv("AI_GATEWAY_BASE_URL", base)
+        scope.secrets[mc.BASE_ENV] = base
     opener = FakeOpener([jev_reply()])
     mc.jev_evaluate(STATE, QUESTIONS, opener=opener)
     assert opener.calls[0]["url"] == url
@@ -423,8 +435,8 @@ def test_jev_without_a_key_makes_no_call(mc):
 
 
 @pytest.mark.parametrize("base", ["http://gw.example.com", "gw.example.com/v1", "https://"])
-def test_jev_with_a_bad_base_url_makes_no_call(mc, scope, monkeypatch, base):
-    monkeypatch.setenv("AI_GATEWAY_BASE_URL", base)
+def test_jev_with_a_bad_base_url_makes_no_call(mc, scope, base):
+    scope.secrets[mc.BASE_ENV] = base
     opener = FakeOpener([jev_reply()])
     _fails(mc, "bad_base_url", lambda: mc.jev_evaluate(STATE, QUESTIONS, opener=opener))
     assert opener.calls == []
@@ -465,9 +477,9 @@ def test_jev_bad_responses(mc, scope, reply):
     _fails(mc, "bad_response", lambda: mc.jev_evaluate(STATE, QUESTIONS, opener=FakeOpener([reply])))
 
 
-def test_jev_logs_and_errors_carry_no_key_state_questions_or_url(mc, scope, monkeypatch, caplog):
+def test_jev_logs_and_errors_carry_no_key_state_questions_or_url(mc, scope, caplog):
     caplog.set_level(logging.DEBUG)
-    monkeypatch.setenv("AI_GATEWAY_BASE_URL", "https://gw.example.com/v1")
+    scope.secrets[mc.BASE_ENV] = "https://gw.example.com/v1"
     opener = FakeOpener(
         [
             jev_reply(usage={"inputTokens": 1606}),

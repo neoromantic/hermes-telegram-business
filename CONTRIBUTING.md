@@ -50,20 +50,26 @@ To try a change in a real gateway, install your checkout into a test Hermes prof
 
 ## Dossier eval
 
-`tests/dossier_eval/` replays made-up chats through the real dossier code and scores the result: key facts current, stale, or missing, invented claims, canary texts that must never appear (deleted messages, the owner note in a `/dossier` post), calls, tokens, cost, and time. It is opt-in, live, and paid; the offline tests in `tests/test_dossier_eval.py` check its plumbing.
+`tests/dossier_eval/` replays made-up chats through the real dossier code and scores the result: key facts current, stale, or missing, invented claims, canary texts that must never appear (deleted messages, the owner note in a `/dossier` post) or are only counted (the transcript of a deleted voice message, which stays in the chat), calls, tokens, cost, and time. It is opt-in, live, and paid; the offline tests in `tests/test_dossier_eval.py` check its plumbing.
 
-The `v1` arm needs a worktree of `v0.13.0`. Check the plumbing first, offline and free:
+The `v1` arm needs a worktree of `v0.13.0`. The eval runs the code in it, so keep it in a directory only you can write to, not in a shared temp directory. Check the plumbing first, offline and free:
 
 ```bash
-git worktree add /tmp/telesec-v1 v0.13.0
-uv run python tests/dossier_eval/run.py --out /tmp/telesec-eval --v1-worktree /tmp/telesec-v1 --dry-run
+git worktree add ../telesec-v1 v0.13.0
+uv run python tests/dossier_eval/run.py --out ../telesec-eval --v1-worktree ../telesec-v1 --dry-run
+```
+
+The offline test of the `v1` arm is opt-in too: `uv run pytest` skips it unless `TELESEC_EVAL_V1_WORKTREE` names that worktree.
+
+```bash
+TELESEC_EVAL_V1_WORKTREE=../telesec-v1 uv run pytest -q tests/test_dossier_eval.py
 ```
 
 A live run needs `AI_GATEWAY_API_KEY` in the environment (and `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` for the `v2-clairic` arm):
 
 ```bash
-uv run python tests/dossier_eval/run.py --out /tmp/telesec-eval \
-    --arms v1,v2,v2-gate,v2-think,v2-clairic --v1-worktree /tmp/telesec-v1
+uv run python tests/dossier_eval/run.py --out ../telesec-eval \
+    --arms v1,v2,v2-gate,v2-think,v2-clairic --v1-worktree ../telesec-v1
 ```
 
 - The arms are `v1` (the old fact-based dossiers), `v2`, `v2-gate` (with the message check), `v2-think` (reasoning `high`), and `v2-clairic` (with fact extraction; skipped without Cloudflare keys).

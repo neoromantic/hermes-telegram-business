@@ -31,12 +31,12 @@ To leave one chat out, tap **Manage Bot** in that chat and then **No dossier** i
 
 - The worker skips it, its messages are left out of the next persona rebuild, and a running panel Refresh for it stops before its next model call or write.
 - `dossier run --contact` and `dossier preview` for it refuse with `Dossier is off for this chat.`, and the panel offers no Refresh.
-- The stored dossier stays frozen: you can still read it in the panel (with the note `Off for this chat.`) and the CLI. `dossier forget` deletes it. While the chat saves no history, the panel's **🗑 Erase saved history** (or `history forget`) deletes the chat's history and then its dossier ([erase one chat](HISTORY.md#erase-one-chat)).
+- The stored dossier stays frozen: you can still read it in the panel (with the note `Off for this chat.`) and the CLI, also when it is still the one [converted from the old dossier](#upgrade-and-rollback). `dossier forget` deletes it. While the chat saves no history, the panel's **🗑 Erase saved history** (or `history forget`) deletes the chat's history and then its dossier ([erase one chat](HISTORY.md#erase-one-chat)).
 - The owner's `/dossier` in the chat posts nothing, and the bot tells you privately: `Dossier is off for this chat.`
 
 The setting is per owner, so it never touches another owner's chat with the same contact. The worker never asks Telegram who owns a connection: when the owner is not known yet, a chat id that some owner paused stays paused.
 
-A contact gets a dossier once its chat has at least one received and one sent text message among the messages the first build would use: the last 90 days, at most 500 messages. A chat with old received messages and only recent sent ones qualifies only once both sides appear inside that window. Plugin voice transcripts and messages of unknown direction count for neither side.
+A contact gets a dossier once its chat has at least one received and one sent text message among the messages the first build would use: the last 90 days, at most 500 messages. A chat with old received messages and only recent sent ones qualifies only once both sides appear inside that window. Plugin voice transcripts and messages of unknown direction count for neither side. A dossier converted from the old version is readable before that, and its chat's first build rewrites it once the chat qualifies.
 
 ```bash
 hermes telesec dossier status
@@ -80,15 +80,28 @@ auxiliary:
 ```
 
 - **Processor.** By default the text goes to Vercel AI Gateway, which passes it to Google's Gemini 3.8 Flash. Zero data retention asks the gateway to use only providers that keep no prompts or answers. Hermes needs `AI_GATEWAY_API_KEY` for the `ai-gateway` provider.
-- **No trust config.** The plugin passes only the task, never a provider or model, so the [LLM trust gate](../README.md#llm-trust-gate) allowlist is not needed.
-- **Another model.** Run `hermes model` → Telesec dossiers and pick the model and reasoning `low`, or put your values under `auxiliary.telesec_dossier` in `config.yaml`. Each key you set wins over its default, but an `extra_body` you set replaces the default one whole, so copy `max_tokens` and `providerOptions` into it. Until you choose a model there, `hermes model` may list the task as `auto`; the defaults still apply, and `status` shows the model in effect.
-- **Warnings.** `status` warns when the task follows the main model (`auto`), uses reasoning other than `low` (about 3 times the cost), has no output cap, or reaches the gateway without zero data retention.
+- **No trust config.** The plugin passes only the task, never a provider or model, so the [LLM trust gate](../README.md#llm-trust-gate) allowlist is not needed. Its `allowed_providers` and `allowed_models` matter only for the two explicit routes below.
+- **Another model.** Run `hermes model` → Telesec dossiers and pick the model and reasoning `low`, or put your values under `auxiliary.telesec_dossier` in `config.yaml`. Each key you set wins over its default, but an `extra_body` you set replaces the default one whole. Until you choose a model there, `hermes model` may list the task as `auto`; the defaults still apply, and `status` shows the model in effect. `providerOptions` is for `ai-gateway` only. `hermes model` does not change `extra_body`, so with any other provider, or `auto`, the default one stays and the provider may reject every call. Set an `extra_body` for that provider, for example for the native `gemini` provider:
+
+  ```yaml
+  auxiliary:
+    telesec_dossier:
+      provider: gemini
+      model: gemini-3.8-flash
+      timeout: 120
+      reasoning_effort: low
+      extra_body:
+        max_tokens: 8192
+  ```
+
+  Use `extra_body: {}` for a provider that rejects `max_tokens` in the body too. On `ai-gateway`, copy both `max_tokens` and `providerOptions` into your `extra_body`.
+- **Warnings.** `status` warns when the task follows the main model (`auto`), uses reasoning other than `low` (about 3 times the cost), has no output cap, reaches the gateway without zero data retention, or keeps `providerOptions` on another provider. Settings shows that last warning under the dossier model too.
 - **Host fallback.** If the dossier model fails (a timeout, a rate limit, a connection or payment error, or an invalid answer), Hermes may retry with the task's `fallback_chain` and then with the main model. Telesec cannot turn this off, and the task setting does not prevent it. The text that can reach the main model this way is the same as the dossier model gets: the writer input with the owner note, the persona input, and the `/dossier` input. Telesec records the model that answered: `status` prints it as `Last answer` and adds `(host fallback: differs from the configured route)` when it is not the configured model.
 - **Calls.** Host audit lines name the purpose: `telesec_dossier` (a contact), `telesec_persona`, `telesec_post` (`/dossier`), or `telesec_shorten`. On the task route each call uses the task's `timeout` (120 seconds unless you change it). The two explicit routes below use 120 seconds per worker call and 90 seconds per `/dossier` call. Hermes retries transient errors itself.
 
 A trust-gate denial, which only the two explicit routes below can get, stops the whole cycle. `status` then prints `Last cycle aborted: model call denied by the Hermes trust gate; check plugins.entries.telesec.llm`, and `dossier run` prints the host's message. Any other error, such as a timeout or an unusable answer, fails only that contact (or the persona).
 
-**Explicit routes.** Two cases still pass a provider and model and so need the trust config to allow them:
+**Explicit routes.** Two cases still pass a provider and model and so need the trust config to allow them. They send an output cap of 8,192 tokens (`max_tokens`) with every call but cannot ask for zero data retention, and `status` shows both:
 
 - On a Hermes without plugin model tasks, dossiers call `ai-gateway` / `google/gemini-3.8-flash` directly, and `status` warns.
 - `TELESEC_DOSSIER_PROVIDER` and `TELESEC_DOSSIER_MODEL` are deprecated. While `TELESEC_DOSSIER_PROVIDER` is set and `config.yaml` names no `auxiliary.telesec_dossier.provider`, dossiers use that provider with `TELESEC_DOSSIER_MODEL`, or `gemini-3.8-flash` for `gemini` or `google`, or `google/gemini-3.8-flash` for any other provider. `status` warns. `TELESEC_DOSSIER_MODEL` alone is ignored, and so are both once `config.yaml` names a provider for the task. Remove them to use the task.
@@ -119,7 +132,7 @@ When it is on, the new messages of a contact refresh also go to Cloudflare Worke
 - It fails open: on any error the writer runs without hints, and `status` counts the error.
 - Its quality is [not measured yet](#cost-and-quality).
 
-Telesec reads `AI_GATEWAY_API_KEY`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_API_TOKEN` through the Hermes secret scope of the active profile, only when it makes a call. It never stores or logs them, sends them only over `https` to the gateway or the Cloudflare API, and follows no redirects.
+Telesec reads `AI_GATEWAY_API_KEY`, `AI_GATEWAY_BASE_URL`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_API_TOKEN` through the Hermes secret scope of the active profile, only when it makes a call, so the key goes only to that profile's gateway URL. It never stores or logs them, sends them only over `https` to the gateway or the Cloudflare API, and follows no redirects.
 
 ## What the model sees
 
@@ -154,7 +167,9 @@ hermes telesec dossier preview --persona
 hermes telesec dossier preview --contact @alice --post
 ```
 
-`--post` prints the exact input the next `/dossier` summary would get, and whether `/dossier` would refuse; it works for a contact only. `preview` ignores the quiet rule and the persona thresholds, like `run --contact` and `run --persona`. For the persona, stderr says whether the next cycle would rebuild it (`# would run: persona from 280 messages in 4 chats`) or only `run --persona` would (`# not due yet; …`). It also works while dossiers are disabled and says that nothing is sent until they are enabled.
+`--post` prints the exact input the next `/dossier` summary would get, and whether `/dossier` would refuse; it works for a contact only. It never gives the 24-hour reason, because only the gateway sees the contact's voice and media messages. `preview` ignores the quiet rule and the persona thresholds, like `run --contact` and `run --persona`. For the persona, stderr says whether the next cycle would rebuild it (`# would run: persona from 280 messages in 4 chats`) or only `run --persona` would (`# not due yet; …`). It also works while dossiers are disabled and says that nothing is sent until they are enabled.
+
+With [fact extraction](#fact-extraction) on, the next refresh may add `hints` to the JSON. `preview` does not show them: they exist only after the call to Cloudflare, which `preview` never makes. Its stderr says when that call would run, for example `# fact extraction would also send 3 new messages to Cloudflare and may add hints to this input (not shown)`.
 
 ## The dossier
 
@@ -166,19 +181,24 @@ The model keeps every fact that is still true and changes only what the messages
 
 ## Owner note
 
-The owner note is your own text next to the dossier, up to 500 characters:
+The owner note is your own text next to the dossier. Each contact has one note, and the persona has its own:
 
 ```bash
-hermes telesec dossier note --contact @alice --text "We stop working on Orbit after December. Don't remind her about the old logo."
+hermes telesec dossier note --contact @alice --append "Don't remind her about the old logo."
+hermes telesec dossier note --contact @alice --text "We stop working on Orbit after December."
 hermes telesec dossier note --contact @alice
 hermes telesec dossier note --contact @alice --clear
 ```
+
+- `--append` adds your text to the note as a new paragraph. `--text` replaces the whole note. `--clear` deletes it. With none of them, `note` prints the note. `--append` and `--text` print the new length of the note, `--text` also the length of the note it replaced, and `--clear` the length of the note it deleted.
+- You can type at most 500 characters at a time. `--append` can make the note longer than 500 characters. Nothing is cut: the model and `note` and `show` get the whole note, and the panel shows its first 500 characters.
+- `--text` does not replace a note that [came from the old dossier](#upgrade-and-rollback) or is longer than 500 characters. It changes nothing, exits with code 1, and prints the commands to add to the note or replace it. To replace such a note, add `--replace`. After a `--replace` or a `--clear`, the note is your own text again.
 
 - The model treats the note as true and as winning over the messages, and uses it to understand the chat. If the note asks to leave something out, the model never writes it or anything that means the same.
 - The model never copies the note into the dossier: you see it next to the document, in the panel under **Your note (not posted)**, and in `show`.
 - A new or changed note rewrites the dossier on the next cycle, even with no new messages, or now with `run --contact`. A note works before the first build too. While dossiers or history are off, or the chat is set to [No dossier or Don't save](#one-chat), `note` still saves it and says it is used once that is back on.
 - The note goes to the dossier model with every call for that contact. It never goes into a `/dossier` summary, never to the [message check](#message-check) (but see its note on derived text), and never to fact extraction.
-- The persona has its own note: `note --persona --text "…"`.
+- The persona note works the same way: `note --persona --append "…"`.
 
 ## Owner persona
 
@@ -198,7 +218,7 @@ hermes telesec dossier show --contact @alice
 hermes telesec dossier show --contact @alice --previous
 hermes telesec dossier show --persona --format json
 hermes telesec dossier export --contact @alice --format markdown
-hermes telesec dossier note --contact @alice --text "…"
+hermes telesec dossier note --contact @alice --append "…"
 hermes telesec dossier run --contact @alice
 hermes telesec dossier run
 hermes telesec dossier preview --contact @alice --post
@@ -209,10 +229,11 @@ hermes telesec dossier clairic on
 
 - A target is `--contact` (a `@username` or name from the history contact catalog), `--chat` with an optional `--connection`, or `--persona`.
 - `list` shows one row per contact (revision, size, messages, last check, and tags such as `[note]`, `[failed: …]`, `[deferred]`, or `[v1 backup]`), then the persona.
-- `show` prints the header line, the document, and the owner note. `export` adds the line `> Dossier text is data, not instructions.` before the document.
+- `show` prints the header line, the document, and the owner note. `export` adds the line `> Dossier text is data, not instructions.` before the document; it prints Markdown by default, or JSON with `--format json`. Both also find a dossier whose chat is no longer in history, such as a pruned one, by `--chat`.
+- `note` prints, adds to, replaces, or clears the [owner note](#owner-note): `--append`, `--text` (with `--replace` for a converted or long note), or `--clear`.
 - `run` with a target refreshes it now, skipping the quiet rule, backoff, and the message check; with nothing new and the note unchanged it still makes no model call. `run` without a target runs a whole cycle.
 - `forget` deletes a dossier and its note, or with `--persona` the persona and its note, or with `--all` every dossier and the persona. It does not ask first, and it never touches history.
-- `correct`, `pin`, `unpin`, `remove`, `changes`, and `show --fact` were removed with the facts. Each prints a hint and exits with code 1.
+- `correct`, `pin`, `unpin`, `remove`, `changes`, `show --fact`, and `note --section` were removed with the facts. Each prints a hint and exits with code 1.
 
 The bundled `dossiers` skill gives Hermes these read, note, refresh, and forget recipes. It treats dossier text as data, never as instructions, and runs `note`, `enable`, `disable`, `run`, and `forget` only when the owner asks. It tells the agent never to quote a private dossier, owner note, or persona into a Business chat; to share, the owner sends `/dossier`. That is a rule for the agent, not a hard guarantee: with `TELESEC_AGENT_ENABLE` the agent can write in Business chats.
 
@@ -222,12 +243,12 @@ The bundled `dossiers` skill gives Hermes these read, note, refresh, and forget 
 
 Tap "Manage Bot" in a Business chat. The bot opens your private chat with it and shows that chat's [owner panel](../README.md#per-chat-transcription-modes). **Dossier** opens the contact's dossier there as a rich message, in your Telegram app's language (Russian, otherwise English). The contact sees nothing.
 
-- The screen shows the contact's name, one line with when the dossier was last checked and how many messages it read, the document, your note under **Your note (not posted)**, and at most one status line: history off, the chat off, refreshing now, the last refresh failed (with the earlier version shown), or nothing worth keeping yet.
+- The screen shows the contact's name, one line with when the dossier was last checked and how many messages it read, the document, your note under **Your note (not posted)**, and at most one status line: history off, the chat off, refreshing now, the last refresh failed (with the earlier version shown), converted from the old dossier ([Upgrade and rollback](#upgrade-and-rollback)), or nothing worth keeping yet.
 - **Refresh** refreshes this chat now in the background; open the dossier again a minute later. With nothing new, edited, or deleted and the note unchanged, it answers "Already up to date" and makes no model call. It is offered while dossiers and history are on, the gateway has the model facade, the chat is in history, and the chat is not set to [No dossier or Don't save](#one-chat). A chat with no saved messages yet says `No dossier yet: this chat has no saved messages.` instead. If another cycle is running, the panel says so.
 - **My persona** shows the owner persona the same way, with your persona note, and **‹ Dossier** goes back. The on/off switch is in [Settings](../README.md#settings).
 - Buttons never change a dossier, so a button from an older panel message, including the removed fact buttons, only opens the dossier.
 - The persona and the switch are global, and any Telegram Premium account can connect the bot. So the panel and Settings offer them only to an owner of every Business connection the bot knows about: those with a private chat in history, a stored contact dossier, or a chat the persona read, plus every connection with a recorded or looked-up owner and every connection with a Business update since the gateway started. The bot must know each connection's owner, from a lookup in this gateway process or one the [modes file](../README.md#per-chat-transcription-modes) records; otherwise the persona button stays hidden, Settings is read-only, the dossier screen says who can turn dossiers on, and the CLI still works.
-- The screen always fits one Telegram message: the document is at most 3,200 UTF-16 units and the note shows at most 500. When Telegram rejects the rich message, the panel falls back to plain text.
+- The screen always fits one Telegram message: the document is at most 3,200 UTF-16 units and the note shows at most 500. Only a document converted from the old dossier can be longer; the screen then shows its start and the `show --chat` command that prints all of it. When Telegram rejects the rich message, the panel falls back to plain text.
 - There is no note button yet; write notes in the CLI.
 
 ### `/dossier` in a chat
@@ -240,11 +261,12 @@ The summary is a clean-room build: it is written at that moment from the chat's 
 |---|---|
 | **Hard guarantees** | |
 | G1 | The post never contains the owner note. It is never in the post input, and the title and footer are fixed text plus a date. |
-| G2 | The post never contains anything that only deleted messages Telesec recorded say. Deleted messages, messages deleted and resent as a correction, and the text before an edit never enter the input. If any input message is deleted, edited, erased, or pruned while the summary is written, nothing is posted. |
+| G2 | The post never contains anything that only deleted messages Telesec recorded say. Deleted messages, messages deleted and resent as a correction, and the text before an edit Telesec recorded never enter the input. If any input message is deleted, edited, erased, or pruned while the summary is written, nothing is posted. |
 | G3 | The post never contains the private dossier, its previous version, the persona, or another chat. |
 | G4 | Only your exact `/dossier` triggers a post. |
 | **Limits** | |
 | | A deletion Telegram never delivered is unknown: the bot was down longer than Telegram keeps updates, or history was off at the time. |
+| | An edit Telesec never recorded is unknown, so the text before it is used: Telegram never delivered the edit, or it was made while history was off, the chat was set to [Don't save](#one-chat), or the old scope rule kept the chat out. |
 | | A deletion in the last moment between the final check and the post is not covered. |
 | | The model can invent text. It can never copy deleted text, because it never saw it. |
 | | A live message that quotes a deleted one is live content. |
@@ -255,7 +277,7 @@ The summary is a clean-room build: it is written at that moment from the chat's 
 So the contact gets a summary of what the chat shows now. It may differ from your private dossier; that is the point. `preview --contact @alice --post` prints the exact input.
 
 - Only a bare `/dossier` (or `/dossier@YourBot`) from the owner counts. `/dossier <text>`, a contact's `/dossier`, and a forwarded or inline-bot one are ordinary messages. So is a `/dossier` the bot cannot confirm as yours: its owner lookup failed and the [modes file](../README.md#per-chat-transcription-modes) records no owner for the connection.
-- Telegram lets a Business bot post only in chats where the contact wrote in the last 24 hours. In an older chat your command is still deleted, nothing is posted, and the bot tells you privately; send `/dossier` again after the contact writes.
+- Telegram lets a Business bot post only in chats where the contact wrote in the last 24 hours. Any message from the contact counts: text, a voice note, a photo, a sticker, or a file. Your own messages, voice transcripts, and edits don't. History keeps text only, so the gateway also remembers when each contact last wrote, in memory and without the content. Telesec refuses at once only when it knows the contact has not written for 24 hours: history has no text from them in that time, and the gateway has been running for more than 24 hours without seeing any other message from them. Otherwise it writes the summary and tries to post it. If Telegram refuses the post and Telesec did not know of a recent message, the bot gives you the same 24-hour reason. Either way your command is deleted and nothing is posted; send `/dossier` again after the contact writes.
 - When nothing is posted, nothing appears in the chat. The bot tells you why in your private chat with it, which you need to have started once (Manage Bot does that): dossiers or history are off, the model is not connected, the chat is set to [No dossier or Don't save](#one-chat), the contact has not written in the last 24 hours, the chat has nothing to summarise, a summary for the chat is already being prepared, messages changed meanwhile, the summary could not be written, or Telegram rejected the message.
 - Deleting the command needs the bot's "Delete messages" permission in Telegram Business > Chatbots. Without it the command stays and the gateway log says so.
 - Once the bot confirms you as the owner, the command and the posted summary are never written to history and never reach the ordinary Hermes path. An edited `/dossier` is never executed; when you edit a message history already has into `/dossier`, history records that edit.
@@ -275,7 +297,7 @@ So the contact gets a summary of what the chat shows now. It may differ from you
 | Deletion classified `likely_duplicate` or `likely_correction` | Counts as a deletion. |
 | Retention or size pruning | Nothing: pruned history is never a deletion and costs no model call. The dossier keeps what it learned. |
 
-Edits and deletions are tracked while a message is inside the rolling backfill window (the last 90 days). A dossier whose chat left history stays as it is until `forget`.
+Edits and deletions are tracked while a message is inside the rolling backfill window (the last 90 days). A dossier whose chat left history, for example because retention pruned all of it, stays as it is and readable until `forget`: the panel still shows it, and `show --chat` and `export --chat` still find it. This holds for a dossier converted from the old version too.
 
 ## Background worker
 
@@ -283,7 +305,7 @@ Edits and deletions are tracked while a message is inside the rolling backfill w
 - A cycle goes through all private contacts, most recently active first, then checks the persona. Chats set to [No dossier or Don't save](#one-chat) are skipped, and their messages are left out of the persona.
 - A contact whose history files have not changed since its last check is skipped without reading history.
 - A contact with new, edited, or deleted messages is refreshed only after its chat has been quiet for at least 10 minutes.
-- Rate limit: at most 20 dossier model calls per minute, over a sliding 60-second window that `dossier run` shares. Retries and fallbacks inside the host are not counted. There is no per-cycle cap, so a cycle works through every due contact at that rate.
+- Rate limit: at most 20 dossier model calls per minute, over a sliding 60-second window that `dossier run` shares. A shorten call takes its own place in the window. Retries and fallbacks inside the host are not counted. There is no per-cycle cap, so a cycle works through every due contact at that rate.
 - Only one cycle runs at a time, across processes. `dossier run` reports "another dossier cycle is running" while the worker is busy.
 - A failed contact is retried on the next cycle. After 3 failures in a row it waits 1, 2, 4, and up to 24 hours, and then tries again on its next chat change; Refresh and `run --contact` try at once. `status` and `list` show failures with their error type or check code.
 - Settings are read at the start of every cycle, so new intervals, limits, and models apply without a restart. Turning dossiers on starts the first cycle within a few minutes. Turning them off, or turning history off, makes the following cycles do nothing, and a running cycle stops before its next model call, message check, or fact extraction request. Turning the message check or fact extraction off stops its requests at once, also inside a running cycle; the writer still runs.
@@ -297,7 +319,8 @@ If Hermes reloads the plugin, a host with `on_unload` stops the old worker, any 
 ```text
 $HERMES_HOME/data/telesec/dossiers/
   chats/<connection-key>/<chat-id>/document.json
-  chats/<connection-key>/<chat-id>/v1-dossier.json   (only until the first refresh after an upgrade)
+  chats/<connection-key>/<chat-id>/v1-dossier.json   (only until the first refresh after an upgrade, or a forget;
+  chats/<connection-key>/<chat-id>/v1-dossier.1.json  a later old file goes to the next free number)
   persona/document.json
   settings.json
   state.json
@@ -306,7 +329,7 @@ $HERMES_HOME/data/telesec/dossiers/
   .cycle.lock
 ```
 
-Dossiers live next to history, never inside it. Directories are `0700` and files `0600`. Each `document.json` holds the document, its previous version, the owner note, the refresh cursor, and counters, and is written in one atomic replace under a lock. It holds no contact name or username. `settings.json` holds the on/off switch, the message check and fact extraction settings, and when and how (`cli`, `telegram`, or `migration`) the switch was last set. The other switches live in `data/telesec/settings.json` ([Settings](../README.md#settings)). `state.json` is a worker cache (change checks, failures, recent call times, the last cycle, and usage for the last 3 months); deleting it costs at most one extra history read per chat. `generation.json` counts `forget` runs so a cycle or summary that started earlier discards its results. Do not edit these files by hand. A corrupt file is never overwritten automatically. For a dossier file the CLI points to `forget`. A corrupt `settings.json` reads as off, and `status` and the gateway log say so, until a switch from Settings, `settings set dossiers`, or `dossier enable` or `disable` rewrites it (`forget` never touches it).
+Dossiers live next to history, never inside it. Directories are `0700` and files `0600`. Each `document.json` holds the document, its previous version, the owner note, the refresh cursor, and counters, and is written in one atomic replace under a lock. It has no separate name or username field, but the document text and the note usually name the contact and can hold contact details such as a phone number or mail address, so treat the file as private. `settings.json` holds the on/off switch, the message check and fact extraction settings, and when and how (`cli`, `telegram`, or `migration`) the switch was last set. The other switches live in `data/telesec/settings.json` ([Settings](../README.md#settings)). `state.json` is a worker cache (change checks, failures, recent call times, the last cycle, and usage for the last 3 months); deleting it costs at most one extra history read per chat. `generation.json` counts `forget` runs so a cycle or summary that started earlier discards its results. Do not edit these files by hand. A corrupt file is never overwritten automatically. For a dossier file the CLI points to `forget`. A corrupt `settings.json` reads as off, and `status` and the gateway log say so, until a switch from Settings, `settings set dossiers`, or `dossier enable` or `disable` rewrites it (`forget` never touches it).
 
 There is no second message archive. A dossier keeps a short document, its previous version, and 64-bit fingerprints with times of the messages it has processed, used to notice edits and deletions. The fingerprints are short hashes and are not reversible in practice, but they are not a cryptographic guarantee. The persona keeps the lists of chats that it and its previous version read, so that forgetting one of them can reset it.
 
@@ -335,16 +358,19 @@ Fixed limits: first cycle 3 minutes after connect; 120 seconds per writer call o
 
 Older versions kept a list of facts with sources in `dossier.json` and a revision log in `changes.jsonl`. The first dossier cycle, worker start, or `hermes telesec dossier` command after the upgrade converts every dossier once, with no model call:
 
-- **Your own text goes word for word into the owner note:** notes and corrections as they were, pinned facts as `Keep: …` («Сохранить: …»), and the newest 20 texts you corrected or removed as a `Leave out:` («Не включать:») paragraph. A converted note can be longer than 500 characters; it is never cut.
-- **The model's active facts** become a starting document that the first refresh rewrites in the new format, keeping what is still true. Until then the panel shows "No dossier yet" with your note.
+- **Your own text goes word for word into the owner note:** notes and corrections as they were, pinned facts as `Keep: …` («Сохранить: …»), and the newest 20 texts you corrected or removed as a `Leave out:` («Не включать:») paragraph. A converted note can be longer than 500 characters; it is never cut. `note --text` does not replace a converted note without `--replace`; `note --append` adds to it ([Owner note](#owner-note)).
+- **The model's active facts** become the dossier at once, at revision 0: one `##` section per old section under the old section titles (in Russian when most facts are in Russian), one bullet per fact. The panel, `show`, and `export` show it in every chat, also in a paused chat, a chat with no messages in the backfill window, and a pruned chat. The panel's status line says it was converted from the old dossier. The first refresh rewrites it in the new format and keeps what is still true: it runs as a first build and gets this document as the current dossier. No fact is cut, so a converted document can be longer than 3,200 UTF-16 units. The panel then shows its start and the `show --chat` command, and the first refresh shortens it.
 - **The persona** is rebuilt from scratch.
-- `changes.jsonl` is deleted. The old file is kept as `v1-dossier.json` until that dossier's first refresh, or a forget. A file that can't be read is kept as `v1-dossier.json` next to a new empty dossier, and `status` warns.
-- `status` and `list` count the `v1-dossier.json` backups that remain.
+- `changes.jsonl` is deleted. The old file is kept as `v1-dossier.json` until that dossier's first refresh, or a forget. A file that can't be read is kept as `v1-dossier.json` next to a new empty dossier, and `status` warns; it stays after the first refresh, until a forget, because it may hold text that never reached the note.
+- A backup is never overwritten. When a new `dossier.json` turns up later, for example after a rollback and a new upgrade, it is converted the same way and kept as `v1-dossier.1.json`, then `v1-dossier.2.json`, and so on. Each backup follows the rules above.
+- `status` and `list` count every backup that remains.
+
+Stop a 0.14.0 gateway before you run any `hermes telesec dossier` command of the new version. The command converts the dossiers, and a 0.14.0 gateway that still runs then finds no `dossier.json`: it rebuilds each dossier from history at its own model cost and writes `dossier.json` again, so each later conversion keeps one more backup.
 
 To go back to 0.14.0:
 
 - It finds no `dossier.json`, so it rebuilds every dossier from history, at its own model cost. It ignores `document.json`.
-- To keep your old notes, pins, and corrections, rename `v1-dossier.json` back to `dossier.json` in each dossier directory before that dossier's first refresh on the new version.
+- To keep your old notes, pins, and corrections, rename `v1-dossier.json` (or the backup with the highest number, which is the newest) back to `dossier.json` in each dossier directory before that dossier's first refresh on the new version.
 - Its `dossier enable`, `dossier disable`, and Settings switch drop the `gate` and `clairic` keys from `dossiers/settings.json`, so the message check and fact extraction turn off if you upgrade again.
 
 ## Cost and quality
@@ -364,9 +390,11 @@ Measured on 20 October 2026 with 10 made-up scenarios: Russian and English chats
 | Contact cost per contact-day | $0.0061 | $0.0011 | $0.0010 |
 | Writer call time, median / 95th percentile | 18.8 s / 84 s | 2.9 s / 12 s | 3.2 s / 5.2 s |
 | Persona model calls | 29 | 7 | 7 |
-| Release blockers | 2 | 0 | 0 |
+| Release blockers | 1 | 0 | 0 |
 
-The old dossiers had two release blockers: text from a deleted voice message reached a `/dossier` post, and a retention prune changed the dossier. The documents had none: no deleted or owner-note text in any post, no injected text in any document, every document within the size limit, and no model call after a prune.
+The old dossiers had one release blocker: a retention prune changed the dossier. The documents had none: no text from deleted messages or the owner note in any post, no injected text in any document, every document within the size limit, and no model call after a prune.
+
+The transcript of a deleted voice message is counted, but it is not a blocker: the transcript stays in the chat, so it is live content and goes into the `/dossier` input ([limits](#dossier-in-a-chat)). In this run the old dossiers' post repeated it and the new posts did not, which is chance, not a guarantee. The run itself counted that post as a second blocker for the old dossiers; the row above is recounted without it from the run's summary, which lists each blocker by id.
 
 - **Message check: off by default.** On the busy chats it cut the cost by about 15%, less than the 25% the rule set before the run asked for. It deferred 5 of 13 checks and never held back a burst with a new fact at the 0.35 threshold. Its own cost was under $0.001 for the whole run. Turn it on with `hermes telesec dossier gate auto`.
 - **Reasoning `low`.** Reasoning `high` cost 3.6 times as much with the same recall.

@@ -47,6 +47,10 @@ ROUTE_LINE = ("Dossiers use the Telesec dossiers model task; change it with 'her
               "may retry with your main model.")
 GATE_LINE = ("For short checks, the current dossier and the chat's new messages go to TypeSafe Jev through the same "
              "AI Gateway, with zero data retention.")
+GATEWAY_OPTIONS = ("Warning: its extra_body has providerOptions for ai-gateway only, so this model may reject dossier "
+                   "calls (see hermes telesec dossier status).")
+GATEWAY_OPTIONS_RU = ("Внимание: в её extra_body есть providerOptions только для ai-gateway, поэтому эта модель может "
+                      "отклонять вызовы досье (см. hermes telesec dossier status).")
 
 
 @pytest.fixture(autouse=True)
@@ -364,11 +368,38 @@ def test_the_auto_route_has_a_localized_name(gs, plugin, monkeypatch):
     plugin._dossier_support.set_task_registered(True)
     panel = plugin._settings_panel
 
-    assert "Dossier model: your main model" in panel.render(ctx(plugin)).text.splitlines()
-    assert "Модель досье: ваша основная модель" in panel.render(ctx(plugin, lang="ru")).text.splitlines()
+    lines = panel.render(ctx(plugin)).text.splitlines()
+    assert lines[lines.index("Dossier model: your main model") + 1] == GATEWAY_OPTIONS  # the task defaults stay
+    lines = panel.render(ctx(plugin, lang="ru")).text.splitlines()
+    assert lines[lines.index("Модель досье: ваша основная модель") + 1] == GATEWAY_OPTIONS_RU
     assert "will be sent to your main model to build" in panel.render(ctx(plugin, arg="d.ask")).text
     ru = panel.render(ctx(plugin, arg="d.ask", lang="ru")).text
     assert "будет отправляться в вашу основную модель, чтобы" in ru and "main model" not in ru
+
+    # The deprecated TELESEC_DOSSIER_PROVIDER=auto route sends the text to the model it names, as the confirm says.
+    host_config(monkeypatch, None)
+    monkeypatch.setenv("TELESEC_DOSSIER_PROVIDER", "auto")
+    monkeypatch.setenv("TELESEC_DOSSIER_MODEL", "example/dossier-large")
+    assert "Dossier model: auto / example/dossier-large" in panel.render(ctx(plugin)).text.splitlines()
+    assert "Модель досье: auto / example/dossier-large" in panel.render(ctx(plugin, lang="ru")).text.splitlines()
+    assert "will be sent to auto / example/dossier-large to build" in panel.render(ctx(plugin, arg="d.ask")).text
+
+
+def test_settings_warns_when_another_provider_keeps_the_gateway_options(gs, plugin, monkeypatch):
+    top.bind_owner(plugin)
+    plugin._dossier_support.set_task_registered(True)
+    panel = plugin._settings_panel
+
+    host_config(monkeypatch, {"provider": "anthropic", "model": "claude-example"})  # a 'hermes model' pick
+    lines = panel.render(ctx(plugin)).text.splitlines()
+    assert lines[lines.index("Dossier model: anthropic / claude-example") + 1] == GATEWAY_OPTIONS
+    lines = panel.render(ctx(plugin, lang="ru")).text.splitlines()
+    assert lines[lines.index("Модель досье: anthropic / claude-example") + 1] == GATEWAY_OPTIONS_RU
+
+    host_config(monkeypatch, {"provider": "anthropic", "model": "claude-example", "extra_body": {"max_tokens": 8192}})
+    assert GATEWAY_OPTIONS not in panel.render(ctx(plugin)).text
+    host_config(monkeypatch, None)  # the defaults on ai-gateway
+    assert panel.render(ctx(plugin)).text.splitlines()[-2:] == MODEL_LINES.splitlines()
 
 
 def test_dossier_cli_still_switches_and_reports_the_pause(gs, plugin):

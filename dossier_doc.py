@@ -21,6 +21,7 @@ from . import history_support as _history
 DOC_FILE = "document.json"
 V1_FILE = "dossier.json"  # read only by the v1 migration
 V1_BACKUP = "v1-dossier.json"  # the migrated v1 file, kept until the first v2 pass
+V1_BACKUPS = "v1-dossier*.json"  # every backup: a later v1 file is kept as v1-dossier.<n>.json, never over one
 V1_CHANGES = "changes.jsonl"  # the v1 revision log, deleted by the migration
 DOC_FORMAT = 2
 DOC_MAX_UNITS = 3200  # UTF-16 units, every kind: the Telegram screen needs room around it
@@ -166,11 +167,13 @@ _KIND_FIELDS: dict[str, dict[str, Callable[[Any], bool]]] = {
     },
     "persona": {"chats": _chats, "newest_at": _optional_text},
 }
-# Present only on migrated files: "migrated_from" until the first v2 pass, "seed" (the v1 facts as
-# Markdown) until the first contact pass sends it as the current dossier. A persona whose text moved
-# to "previous" also has "previous_chats", the chats that text was built from.
+# Present only on migrated files: "migrated_from" until the first v2 pass, and "note_from" while the
+# note holds converted v1 text (until the owner replaces or clears it). "seed" is only in files an
+# earlier build of this version wrote: the v1 facts, which read_doc now shows as the document. A
+# persona whose text moved to "previous" also has "previous_chats", the chats that text was built from.
 _OPTIONAL_FIELDS: dict[str, Callable[[Any], bool]] = {
     "migrated_from": _optional_text,
+    "note_from": _optional_text,
     "seed": _optional_text,
     "previous_chats": _chats,
 }
@@ -202,7 +205,23 @@ def read_doc(target_dir: Path) -> dict[str, Any] | None:
         raise DocError from None
     if not valid(doc):
         raise DocError
+    seed = doc.pop("seed", None)
+    if seed and not doc["document"] and doc.get("window_start") is None:
+        doc["document"] = seed  # an earlier build kept the v1 facts beside an empty document
     return doc
+
+
+def converted(doc: dict[str, Any]) -> bool:
+    """A contact document the migration wrote from v1 facts (revision 0) that no v2 pass has rewritten yet.
+
+    It can be longer than DOC_MAX_UNITS: the migration never cuts a fact.
+    """
+    return doc.get("kind") == "contact" and doc.get("window_start") is None and bool(doc.get("document"))
+
+
+def backups(target_dir: Path) -> list[Path]:
+    """The v1 backups in ``target_dir``: ``v1-dossier.json``, then any ``v1-dossier.<n>.json``."""
+    return sorted(target_dir.glob(V1_BACKUPS), key=lambda path: (len(path.name), path.name))
 
 
 def write_doc(target_dir: Path, doc: dict[str, Any]) -> None:

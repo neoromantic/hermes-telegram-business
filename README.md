@@ -57,7 +57,7 @@ A change applies to the next update; no restart is needed. To turn history or th
 
 The **Forever · 1 year · 90 days · 30 days** row sets how long saved history is kept, and the `Keep history:` line shows the value in effect. A shorter time asks first; a longer one applies at once. History is deleted a whole month at a time: once all of a month is older than the chosen time, the next cleanup deletes it, so the current month always stays. Cleanup runs when the gateway starts, when a `hermes` command loads Telesec (such as `hermes telesec settings`), and at most hourly while Business messages arrive. The row stays while history is off, because cleanup keeps running. In the terminal, `hermes telesec settings set retention N` sets any number of days, and Settings shows such a value as its own button (for example `• 45 days`) until you pick another. See [retention and removal](docs/HISTORY.md#retention-and-removal).
 
-The last lines show the model that writes dossiers (`your main model` when its task follows the main model) and the model that cleans up voice transcripts (or `off`), as configured. They are read-only: choose the dossier model with `hermes model` → Telesec dossiers ([dossier model](#dossier-model)) and the cleanup model in the [configuration](#configuration).
+The last lines show the model that writes dossiers (`your main model` when its task follows the main model) and the model that cleans up voice transcripts (or `off`), as configured. They are read-only: choose the dossier model with `hermes model` → Telesec dossiers ([dossier model](#dossier-model)) and the cleanup model in the [configuration](#configuration). A warning line follows the dossier model when its `extra_body` still has the gateway-only `providerOptions` on another provider.
 
 Only an owner of every Business connection the bot knows about can change the switches and retention; another verified owner sees them read-only. Anyone else's `/telesec`, `/telesec` with more text after it, and `/telesec` in a group go to Hermes as usual, where the `/telesec` command only says that Telesec settings are for the Business account owner. Settings are never posted into a Business chat, and a `/telesec` typed in a Business chat never gets an answer there.
 
@@ -240,19 +240,19 @@ To share stats with the contact, type `/stats` (all history) or `/stats 7d`, `30
 
 With history enabled, turn dossiers on in [Settings](#settings) (**Keep dossiers**, with a confirmation; offered only to an owner of every Business connection the bot knows about) or with `hermes telesec settings set dossiers on` (`hermes telesec dossier enable` still works); no restart is needed. A gateway-only background worker then keeps one short document for every private Business contact (tap **No dossier** in a chat's [owner panel](#per-chat-history-and-dossier) to skip one), plus one owner writing persona. A dossier is written for you to read: who the contact is, what you agreed, dates and amounts, open questions, and how to work with them. A few minutes after a chat goes quiet, the model rewrites the document with what changed: new messages, edits, and deletions. It keeps the previous version, so you can see the last change.
 
-To correct a dossier, write an owner note. The note is your own truth: the model follows it, including a request to leave something out, and never copies it into the document. A changed note rewrites the dossier on the next cycle.
+To correct a dossier, add to its owner note. The note is your own truth: the model follows it, including a request to leave something out, and never copies it into the document. A changed note rewrites the dossier on the next cycle. `--append` adds a paragraph to the note; `--text` replaces the whole note, and for a note converted from an older version, or one over 500 characters, it needs `--replace` ([owner note](docs/DOSSIERS.md#owner-note)).
 
 ```bash
 hermes telesec dossier list
 hermes telesec dossier show --contact @alice
-hermes telesec dossier note --contact @alice --text "The contract is in my name, not my wife's. We don't discuss discounts."
+hermes telesec dossier note --contact @alice --append "The contract is in my name, not my wife's. We don't discuss discounts."
 hermes telesec dossier run --contact @alice
 hermes telesec dossier show --contact @alice --previous
 ```
 
 In Telegram, the panel's **Dossier** section shows the chat's dossier as a rich message in your app's language (Russian or English): the document, your note marked as not posted, and one status line, with **Refresh** and **My persona** (the owner persona) buttons. The on/off switch is in Settings.
 
-Sending exactly `/dossier` in a private Business chat, as the owner, deletes the command and posts a fresh summary of the chat, titled "Summary of our chat" («Краткое содержание переписки»). It is written at that moment from the chat's live messages only: never from the private dossier, your note, the persona, or another chat, and never from deleted messages or the text before an edit. If a message is deleted or edited while the summary is written, nothing is posted. Telegram allows the post only if the contact wrote in the last 24 hours. Unlike the owner panel, `/dossier` is deliberately visible to the contact: its purpose is to share the summary with them. When nothing is posted, the bot tells you why in your private chat with it instead ([`/dossier` in a chat](docs/DOSSIERS.md#dossier-in-a-chat)).
+Sending exactly `/dossier` in a private Business chat, as the owner, deletes the command and posts a fresh summary of the chat, titled "Summary of our chat" («Краткое содержание переписки»). It is written at that moment from the chat's live messages only: never from the private dossier, your note, the persona, or another chat, and never from deleted messages or the text before an edit Telesec recorded (an edit it never saw, such as one made while history was off, leaves the older text in). If a message is deleted or edited while the summary is written, nothing is posted. Telegram allows the post only if the contact wrote in the last 24 hours; any message counts, including voice, photos, stickers, and files. Telesec refuses at once only when it knows the contact has not written for 24 hours; otherwise it tries, and Telegram's refusal gives the same reason. Unlike the owner panel, `/dossier` is deliberately visible to the contact: its purpose is to share the summary with them. When nothing is posted, the bot tells you why in your private chat with it instead ([`/dossier` in a chat](docs/DOSSIERS.md#dossier-in-a-chat)).
 
 Screenshots of the Dossier screen and of a `/dossier` summary, over a fictional contact, will be added here.
 
@@ -389,7 +389,22 @@ auxiliary:
           zeroDataRetention: true
 ```
 
-Hermes needs `AI_GATEWAY_API_KEY` for the `ai-gateway` provider (Vercel AI Gateway), which passes the text to Google. Zero data retention asks the gateway to use only providers that keep no prompts or answers. To choose another model, run `hermes model` → Telesec dossiers and pick reasoning `low`, or put your values under `auxiliary.telesec_dossier` in `config.yaml`. Each key you set wins over its default, but an `extra_body` you set replaces the default one whole, so copy `max_tokens` and `providerOptions` into it. Until you choose a model there, `hermes model` may list the task as `auto`; the defaults still apply. `hermes telesec dossier status` shows the model in effect and the model that answered last, and warns when the task follows the main model (`auto`), uses reasoning other than `low`, or has no output cap or zero data retention.
+Hermes needs `AI_GATEWAY_API_KEY` for the `ai-gateway` provider (Vercel AI Gateway), which passes the text to Google. Zero data retention asks the gateway to use only providers that keep no prompts or answers. To choose another model, run `hermes model` → Telesec dossiers and pick reasoning `low`, or put your values under `auxiliary.telesec_dossier` in `config.yaml`. Each key you set wins over its default, but an `extra_body` you set replaces the default one whole. Until you choose a model there, `hermes model` may list the task as `auto`; the defaults still apply.
+
+`providerOptions` is for `ai-gateway` only. `hermes model` does not change `extra_body`, so with any other provider, or `auto`, the default one stays and the provider may reject every dossier call. Set an `extra_body` for that provider. For example, the native `gemini` provider:
+
+```yaml
+auxiliary:
+  telesec_dossier:
+    provider: gemini
+    model: gemini-3.8-flash
+    timeout: 120
+    reasoning_effort: low
+    extra_body:
+      max_tokens: 8192
+```
+
+Use `extra_body: {}` for a provider that rejects `max_tokens` in the body too. On `ai-gateway`, copy both `max_tokens` and `providerOptions` into your `extra_body`. `hermes telesec dossier status` shows the model in effect and the model that answered last, and warns when the task follows the main model (`auto`), uses reasoning other than `low`, has no output cap or zero data retention, or keeps `providerOptions` on another provider. Settings shows that last warning under the dossier model too.
 
 If the dossier model fails, Hermes may retry with its fallback chain and then with the main model. Telesec cannot turn this off; `status` flags an answer from another model as a host fallback.
 
@@ -397,12 +412,14 @@ On a Hermes without plugin model tasks, dossiers call `ai-gateway` / `google/gem
 
 `TELESEC_DOSSIER_PROVIDER` and `TELESEC_DOSSIER_MODEL` are deprecated. While `TELESEC_DOSSIER_PROVIDER` is set and `config.yaml` names no `auxiliary.telesec_dossier.provider`, dossiers use that provider with `TELESEC_DOSSIER_MODEL` (else `gemini-3.8-flash` for `gemini` or `google`, and `google/gemini-3.8-flash` for any other provider). This route still needs the trust config, and `status` warns. `TELESEC_DOSSIER_MODEL` alone is ignored. Remove both to use the task. `TELESEC_CLEANUP_PROVIDER` and `TELESEC_CLEANUP_MODEL` no longer affect dossiers.
 
+These two direct routes are the only dossier calls that the trust config's `allowed_providers` and `allowed_models` apply to; the task route needs no trust config. They send an output cap of 8,192 tokens with every call but cannot ask for zero data retention, and `status` shows both.
+
 Two optional steps send chat text to one more processor each. Both are off by default:
 
 - **Message check:** `hermes telesec dossier gate auto`. Before a routine refresh, TypeSafe Jev reads the current dossier and the new messages through the same AI Gateway, with zero data retention, and the refresh waits when they add nothing new. It needs `AI_GATEWAY_API_KEY` (and an `https` `AI_GATEWAY_BASE_URL` when one is set) and runs only while the dossier model is on the gateway. See [message check](docs/DOSSIERS.md#message-check).
 - **Fact extraction:** `hermes telesec dossier clairic on`. New messages of a contact also go to Cloudflare Workers AI (Clairic, a preview model), which picks out dates, amounts, and contact details as hints for the writer. It needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. See [fact extraction](docs/DOSSIERS.md#fact-extraction).
 
-Telesec reads these keys through the Hermes secret scope of the active profile when it calls the check or the extraction. It never stores or logs them and sends them only to the gateway or the Cloudflare API, with no redirects.
+Telesec reads these keys, and `AI_GATEWAY_BASE_URL`, through the Hermes secret scope of the active profile when it calls the check or the extraction. It never stores or logs them and sends them only to the gateway or the Cloudflare API, with no redirects.
 
 ### LLM trust gate
 
@@ -498,7 +515,7 @@ Incoming messages, transcripts that do not fit in one caption, messages outside 
 - Error replies are disabled by default. When enabled, the first line of an exception may be sent to the Business chat.
 - Voice transcription uses an in-process duplicate key for 24 hours; it resets with the gateway. History uses durable event identities in its JSONL log.
 - History is off until turned on in Settings. Once enabled, retained text includes earlier edits and deleted messages. Telegram deletion is not erasure of the local archive; [retention and removal](docs/HISTORY.md#retention-and-removal) are separate controls. **Erase saved history** in a chat's panel or `history forget` deletes one chat's history and its dossier.
-- Contact dossiers are off until turned on in Settings, and pause while history is off. Don't save or No dossier in a chat's panel, or the old server scope rule, pauses that chat's dossier and keeps its messages out of the persona. Once enabled, private chat text from the backfill window and later messages goes to the [dossier model](#dossier-model), and, when they are on, to the message check and fact extraction; groups are never processed. Telesec never posts a dossier, owner note, or persona into a chat. `/dossier` posts a summary written at that moment from the chat's live messages only, so deleted messages and the text before an edit never reach it. Dossiers keep a short document and its previous version, not a second archive; the owner note can reach the dossier model and, through the document, the message check. Their logs carry counts, codes, and error types only. `dossier forget` deletes a dossier and its owner note without touching history, and forgetting or erasing a chat that the persona or its previous version read resets the persona at once ([storage and privacy](docs/DOSSIERS.md#storage-and-privacy)).
+- Contact dossiers are off until turned on in Settings, and pause while history is off. Don't save or No dossier in a chat's panel, or the old server scope rule, pauses that chat's dossier and keeps its messages out of the persona. Once enabled, private chat text from the backfill window and later messages goes to the [dossier model](#dossier-model), and, when they are on, to the message check and fact extraction; groups are never processed. Telesec never posts a dossier, owner note, or persona into a chat. `/dossier` posts a summary written at that moment from the chat's live messages only, so deleted messages and the text before an edit Telesec recorded never reach it. Dossiers keep a short document and its previous version, not a second archive; the owner note can reach the dossier model and, through the document, the message check. Their logs carry counts, codes, and error types only. `dossier forget` deletes a dossier and its owner note without touching history, and forgetting or erasing a chat that the persona or its previous version read resets the persona at once ([storage and privacy](docs/DOSSIERS.md#storage-and-privacy)).
 - Existing Hermes/Telegram media caches are outside this plugin's ownership and are never scanned or deleted.
 
 ## Known limitations

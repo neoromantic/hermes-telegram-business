@@ -240,7 +240,7 @@ def test_contact_moves_to_a_v2_document(dm: ModuleType, root: Path, no_network: 
         "updated_at": None,
         "checked_at": None,
         "revision": 0,
-        "document": "",
+        "document": MIRA_SEED,  # readable at once; the first v2 pass rewrites it
         "previous": None,
         "note": MIRA_NOTE,
         "note_updated_at": iso(dm, NOW),
@@ -251,7 +251,7 @@ def test_contact_moves_to_a_v2_document(dm: ModuleType, root: Path, no_network: 
         "messages": 0,
         "seen": {},
         "last_call": None,
-        "seed": MIRA_SEED,
+        "note_from": "v1",
         "migrated_from": "v1",
     }
     assert len(doc["id"]) == 12 and doc["id"] != "a1b2c3d4e5f6"  # a new id, never the v1 dossier_id
@@ -283,7 +283,7 @@ def test_owner_notes_and_corrections_go_into_the_note_verbatim(dm: ModuleType, r
         "Prefers calls after 18:00,  never before.\nLives in Riga Demo, not Oslo Demo.\n" + long_note.strip()
     )
     assert len(note) > dm._doc.NOTE_MAX_CHARS  # owner text is never clipped
-    assert "Mira is the design lead" not in note  # model facts go to the seed, not the note
+    assert "Mira is the design lead" not in note  # model facts go to the document, not the note
 
 
 def test_pinned_model_facts_become_keep_lines(dm: ModuleType, root: Path) -> None:
@@ -366,7 +366,7 @@ def test_seed_groups_active_model_facts_by_v1_section(dm: ModuleType, root: Path
 
     dm.migrate_root(root, NOW)
 
-    assert read_doc(target)["seed"] == (
+    assert read_doc(target)["document"] == (
         "## Relationship\n- Mira is the design lead.\n\n"
         "## Preferences\n- Prefers short messages.\n- Prefers mornings.\n\n"
         "## Shared facts\n- Agreed to a weekly call.\n\n"
@@ -377,6 +377,31 @@ def test_seed_groups_active_model_facts_by_v1_section(dm: ModuleType, root: Path
     )
 
 
+def test_the_converted_document_uses_russian_titles_and_is_never_cut(dm: ModuleType, root: Path) -> None:
+    target = contact_dir(dm, root)
+    long_facts = [fact(f"f{i}", f"Факт номер {i}: " + "длинный текст " * 20, section="shared_facts")
+                  for i in range(10, 40)]
+    put(
+        target,
+        v1_contact(
+            fact("f1", "Мира ведёт редизайн Orbit."),
+            fact("f2", "Любит короткие сообщения.", section="preferences"),
+            fact("f3", "Review is on Friday.", section="commitments"),  # one English fact keeps Russian titles
+            *long_facts,
+        ),
+    )
+
+    dm.migrate_root(root, NOW)
+
+    document = read_doc(target)["document"]
+    assert document.startswith(
+        "## Отношения\n- Мира ведёт редизайн Orbit.\n\n## Предпочтения\n- Любит короткие сообщения.\n\n## Общие факты\n"
+    )
+    assert document.endswith("\n\n## Обязательства\n- Review is on Friday.")
+    assert dm._doc.units(document) > dm._doc.DOC_MAX_UNITS  # over the limit, and still every fact is there
+    assert all(f"- Факт номер {i}: " in document for i in range(10, 40))
+
+
 def test_a_contact_without_model_facts_has_no_seed(dm: ModuleType, root: Path) -> None:
     target = contact_dir(dm, root)
     put(target, v1_contact(fact("f1", "Never call on Sundays.", kind="owner")))
@@ -384,7 +409,7 @@ def test_a_contact_without_model_facts_has_no_seed(dm: ModuleType, root: Path) -
     dm.migrate_root(root, NOW)
 
     doc = read_doc(target)
-    assert "seed" not in doc
+    assert "seed" not in doc and doc["document"] == ""
     assert doc["note"] == "Never call on Sundays."
 
 
@@ -596,10 +621,10 @@ def test_the_seed_is_replaced_only_before_the_first_v2_pass(dm: ModuleType, root
 
     dm.migrate_root(root, NOW)
 
-    assert read_doc(target)["seed"] == "## Relationship\n- Works on Orbit and Nova."
-    put(target, v1_contact())  # a v1 file with no model facts drops the stale seed
+    assert read_doc(target)["document"] == "## Relationship\n- Works on Orbit and Nova."
+    put(target, v1_contact())  # a v1 file with no model facts drops the stale converted text
     dm.migrate_root(root, NOW)
-    assert "seed" not in read_doc(target)
+    assert read_doc(target)["document"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +659,7 @@ def test_unreadable_v1_is_kept_as_a_backup_next_to_a_fresh_document(
     assert doc["note"] == "" and doc["document"] == "" and doc["window_start"] is None
     assert "migrated_from" not in doc  # the backup stays until forget: it may hold owner text
     assert dm._doc.valid(doc)
-    assert dm.unreadable_backups(root) == [target.relative_to(root).as_posix()]
+    assert dm.unreadable_backups(root) == [f"{target.relative_to(root).as_posix()}/v1-dossier.json"]
     chat_ref = hashlib.sha256(f"{target.parent.name}/{target.name}".encode()).hexdigest()[:12]
     assert [record.getMessage() for record in caplog.records] == [
         f"telesec: old dossier file could not be read chat_ref={chat_ref}; it is kept as v1-dossier.json"
@@ -672,7 +697,7 @@ def test_unreadable_persona_gets_a_fresh_persona_document(dm: ModuleType, root: 
 
     doc = read_doc(target)
     assert doc["kind"] == "persona" and doc["chats"] == [] and "migrated_from" not in doc
-    assert dm.unreadable_backups(root) == ["persona"]
+    assert dm.unreadable_backups(root) == ["persona/v1-dossier.json"]
 
 
 def test_unreadable_v1_in_a_directory_with_unknown_ids_gets_no_document(dm: ModuleType, root: Path) -> None:
@@ -690,6 +715,36 @@ def test_migrated_backups_are_not_reported_as_unreadable(dm: ModuleType, root: P
     dm.migrate_root(root, NOW)
 
     assert dm.unreadable_backups(root) == []
+
+
+def test_a_later_v1_file_never_overwrites_a_kept_backup(
+    dm: ModuleType, root: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A rollback, or a 0.14 gateway still running, writes dossier.json again next to an unreadable backup."""
+    caplog.set_level(logging.WARNING)
+    target = contact_dir(dm, root)
+    rel = target.relative_to(root).as_posix()
+    put(target, b"{not json")
+    dm.migrate_root(root, NOW)
+    readable = put(target, v1_contact(fact("f1", "Never call on Sundays.", kind="owner")))
+
+    assert dm.migrate_root(root, NOW) == {"migrated": 1, "unreadable": 0, "backups": 2}
+
+    assert (target / "v1-dossier.json").read_bytes() == b"{not json"  # the damaged bytes stay
+    assert (target / "v1-dossier.1.json").read_bytes() == readable
+    assert read_doc(target)["note"] == "Never call on Sundays."
+    assert dm.unreadable_backups(root) == [f"{rel}/v1-dossier.json"]  # so status still warns
+
+    put(target, b"[]")
+    assert dm.migrate_root(root, NOW) == {"migrated": 0, "unreadable": 1, "backups": 3}
+    assert (target / "v1-dossier.2.json").read_bytes() == b"[]"
+    assert dm.unreadable_backups(root) == [f"{rel}/v1-dossier.json", f"{rel}/v1-dossier.2.json"]
+    assert [record.getMessage().rpartition(" ")[2] for record in caplog.records] == [
+        "v1-dossier.json", "v1-dossier.2.json"]
+
+    dm.drop_migrated_backups("contact", target)  # what the first v2 pass does
+
+    assert sorted(path.name for path in target.iterdir()) == ["document.json", "v1-dossier.2.json", "v1-dossier.json"]
 
 
 def test_a_corrupt_document_leaves_the_directory_untouched(
@@ -900,6 +955,38 @@ async def test_the_persona_backup_goes_only_after_a_readable_migration(
     result = ds.forget(("contact", {"business_connection_id": BUSINESS_ID, "chat_id": 6105}))
     assert result["persona_reset"] is True  # a kept v1 backup may hold this chat's text
     assert not (persona / "v1-dossier.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_every_backup_is_counted_and_each_goes_by_its_own_rule(
+    dossier_history: ModuleType, dossiers: ModuleType
+) -> None:
+    plugin, ds = dossier_history, dossiers
+    chat = 6108
+    await seed(plugin, chat, "mira_demo", [(1, "in", "Can we meet on Wednesday?", 60), (2, "out", "Yes.", 55)])
+    target, persona = dossier_dir(ds, chat), ds.persona_dir()
+    for path, readable in ((target, v1_contact(fact("f1", "Never call on Sundays.", kind="owner"), conn=BUSINESS_ID,
+                                               chat=chat)),
+                           (persona, v1_persona(fact("f1", "Never uses emoji.", kind="owner")))):
+        put(path, b'{"schema_version": 1, "facts": [')
+        ds.migrate_v1(now=NOW)
+        put(path, readable)  # written by a 0.14 gateway that was still running
+        ds.migrate_v1(now=NOW)
+    rel = target.relative_to(ds.dossier_root()).as_posix()
+
+    assert ds.v1_backups() == 4
+    assert ds.unreadable_v1_warnings() == [
+        f"warning: 1 old dossier file could not be read; it is kept as v1-dossier.json in {rel}.",
+        "warning: 1 old dossier file could not be read; it is kept as v1-dossier.json in persona."]
+
+    cycle(ds, FakeLlm())
+
+    for path in (target, persona):  # the readable backup went, as its owner text is in the note
+        assert sorted(file.name for file in path.iterdir()) == ["document.json", "v1-dossier.json"]
+    assert ds.v1_backups() == 2 and len(ds.unreadable_v1_warnings()) == 2
+    result = ds.forget(("contact", {"business_connection_id": BUSINESS_ID, "chat_id": chat}))
+    assert result["persona_reset"] is True and not target.exists()
+    assert ds._doc.backups(persona) == [] and ds.v1_backups() == 0
 
 
 @pytest.mark.asyncio

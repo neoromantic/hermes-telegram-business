@@ -52,6 +52,7 @@ def contact_doc(dv: ModuleType, **changes: Any) -> dict[str, Any]:
     """A valid contact ``document.json``: built and checked by default."""
     doc = dv._doc.new_contact(CONN, CHAT, NOW - timedelta(days=30))
     doc.update(document=DOC_MD, revision=3, updated_at=iso(CHECKED), checked_at=iso(CHECKED), messages=312)
+    doc.update(window_start=iso(NOW - timedelta(days=90)))
     doc.update(changes)
     assert dv._doc.valid(doc)
     return doc
@@ -716,6 +717,48 @@ def test_refresh_stays_for_a_built_dossier_and_for_a_missing_one(dv: ModuleType)
 
 
 # ---------------------------------------------------------------------------
+# A document converted from v1 (revision 0, no v2 pass yet)
+# ---------------------------------------------------------------------------
+
+CONVERTED_MD = "## Relationship\n- Mira is the design lead at Northwind Demo.\n\n## Commitments\n- Review on Friday."
+
+
+def converted_doc(dv: ModuleType, **changes: Any) -> dict[str, Any]:
+    doc = dv._doc.new_contact(CONN, CHAT, NOW - timedelta(days=1))
+    doc.update(document=CONVERTED_MD, note="Never call on Sundays.", migrated_from="v1", note_from="v1")
+    doc.update(changes)
+    assert dv._doc.valid(doc) and dv._doc.converted(doc)
+    return doc
+
+
+@pytest.mark.parametrize("lang", ["en", "ru"])
+@pytest.mark.parametrize(
+    ("changes", "key", "buttons"),
+    [
+        ({}, "st_converted", ["rf.c"]),
+        ({"unqualified": True}, "st_converted_waiting", []),  # inactive: nothing in the backfill window
+        ({"in_history": False}, "st_converted_waiting", []),  # pruned, or the chat left history
+        ({"chat_off": True}, "note_chat_off", []),  # paused for this chat: frozen, still readable
+        ({"llm_ready": False}, "st_no_model", []),
+    ],
+    ids=["ready", "unqualified", "not in history", "chat off", "no model"],
+)
+def test_a_converted_document_is_shown_in_every_chat_state(
+    dv: ModuleType, lang: str, changes: dict[str, Any], key: str, buttons: list[str]
+) -> None:
+    view = dv.render_overview(snap(dv, doc=converted_doc(dv), **changes), lang)
+
+    check_view(dv, view)
+    assert "<h4>Relationship</h4>" in view.html and "Mira is the design lead at Northwind Demo." in view.html
+    assert "Never call on Sundays." in view.html  # the converted note
+    assert view.html.endswith(f"<p><i>{s(dv, lang, key)}</i></p>")
+    for missing in ("st_missing", "st_unqualified", "st_not_in_history"):
+        assert s(dv, lang, missing) not in view.html
+    assert "<tg-time" not in view.html  # never checked: no header time
+    assert args_of(view) == buttons
+
+
+# ---------------------------------------------------------------------------
 # Notices and one-line screens
 # ---------------------------------------------------------------------------
 
@@ -1231,6 +1274,26 @@ def test_worst_case_screen_fits(dv: ModuleType, lang: str, target: str, kind: st
     assert "<tg-time" in view.html and "<blockquote>" in view.html and view.html.endswith("</i></p>")
     unclipped = dv.html_to_text(view.html, limit=10**6)
     assert dv._units(unclipped) <= dv.TEXT_MAX_CHARS and view.text == unclipped
+
+
+@pytest.mark.parametrize("lang", ["en", "ru"])
+@pytest.mark.parametrize("kind", list(WORST_DOCUMENTS))
+def test_a_converted_document_over_the_limit_shows_its_start_and_names_show(
+    dv: ModuleType, lang: str, kind: str
+) -> None:
+    line = WORST_DOCUMENTS[kind]
+    document = line * (3 * dv._doc.DOC_MAX_UNITS // len(line))  # the migration never cuts a v1 fact
+    note = "\n".join(["Звонить только после шести, по будням. Не упоминать Nova."] * 22)[:1200]
+    doc = converted_doc(dv, document=document, note=note)
+    name = "Ж" * dv.NAME_CHARS
+
+    view = dv.render_overview(snap(dv, doc=doc, name=name, failure="E" * 64, manage_global=True), lang)
+
+    check_view(dv, view)
+    unclipped = dv.html_to_text(view.html, limit=10**6)
+    assert dv._units(unclipped) <= dv.TEXT_MAX_CHARS and view.text == unclipped
+    assert s(dv, lang, "st_clipped").format(chat_id=CHAT) in view.html
+    assert doc["document"] == document  # the stored text stays whole; 'show' prints all of it
 
 
 # ---------------------------------------------------------------------------

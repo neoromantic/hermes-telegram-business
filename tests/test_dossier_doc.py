@@ -151,11 +151,27 @@ def test_write_refuses_an_invalid_document(dd: ModuleType, tmp_path: Path) -> No
     assert not (tmp_path / "c").exists()
 
 
-def test_seed_and_migration_fields_are_accepted(dd: ModuleType, tmp_path: Path) -> None:
-    doc = contact(dd, seed="## Work\n- Owns the Orbit redesign", migrated_from="v1", note="Keep: likes tea")
+def test_migration_fields_are_accepted(dd: ModuleType, tmp_path: Path) -> None:
+    doc = contact(dd, document="## Work\n- Owns the Orbit redesign", migrated_from="v1", note="Keep: likes tea")
+    doc["note_from"] = "v1"
     dd.write_doc(tmp_path / "c", doc)
 
-    assert dd.read_doc(tmp_path / "c")["seed"] == "## Work\n- Owns the Orbit redesign"
+    assert dd.read_doc(tmp_path / "c") == doc
+    assert dd.converted(doc)  # revision 0 text that no v2 pass has rewritten yet
+    assert not dd.converted({**doc, "window_start": "2026-07-23T00:00:00Z"})
+    assert not dd.converted({**doc, "document": ""})
+
+
+def test_an_earlier_seed_field_reads_as_the_document(dd: ModuleType, tmp_path: Path) -> None:
+    """Files an earlier build of this version wrote kept the v1 facts beside an empty document."""
+    seed = "## Work\n- Owns the Orbit redesign"
+    dd.write_doc(tmp_path / "c", contact(dd, seed=seed, migrated_from="v1"))
+    dd.write_doc(tmp_path / "built", contact(dd, seed=seed, document="**Mira.**", window_start="2026-07-23T00:00:00Z"))
+
+    doc = dd.read_doc(tmp_path / "c")
+    assert doc["document"] == seed and "seed" not in doc and dd.converted(doc)
+    built = dd.read_doc(tmp_path / "built")
+    assert built["document"] == "**Mira.**" and "seed" not in built
 
 
 def test_a_persona_keeps_the_chats_of_its_previous_version(dd: ModuleType, tmp_path: Path) -> None:

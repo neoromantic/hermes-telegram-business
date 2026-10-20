@@ -17,7 +17,6 @@ import http.client
 import json
 import logging
 import math
-import os
 import re
 import time
 import urllib.error
@@ -118,8 +117,17 @@ def gateway_key() -> str | None:
 
 
 def gateway_base() -> str | None:
-    """The AI Gateway base URL without a trailing ``/`` or ``/v1``; None unless it is https with a host."""
-    base = os.environ.get(BASE_ENV, "").strip() or DEFAULT_BASE
+    """The AI Gateway base URL without a trailing ``/`` or ``/v1``; None unless it is https with a host.
+
+    Read like the key, from the active profile's secret scope, so the key never goes to another profile's URL.
+    """
+    try:
+        from agent.secret_scope import get_secret
+
+        value = get_secret(BASE_ENV, None)
+    except Exception:  # noqa: BLE001 - as in _secret: then there is no key either, so nothing is sent
+        value = None
+    base = (value.strip() if isinstance(value, str) else "") or DEFAULT_BASE
     base = base.rstrip("/").removesuffix("/v1")
     return base if _https_url(base) else None
 
