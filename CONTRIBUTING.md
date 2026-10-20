@@ -22,9 +22,17 @@ To try a change in a real gateway, install your checkout into a test Hermes prof
 - `transcription_modes.py` and `owner_panel.py`: per-chat modes and the owner panel.
 - `history_support.py`: opt-in history and the `history` CLI.
 - `correspondence_stats.py`: the `stats` CLI.
-- `dossier_support.py` and `dossier_cli.py`: the opt-in dossier worker, storage, the stored on/off switch, and the `dossier` CLI.
-- `dossier_view.py`: pure Telegram views of dossiers (rich HTML, plain fallback, buttons, Russian and English).
+- `dossier_support.py`: the opt-in dossier worker, the stored switches, the model route and its warnings, the refresh of contacts and the persona, the owner note, and forget.
+- `dossier_doc.py`: the dossier file, `document.json`: reading, checking, and atomic writes.
+- `dossier_writer.py`: the dossier prompts, the model inputs, the answer checks, and the writer call; also the optional message check and fact extraction requests.
+- `model_client.py`: the only direct model calls, for the optional message check (Vercel AI Gateway) and fact extraction (Cloudflare Workers AI). Standard library only.
+- `dossier_post.py`: the `/dossier` summary, built only from the chat's live messages.
+- `dossier_migrate.py`: the one-time move of fact-based dossiers to documents. It goes away in a later release.
+- `dossier_cli.py`: the `dossier` CLI.
+- `dossier_view.py`: pure Telegram views of dossiers and the `/dossier` summary (rich HTML, plain fallback, buttons, Russian and English).
 - `dossier_panel.py`: the owner panel's Dossier section, the switch and persona gating, and the owner's in-chat `/dossier` command.
+- `tests/dossier_eval/`: the opt-in live dossier eval ([below](#dossier-eval)).
+- `scripts/render-dossier-screenshots.py`: writes the rich message HTML of the dossier views over a fictional contact to `docs/images/src/`, for real Telegram screenshots.
 - `skills/`: the bundled `history` and `dossiers` skills.
 - `docs/`: feature guides, the roadmap, and the verification log.
 
@@ -33,10 +41,33 @@ To try a change in a real gateway, install your checkout into a test Hermes prof
 - Keep the runtime plugin ID `telesec` and the existing environment variable names. Existing installs, config keys, and update commands depend on them.
 - Keep a change focused. Add or update tests for any behavior change.
 - Update the docs in the same PR: `README.md`, `CHANGELOG.md` (under `Unreleased`), and the matching `docs/*.md`.
-- No telemetry. Do not add analytics, usage reporting, or new network calls. The plugin talks only to Telegram through the Hermes gateway, the Hermes STT backend, and the host `ctx.llm`.
-- No plugin-owned credentials. Model calls go through `ctx.llm`.
-- Never log message text or transcripts.
+- No telemetry. Do not add analytics, usage reporting, or new network calls. The plugin talks only to Telegram through the Hermes gateway, the Hermes STT backend, the host `ctx.llm`, and, for the opt-in dossier message check and fact extraction, `model_client.py`.
+- No plugin-owned credentials. Model calls go through `ctx.llm`. The only exception is `model_client.py`: it reads keys through the Hermes secret scope, never from `os.environ`, never stores or logs them, uses `https` only, and follows no redirects.
+- Plugin code imports only the standard library, python-telegram-bot, and Hermes core modules (lazily, inside `try`).
+- Never log message text, transcripts, dossier or note text, names, raw ids, or keys. Log a type name or code instead of an error's text, and never use `exc_info`.
 - Use synthetic data in tests, fixtures, logs, and screenshots: no real tokens, IDs, messages, audio, or chats.
 - Write issues, PRs, and docs in simple English.
+
+## Dossier eval
+
+`tests/dossier_eval/` replays made-up chats through the real dossier code and scores the result: key facts current, stale, or missing, invented claims, canary texts that must never appear (deleted messages, the owner note in a `/dossier` post), calls, tokens, cost, and time. It is opt-in, live, and paid; the offline tests in `tests/test_dossier_eval.py` check its plumbing.
+
+The `v1` arm needs a worktree of `v0.13.0`. Check the plumbing first, offline and free:
+
+```bash
+git worktree add /tmp/telesec-v1 v0.13.0
+uv run python tests/dossier_eval/run.py --out /tmp/telesec-eval --v1-worktree /tmp/telesec-v1 --dry-run
+```
+
+A live run needs `AI_GATEWAY_API_KEY` in the environment (and `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` for the `v2-clairic` arm):
+
+```bash
+uv run python tests/dossier_eval/run.py --out /tmp/telesec-eval \
+    --arms v1,v2,v2-gate,v2-think,v2-clairic --v1-worktree /tmp/telesec-v1
+```
+
+- The arms are `v1` (the old fact-based dossiers), `v2`, `v2-gate` (with the message check), `v2-think` (reasoning `high`), and `v2-clairic` (with fact extraction; skipped without Cloudflare keys).
+- `--scenarios` and `--runs` pick what to run. `--budget-usd` (default 6) stops before any call that could go over it. `--judge` picks the judge model, which must not be a Google model.
+- Results go only to `--out/<UTC timestamp>/`: one JSON file per arm and a `summary.md` with numbers and pass/fail only, no message text. Keep them out of the repository; measured numbers go into [docs/DOSSIERS.md](docs/DOSSIERS.md#cost-and-quality).
 
 The maintainer handles version bumps, releases, and deploys. Please leave `plugin.yaml` and `pyproject.toml` versions as they are.

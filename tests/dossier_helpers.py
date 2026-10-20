@@ -15,15 +15,20 @@ import importlib
 import io
 import itertools
 import json
+import sys
 import threading
 import time
+import types
+import uuid
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+from model_fakes import FakeOpener
 from test_history import (
+    ROOT,
     FakeBot,
     append_raw_history_records,
     load_records,
@@ -37,34 +42,38 @@ __all__ = [
     "BOT_ID",
     "BUSINESS_ID",
     "CONTACT_ID",
+    "END",
     "NOW",
     "OWNER_ID",
+    "PERSONA_DEFAULT",
     "WORKER_THREAD_NAME",
     "FakeApp",
     "FakeBot",
     "FakeCtx",
     "FakeLlm",
+    "FakeOpener",
     "ago",
     "append_raw_history_records",
     "catalog_entry",
-    "change",
     "cli",
     "connect_gateway",
+    "core_module",
     "cycle",
+    "default_reply",
     "delete",
+    "doc",
     "dossier_dir",
     "dossier_module",
     "edit",
     "live_worker_threads",
+    "load_records",
     "maintain",
     "make_business_text_update",
     "make_deleted_update",
     "make_history_record",
-    "output",
     "persona_dir",
     "quote_first",
     "raw",
-    "read_changes",
     "read_dossier",
     "read_json",
     "read_persona",
@@ -85,6 +94,8 @@ CONTACT_ID = 2000  # sender of inbound messages
 BOT_ID = 4242  # sender_business_bot id for bot-posted outbound messages
 BUSINESS_ID = "business-123"
 WORKER_THREAD_NAME = "telesec-dossiers"
+END = "<<END>>"  # the line every writer reply ends with
+PERSONA_DEFAULT = f"## Style\n- Short, polite messages without emoji.\n{END}"  # FakeLlm's persona answer
 
 # A time is a datetime, minutes before ``base`` (int/float), or a timedelta before ``base``.
 When = datetime | int | float | timedelta
@@ -122,6 +133,22 @@ def dossier_module(plugin: ModuleType) -> ModuleType:
     if module is None:
         module = importlib.import_module(f"{plugin.__name__}.dossier_support")
     return module
+
+
+def core_module(monkeypatch: Any, tmp_path: Path, name: str) -> ModuleType:
+    """Import one plugin module in a fresh package without running the plugin entry point.
+
+    For the pure modules (``dossier_doc``, ``dossier_writer``, ``model_client``): their tests do not
+    depend on the rest of the plugin, and HERMES_HOME is ``tmp_path``.
+    """
+    hermes_constants = types.ModuleType("hermes_constants")
+    hermes_constants.get_hermes_home = lambda: tmp_path
+    monkeypatch.setitem(sys.modules, "hermes_constants", hermes_constants)
+    package_name = f"telesec_core_{uuid.uuid4().hex}"
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(ROOT)]
+    monkeypatch.setitem(sys.modules, package_name, package)
+    return importlib.import_module(f"{package_name}.{name}")
 
 
 def _cancel_deletion_timers(history: ModuleType) -> None:
@@ -387,15 +414,50 @@ def catalog_entry(plugin: ModuleType, chat_id: int, *, business_id: str = BUSINE
     )
 
 
-class FakeLlm:
-    """Sync stand-in for the host ``ctx.llm`` facade.
+def doc(text: str) -> str:
+    """A writer reply: ``text`` followed by the end marker line."""
+    return f"{text}\n{END}"
 
-    Scripted responses are used once each, in order; after that the model answers
-    ``{"changes": []}``. A response is a dict (returned as ``parsed``), a str (returned as
-    raw ``text`` with ``parsed=None``), a callable ``(payload, kwargs) -> dict | str``, or an
-    exception instance or class, which is raised. ``on_call(payload)`` runs before the
-    response is chosen, for owner edits or ``forget`` during a call. ``model`` and
-    ``provider`` override the answering model and provider, like a host fallback.
+
+def quote_first(payload: dict[str, Any], kwargs: dict[str, Any] | None = None) -> str:
+    """Responder: a small document quoting the first message of the batch from the contact.
+
+    Persona messages have no ``from`` field, so there it quotes the first message. Deleted messages
+    and messages without text are skipped. The quote is the first 80 characters, whitespace
+    collapsed. With no message to quote it answers ``EMPTY``.
+    """
+    for message in payload.get("messages", []):
+        if message.get("deleted") or not message.get("text"):
+            continue
+        if message.get("from", "contact") == "contact":
+            break
+    else:
+        return doc("EMPTY")
+    quote = " ".join(str(message["text"]).split())[:80].strip()
+    if "from" not in message:
+        return doc(f'## Style\n- The owner wrote "{quote}".')
+    return doc(f'**The contact.**\n\n## Notes\n- The contact said "{quote}".')
+
+
+def default_reply(payload: dict[str, Any], kwargs: dict[str, Any]) -> str:
+    """What ``FakeLlm`` answers once its scripted responses run out, chosen by purpose."""
+    purpose = kwargs.get("purpose")
+    if purpose == "telesec_persona":
+        return PERSONA_DEFAULT
+    if purpose == "telesec_shorten":
+        return doc(str(payload.get("document", ""))[:2000])
+    return quote_first(payload, kwargs)
+
+
+class FakeLlm:
+    """Sync stand-in for the host ``ctx.llm`` facade; dossiers use ``complete`` only.
+
+    Scripted responses are used once each, in order; after that ``default_reply`` answers. A
+    response is a reply ``str``, a callable ``(payload, kwargs) -> str``, or an exception instance
+    or class, which is raised. ``on_call(payload)`` runs before the response is chosen, for a note
+    or ``forget`` during a call. ``model`` and ``provider`` override the answering model and
+    provider, like a host fallback. Each call is recorded in ``calls`` as its keyword arguments
+    plus ``system``, ``user`` (the parsed user JSON) and ``raw`` (the user text as sent).
     """
 
     def __init__(self, *responses: Any, model: str | None = None, provider: str | None = None) -> None:
@@ -405,87 +467,42 @@ class FakeLlm:
         self.model = model
         self.provider = provider
 
-    def complete_structured(self, **kwargs: Any) -> SimpleNamespace:
-        self.calls.append(kwargs)
-        payload = json.loads(kwargs["input"][0]["text"])
+    def complete(self, messages: list[dict[str, Any]], **kwargs: Any) -> SimpleNamespace:
+        system, user = messages[0]["content"], messages[1]["content"]
+        payload = json.loads(user)
+        self.calls.append({**kwargs, "system": system, "user": payload, "raw": user})
         if self.on_call is not None:
             self.on_call(payload)
-        response = self.responses.pop(0) if self.responses else {"changes": []}
+        response = self.responses.pop(0) if self.responses else default_reply
         if isinstance(response, type) and issubclass(response, BaseException):
             raise response()
         if isinstance(response, BaseException):
             raise response
         if callable(response):
             response = response(payload, kwargs)
-        model = self.model or kwargs.get("model")
-        provider = self.provider or kwargs.get("provider")
-        if isinstance(response, str):
-            return SimpleNamespace(parsed=None, text=response, provider=provider, model=model)
-        return SimpleNamespace(parsed=response, text="", provider=provider, model=model)
+        return SimpleNamespace(
+            text=response,
+            provider=self.provider or kwargs.get("provider") or "ai-gateway",
+            model=self.model or kwargs.get("model") or "google/gemini-3.8-flash",
+            usage=SimpleNamespace(input_tokens=100, output_tokens=50),
+        )
+
+    def complete_structured(self, **kwargs: Any) -> Any:
+        raise AssertionError("dossiers must use complete()")
+
+    async def acomplete(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("dossiers must use the sync facade")
 
     async def acomplete_structured(self, **kwargs: Any) -> Any:
         raise AssertionError("dossiers must use the sync facade")
 
     def payloads(self) -> list[dict[str, Any]]:
-        return [json.loads(call["input"][0]["text"]) for call in self.calls]
+        """The parsed user JSON of every call, in order."""
+        return [call["user"] for call in self.calls]
 
-
-def _source_item(source: Any) -> dict[str, str]:
-    if isinstance(source, dict):
-        return dict(source)
-    if isinstance(source, str):
-        return {"ref": source, "quote": ""}
-    ref, quote = source
-    return {"ref": ref, "quote": quote}
-
-
-def change(
-    op: str = "add",
-    fid: str = "",
-    section: str = "preferences",
-    kind: str = "observed",
-    conf: str = "high",
-    text: str = "…",
-    sources: Iterable[Any] = (("m10", "quote"),),
-    reason: str = "",
-) -> dict[str, Any]:
-    """One model output item. A source is ``(ref, quote)``, a bare ref (empty quote) or a dict."""
-    return {
-        "op": op,
-        "fact_id": fid,
-        "section": section,
-        "kind": kind,
-        "confidence": conf,
-        "text": text,
-        "sources": [_source_item(source) for source in sources],
-        "reason": reason,
-    }
-
-
-def output(*items: dict[str, Any]) -> dict[str, Any]:
-    """A model output object: ``{"changes": [items...]}``."""
-    return {"changes": list(items)}
-
-
-def quote_first(payload: dict[str, Any], kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Responder: one observed fact quoting the first ``contact`` message of the batch.
-
-    Persona payloads have no ``from`` field, so there it quotes the first message. The
-    quote is the first 80 characters (whitespace collapsed) and the fact text is
-    ``The contact said "<quote>".`` (``The owner wrote ...`` for the persona). The section
-    is ``preferences`` when offered, else the payload's first section. With no matching
-    message it returns no changes.
-    """
-    for message in payload.get("messages", []):
-        if message.get("from", "contact") == "contact":
-            break
-    else:
-        return output()
-    quote = " ".join(str(message["text"]).split())[:80].strip()
-    sections = list(payload.get("sections") or ["preferences"])
-    section = "preferences" if "preferences" in sections else sections[0]
-    lead = "The contact said" if "from" in message else "The owner wrote"
-    return output(change(section=section, text=f'{lead} "{quote}".', sources=((message["ref"], quote),)))
+    def by_purpose(self, purpose: str) -> list[dict[str, Any]]:
+        """The recorded calls made with ``purpose``."""
+        return [call for call in self.calls if call.get("purpose") == purpose]
 
 
 def cycle(ds: ModuleType, llm: Any, **kwargs: Any) -> Any:
@@ -531,11 +548,13 @@ def read_json(path: Path) -> Any:
 
 
 def read_dossier(ds: ModuleType, chat_id: int, *, business_id: str = BUSINESS_ID) -> dict[str, Any] | None:
-    return read_json(dossier_dir(ds, chat_id, business_id=business_id) / "dossier.json")
+    """The contact's ``document.json``, or None when it does not exist."""
+    return read_json(dossier_dir(ds, chat_id, business_id=business_id) / "document.json")
 
 
 def read_persona(ds: ModuleType) -> dict[str, Any] | None:
-    return read_json(persona_dir(ds) / "dossier.json")
+    """The persona's ``document.json``, or None when it does not exist."""
+    return read_json(persona_dir(ds) / "document.json")
 
 
 def read_state(ds: ModuleType) -> dict[str, Any]:
@@ -546,14 +565,6 @@ def read_state(ds: ModuleType) -> dict[str, Any]:
 def read_settings(ds: ModuleType) -> dict[str, Any] | None:
     """The stored on/off switch (``settings.json``), or None when it does not exist."""
     return read_json(ds.dossier_root() / "settings.json")
-
-
-def read_changes(directory: Path) -> list[dict[str, Any]]:
-    """Every line of ``<directory>/changes.jsonl``, oldest first; blank lines skipped."""
-    path = directory / "changes.jsonl"
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def snapshot_tree(root: Path) -> dict[str, tuple[str, bytes, int]]:
@@ -614,9 +625,10 @@ class FakeCtx:
     """Host plugin context double that records registrations.
 
     ``on_unload`` exists only with ``with_unload=True``, because the plugin feature-detects it.
+    ``register_auxiliary_task`` exists unless ``with_tasks=False`` (a host older than Hermes 0.21.6).
     """
 
-    def __init__(self, llm: Any = None, *, with_unload: bool = False) -> None:
+    def __init__(self, llm: Any = None, *, with_unload: bool = False, with_tasks: bool = True) -> None:
         self.llm = llm
         self.get_config = {}.get
         self.telegram_handlers: list[Any] = []
@@ -624,8 +636,24 @@ class FakeCtx:
         self.cli_commands: list[dict[str, Any]] = []
         self.skills: list[tuple[str, Any, str]] = []
         self.unload_callbacks: list[Callable[..., Any]] = []
+        self.aux_tasks: list[dict[str, Any]] = []
         if with_unload:
             self.on_unload = self.unload_callbacks.append
+        if with_tasks:
+            self.register_auxiliary_task = self._register_auxiliary_task
+
+    def _register_auxiliary_task(
+        self,
+        key: str,
+        *,
+        display_name: str,
+        description: str,
+        defaults: dict[str, Any] | None = None,
+        inherit_from: str | None = None,
+    ) -> None:
+        self.aux_tasks.append(
+            {"key": key, "display_name": display_name, "description": description, "defaults": defaults}
+        )
 
     def register_telegram_handler(self, factory: Any) -> None:
         self.telegram_handlers.append(factory)

@@ -9,11 +9,13 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import model_fakes
 import pytest
 import test_history
 import test_owner_panel as top
 import test_plugin
 import test_transcription_modes as ttm
+from test_dossier_cli import host_config
 
 isolate_plugin_environment = test_plugin.isolate_plugin_environment
 isolate_modes_environment = ttm.isolate_modes_environment
@@ -36,9 +38,22 @@ MANAGER_ROWS = [
     RETENTION_ROW,
     [("Keep dossiers", "tb:s:0:settings/d.ask"), ("• No dossiers", "tb:s:0:settings/d.off")],
 ]
-MODEL_LINES = "Dossier model: gemini / gemini-3.8-flash\nVoice cleanup: gemini / gemini-3.8-flash"
+MODEL_LINES = "Dossier model: ai-gateway / google/gemini-3.8-flash\nVoice cleanup: gemini / gemini-3.8-flash"
 MANAGER_TAIL = f"Keep history: forever\n{MODEL_LINES}"
 MANAGER_TEXT = f"Telesec settings · all chats\nOne chat: Manage Bot in that chat.\n{MANAGER_TAIL}"
+SENT_TO = ("The text of ALL private chats will be sent to ai-gateway / google/gemini-3.8-flash to build a dossier for "
+           "each contact and your persona.")
+ROUTE_LINE = ("Dossiers use the Telesec dossiers model task; change it with 'hermes model'. If that model fails, Hermes "
+              "may retry with your main model.")
+GATE_LINE = ("For short checks, the current dossier and the chat's new messages go to TypeSafe Jev through the same "
+             "AI Gateway, with zero data retention.")
+
+
+@pytest.fixture(autouse=True)
+def isolate_dossier_route(monkeypatch):
+    # A developer's own dossier route or gateway URL must not change the model lines.
+    for name in ("TELESEC_DOSSIER_PROVIDER", "TELESEC_DOSSIER_MODEL", "AI_GATEWAY_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
@@ -253,7 +268,8 @@ def test_cli_shows_and_sets_every_switch(gs, plugin, monkeypatch):
 
     code, out = ttm.run_cli(plugin, "settings", "set", "dossiers", "on")
     assert code == 0
-    assert "dossiers: on" in out and "sent to gemini / gemini-3.8-flash" in out
+    assert "dossiers: on" in out and SENT_TO in out.splitlines()
+    assert "TypeSafe" not in out  # the message check is off by default
     assert "note: dossiers are paused while history is off" in out and "no restart is needed" in out
 
     assert ttm.run_cli(plugin, "settings", "set", "history", "on")[0] == 0
@@ -269,6 +285,90 @@ def test_cli_shows_and_sets_every_switch(gs, plugin, monkeypatch):
     assert data["ignored_env"] == ["TELESEC_DISABLE"] and data["settings_file_unreadable"] is False
     assert data["chat_overrides"] == {"transcription": 0, "history": 0, "dossier": 0, "history_on": 0, "old_scope": 0}
     assert plugin._disabled() is True  # the stored switch, not TELESEC_DISABLE=0
+
+
+@pytest.mark.parametrize("registered", [True, False])
+def test_cli_enable_names_the_message_check_when_it_runs(gs, plugin, registered):
+    ds = plugin._dossier_support
+    ds.set_task_registered(registered)  # without the task the fallback route is ai-gateway too
+    ds.set_gate("auto", via="cli")
+    with model_fakes.fake_secret_scope({"AI_GATEWAY_API_KEY": "fake-gateway-key"}):
+        code, out = ttm.run_cli(plugin, "settings", "set", "dossiers", "on")
+
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[lines.index(SENT_TO):lines.index(GATE_LINE) + 1] == [SENT_TO, *([ROUTE_LINE] if registered else []), GATE_LINE]
+    assert "fake-gateway-key" not in out
+
+
+def test_cli_enable_names_fact_extraction_only_when_it_runs(gs, plugin):
+    ds = plugin._dossier_support
+    ds.set_clairic("on", via="cli")
+    line = ("New messages also go to Cloudflare Workers AI (Clairic, a preview model) to pick out dates, amounts "
+            "and contact details for the writer.")
+    with model_fakes.fake_secret_scope({}):  # no Cloudflare credentials
+        code, out = ttm.run_cli(plugin, "settings", "set", "dossiers", "on")
+    assert code == 0 and line not in out.splitlines()
+    cf = {"CLOUDFLARE_ACCOUNT_ID": "0123456789abcdef0123456789abcdef", "CLOUDFLARE_API_TOKEN": "fake-cf-token"}
+    with model_fakes.fake_secret_scope(cf):
+        code, out = ttm.run_cli(plugin, "settings", "set", "dossiers", "on")
+    lines = out.splitlines()
+    assert code == 0 and line in lines[lines.index(SENT_TO) + 1:]
+    assert "fake-cf-token" not in out
+
+
+@pytest.mark.parametrize("case", ["setting off", "no key", "writer not on the gateway"])
+def test_cli_enable_leaves_the_message_check_out_when_it_does_not_run(gs, plugin, monkeypatch, case):
+    ds = plugin._dossier_support
+    ds.set_task_registered(True)
+    ds.set_gate("off" if case == "setting off" else "auto", via="cli")
+    if case == "writer not on the gateway":
+        monkeypatch.setenv("TELESEC_DOSSIER_PROVIDER", "gemini")  # the deprecated explicit route
+    secrets = {} if case == "no key" else {"AI_GATEWAY_API_KEY": "fake-gateway-key"}
+    with model_fakes.fake_secret_scope(secrets):
+        code, out = ttm.run_cli(plugin, "settings", "set", "dossiers", "on")
+
+    assert code == 0 and "dossiers: on" in out
+    assert "TypeSafe" not in out
+    if case == "writer not on the gateway":
+        assert ("The text of ALL private chats will be sent to gemini / gemini-3.8-flash to build a dossier for each "
+                "contact and your persona.") in out.splitlines()
+
+
+@pytest.mark.parametrize("route", ["task", "legacy env", "not registered"])
+def test_every_way_to_turn_dossiers_on_shows_the_same_lines(gs, plugin, monkeypatch, route):
+    top.bind_owner(plugin)
+    set_switch(plugin, "history", True)
+    ds = plugin._dossier_support
+    ds.set_task_registered(route != "not registered")
+    ds.set_gate("auto", via="cli")
+    if route == "legacy env":
+        monkeypatch.setenv("TELESEC_DOSSIER_PROVIDER", "openrouter")
+        monkeypatch.setenv("TELESEC_DOSSIER_MODEL", "example/dossier-large")
+    with model_fakes.fake_secret_scope({"AI_GATEWAY_API_KEY": "fake-gateway-key"}):
+        expected = plugin._settings_panel._dossier_view.enable_lines(ds.load_config(), "en")
+        confirm = plugin._settings_panel.render(ctx(plugin, arg="d.ask")).text
+        settings_set = ttm.run_cli(plugin, "settings", "set", "dossiers", "on")[1]
+        dossier_enable = ttm.run_cli(plugin, "dossier", "enable")[1]
+
+    assert (ROUTE_LINE in expected) is (route == "task")  # an explicit route has no task in 'hermes model'
+    assert (GATE_LINE in expected) is (route != "legacy env")  # the legacy route is not on the gateway
+    assert "\n\n".join(expected) in confirm
+    assert "\n".join(expected) in settings_set and "\n".join(expected) in dossier_enable
+
+
+def test_the_auto_route_has_a_localized_name(gs, plugin, monkeypatch):
+    top.bind_owner(plugin)
+    set_switch(plugin, "history", True)
+    host_config(monkeypatch, {"provider": "auto"})  # the dossiers task follows the main model
+    plugin._dossier_support.set_task_registered(True)
+    panel = plugin._settings_panel
+
+    assert "Dossier model: your main model" in panel.render(ctx(plugin)).text.splitlines()
+    assert "Модель досье: ваша основная модель" in panel.render(ctx(plugin, lang="ru")).text.splitlines()
+    assert "will be sent to your main model to build" in panel.render(ctx(plugin, arg="d.ask")).text
+    ru = panel.render(ctx(plugin, arg="d.ask", lang="ru")).text
+    assert "будет отправляться в вашу основную модель, чтобы" in ru and "main model" not in ru
 
 
 def test_dossier_cli_still_switches_and_reports_the_pause(gs, plugin):
@@ -294,7 +394,8 @@ def test_manager_view_from_telesec(gs, plugin):
     ru = plugin._settings_panel.render(ctx(plugin, lang="ru"))
     assert ru.text == ("Настройки Telesec · все чаты\nДля одного чата — кнопка управления ботом в нём.\n"
                        "Хранить историю: всегда\n"
-                       "Модель досье: gemini / gemini-3.8-flash\nОчистка расшифровок: gemini / gemini-3.8-flash")
+                       "Модель досье: ai-gateway / google/gemini-3.8-flash\n"
+                       "Очистка расшифровок: gemini / gemini-3.8-flash")
     assert [[label for label, _data in row] for row in ru.buttons] == [
         ["• Расшифровывать", "Не расшифровывать"], ["Сохранять историю", "• Не сохранять"],
         ["• Всегда", "1 год", "90 дней", "30 дней"], ["Вести досье", "• Не вести"]]
@@ -319,6 +420,7 @@ def test_another_owner_sees_a_read_only_view_and_cannot_write(gs, plugin, modes)
 
 def test_dossiers_ask_first_and_need_history(gs, plugin):
     top.bind_owner(plugin)
+    plugin._dossier_support.set_task_registered(True)  # as on a Hermes with the task API
     panel = plugin._settings_panel
 
     refused = panel.render(ctx(plugin, arg="d.ask"))
@@ -328,7 +430,9 @@ def test_dossiers_ask_first_and_need_history(gs, plugin):
 
     assert panel.render(ctx(plugin, arg="h.on")).text.splitlines()[1] == "History is on."
     confirm = panel.render(ctx(plugin, arg="d.ask"))
-    assert confirm.text.startswith("Turn on dossiers?\n\nThe text of ALL private chats will be sent to gemini / ")
+    assert confirm.text.startswith("Turn on dossiers?\n\nThe text of ALL private chats will be sent to "
+                                   "ai-gateway / google/gemini-3.8-flash ")
+    assert "Hermes may retry with your main model" in confirm.text and "TypeSafe" not in confirm.text
     assert rows(confirm) == [[("Enable", "tb:s:0:settings/d.yes"), ("Cancel", "tb:s:0:settings")]]
     assert gs.enabled("dossiers") is False  # asking writes nothing
 
@@ -912,16 +1016,21 @@ async def test_hourly_maintenance_reads_the_retention_in_effect(gs, plugin, monk
 
 def test_model_lines_show_the_configured_models(gs, plugin, monkeypatch):
     top.bind_owner(plugin)
+    plugin._dossier_support.set_task_registered(True)
     monkeypatch.setenv("TELESEC_CLEANUP_PROVIDER", "openrouter")
     monkeypatch.setenv("TELESEC_CLEANUP_MODEL", "example/cleanup-small")
     monkeypatch.setenv("TELESEC_DOSSIER_MODEL", "example/dossier-large")
 
     text = plugin._settings_panel.render(ctx(plugin)).text
-    # Dossiers fall back to the cleanup provider, as `hermes telesec dossier status` shows.
-    assert text.splitlines()[-2:] == ["Dossier model: openrouter / example/dossier-large",
+    # Dossiers use their own model task: neither the cleanup route nor a model variable alone moves them.
+    assert text.splitlines()[-2:] == ["Dossier model: ai-gateway / google/gemini-3.8-flash",
                                       "Voice cleanup: openrouter / example/cleanup-small"]
+
+    monkeypatch.setenv("TELESEC_DOSSIER_PROVIDER", "openrouter")  # the deprecated explicit route
+    text = plugin._settings_panel.render(ctx(plugin)).text
+    assert text.splitlines()[-2] == "Dossier model: openrouter / example/dossier-large"
     code, out = ttm.run_cli(plugin, "dossier", "status")
-    assert code == 0 and "Model: openrouter / example/dossier-large" in out
+    assert code == 0 and "openrouter / example/dossier-large" in out
 
     monkeypatch.setenv("TELESEC_CLEANUP_DISABLE", "1")
     assert plugin._settings_panel.render(ctx(plugin)).text.splitlines()[-1] == "Voice cleanup: off"

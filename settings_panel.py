@@ -82,6 +82,7 @@ STRINGS = {
         "settings.retention.cancel": "Cancel",
         "settings.retention.done": "History is kept {value}.",
         "settings.model.dossiers": "Dossier model: {name}",
+        "settings.model.main": "your main model",
         "settings.model.cleanup": "Voice cleanup: {name}",
     },
     "ru": {
@@ -123,6 +124,7 @@ STRINGS = {
         "settings.retention.cancel": "Отмена",
         "settings.retention.done": "История хранится {value}.",
         "settings.model.dossiers": "Модель досье: {name}",
+        "settings.model.main": "ваша основная модель",
         "settings.model.cleanup": "Очистка расшифровок: {name}",
     },
 }
@@ -157,29 +159,17 @@ def _retention_value(ctx: _owner_panel.PanelContext, days: int) -> str:
     return _tr(f"settings.retention.{key}", ctx, days=days)
 
 
-def _without_credentials(value: str) -> str:
-    """``value`` without user info (up to the last "@", so an "@" in a password is covered), query or fragment.
-
-    With a scheme any "@" ends user info; without one only "name:secret@", so "model@version" stays.
-    """
-    scheme, sep, rest = value.strip().partition("://")
-    if not sep:
-        scheme, rest = "", scheme
-    userinfo, at, host = rest.rpartition("@")
-    if at and (sep or ":" in userinfo):
-        rest = host
-    return re.split(r"[?#]", scheme + sep + rest, maxsplit=1)[0].strip()
-
-
 def _model_name(provider: str, model: str) -> str:
     """``provider / model`` as configured, without URL credentials, queries or fragments."""
-    parts = [_without_credentials(str(part)) for part in (provider, model)]
+    parts = [_ds.without_credentials(str(part)) for part in (provider, model)]
     return _ds.clip(" / ".join(part for part in parts if part) or "?", MODEL_NAME_MAX)
 
 
 def _model_lines(ctx: _owner_panel.PanelContext) -> list[str]:
     cfg = _ds.load_config()
-    lines = [_tr("settings.model.dossiers", ctx, name=_model_name(cfg.provider, cfg.model))]
+    # "auto" is the dossiers task following the main model; its "main model" is a placeholder, not a name.
+    name = _tr("settings.model.main", ctx) if cfg.provider == "auto" else _model_name(cfg.provider, cfg.model)
+    lines = [_tr("settings.model.dossiers", ctx, name=name)]
     if _voice_cleanup is not None:
         cleanup = _voice_cleanup()
         name = _model_name(*cleanup) if cleanup else _tr("settings.state.off", ctx)
@@ -279,9 +269,7 @@ def _main_view(ctx: _owner_panel.PanelContext, manager: bool, notice: str | None
 
 
 def _confirm_view(ctx: _owner_panel.PanelContext) -> _owner_panel.PanelView:
-    cfg = _ds.load_config()
-    text, yes, cancel = _dossier_view.enable_confirm(_dossier_view.lang_for(ctx.language_code), cfg.provider,
-                                                     cfg.model)
+    text, yes, cancel = _dossier_view.enable_confirm(_ds.load_config(), _dossier_view.lang_for(ctx.language_code))
     return _owner_panel.PanelView(text=text, buttons=[[(yes, _callback(ctx, "d.yes")), (cancel, _callback(ctx))]])
 
 

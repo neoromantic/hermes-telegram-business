@@ -1,7 +1,8 @@
-"""Dossiers in Telegram (issue #17): snapshot loading, the owner panel section and the owner's ``/dossier``.
+"""Dossiers in Telegram: snapshot loading, the owner panel section and the owner's ``/dossier``.
 
-Dossiers are built on disk by the real capture path and cycle with a scripted model; the Bot API is a
-recording fake, plus one run through real PTB 22.8 dispatch and request serialization.
+Documents are built on disk by the real capture path and cycle with a scripted model; the Bot API is a
+recording fake, plus one run through real PTB 22.8 dispatch and request serialization. What a
+``/dossier`` summary may read is tested in ``test_dossier_post.py``.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import logging
 import shutil
 import threading
 from collections.abc import Callable
+from datetime import timedelta
 from types import MappingProxyType, ModuleType, SimpleNamespace
 from typing import Any
 
@@ -27,13 +29,11 @@ from dossier_helpers import (
     FakeCtx,
     FakeLlm,
     catalog_entry,
-    change,
     cycle,
+    doc,
     dossier_dir,
     make_deleted_update,
-    output,
     persona_dir,
-    read_changes,
     read_dossier,
     read_persona,
     read_settings,
@@ -53,14 +53,20 @@ ROWS = [(10, "in", "I prefer calls after 6pm on weekdays.", 60),
         (11, "out", "Sure, I will send the contract by Friday.", 59)]
 COMMITMENT = "The owner will send the contract by Friday."
 PREFERENCE = "The contact prefers calls after 6pm."
-PERSONA_FACT = "The owner writes short friendly replies."
+DOCUMENT = f"**Anna, a client.**\n\n## Commitments\n- {COMMITMENT} [m11]\n\n## Preferences\n- {PREFERENCE} [m10]"
+PERSONA_TEXT = "The owner writes short friendly replies."
+PERSONA = f"## Style\n- {PERSONA_TEXT}"
 NOTE = "Owner-only note: never mention the discount."
-CONTACT_FACTS = output(
-    change(section="commitments", text=COMMITMENT, sources=(("m11", "I will send the contract by Friday"),)),
-    change(section="preferences", text=PREFERENCE, sources=(("m10", "I prefer calls after 6pm"),)),
-)
-PERSONA_FACTS = output(change(section="tone", kind="inferred", conf="medium", text=PERSONA_FACT, sources=("c1:m11",)))
-SECRETS = (COMMITMENT, PREFERENCE, PERSONA_FACT, NOTE, "I prefer calls", "send the contract", "Anna", "anna_k")
+SUMMARY = "## Agreements\n- The owner sends the contract by **Friday**.\n- Calls work best after 6pm."
+SUMMARY_LINE = "The owner sends the contract by <b>Friday</b>."
+LONG_SUMMARY = doc("## Notes\n" + "- a long point\n" * 400)  # too long: the writer would ask to shorten it
+SECRETS = (COMMITMENT, PREFERENCE, PERSONA_TEXT, NOTE, "I prefer calls", "send the contract", "Anna", "anna_k",
+           "Calls work best")
+UNAVAILABLE = "Refresh is unavailable: dossiers or history are off, or the model is not connected."
+STARTED = "Refresh started. Open the dossier again in a minute."
+OPERATOR_ONLY = ("Only the owner of every Business connection the bot knows about can open the persona or turn "
+                 "dossiers on and off.")
+HEAD = "Nothing was posted to the chat with @anna_k."
 
 
 @pytest.fixture(autouse=True)
@@ -131,17 +137,13 @@ class BadRequest(Exception):
 
 
 async def build(plugin: ModuleType, ds: ModuleType, *, note: bool = True) -> dict[str, Any]:
-    """A contact dossier (f1 commitment, f2 preference, f3 owner note) and a persona (f1) on disk."""
+    """A contact document (with COMMITMENT and PREFERENCE, plus the owner NOTE) and a persona on disk."""
     await seed(plugin, CHAT, "anna_k", ROWS, first_name="Anna")
-    report = cycle(ds, FakeLlm(CONTACT_FACTS, PERSONA_FACTS))
-    assert (report.refreshed, report.persona) == (1, "refreshed")
+    assert cycle(ds, FakeLlm(doc(DOCUMENT))).refreshed == 1
+    assert cycle(ds, FakeLlm(doc(PERSONA)), target=("persona", None)).persona == "refreshed"
     if note:
-        ds.apply_owner_edit(("contact", catalog_entry(plugin, CHAT)), "note", section="relationship", text=NOTE)
+        ds.set_note(("contact", catalog_entry(plugin, CHAT)), NOTE)
     return read_dossier(ds, CHAT)
-
-
-def prefix(dossier: dict[str, Any]) -> str:
-    return dossier["dossier_id"][:6]
 
 
 async def act(panel: Any, args: str | None = None, *, lang: str | None = "en", chat: int = CHAT) -> Any:
@@ -165,13 +167,14 @@ def command_update(text: str = "/dossier", *, sender: int | None = OWNER_ID, edi
 
 
 def echo_update(message_id: int = 900) -> Any:
-    """The bot-posted dossier as Telegram echoes it: no text, ``rich_message`` in PTB's read-only api_kwargs."""
+    """The bot-posted summary as Telegram echoes it: no text, ``rich_message`` in PTB's read-only api_kwargs."""
     update = command_update(None, message_id=message_id, bot_sender=BOT_ID)  # type: ignore[arg-type]
     update.business_message.api_kwargs = MappingProxyType({"rich_message": {"blocks": [{"type": "paragraph"}]}})
     return update
 
 
 async def run_command(panel: Any, update: Any, bot: PanelBot, seen: set[Any] | None = None) -> bool:
+    """The handler, then every post it started (they run in the background)."""
     seen = set() if seen is None else seen
 
     def mark_seen(key: Any) -> bool:
@@ -180,11 +183,39 @@ async def run_command(panel: Any, update: Any, bot: PanelBot, seen: set[Any] | N
         seen.add(key)
         return True
 
-    return await panel.handle_dossier_command_update(update, bot=bot, adapter=None, mark_seen=mark_seen)
+    claimed = await panel.handle_dossier_command_update(update, bot=bot, adapter=None, mark_seen=mark_seen)
+    await panel.join_posts()
+    return claimed
 
 
 def posts(bot: PanelBot) -> list[dict[str, Any]]:
     return [kwargs for endpoint, kwargs in bot.api if endpoint == "sendRichMessage"]
+
+
+def holding_llm(*responses: Any) -> tuple[FakeLlm, threading.Event, threading.Event]:
+    """A model that blocks inside its call until ``release`` is set; ``entered`` tells the call began."""
+    llm, release, entered = FakeLlm(*responses), threading.Event(), threading.Event()
+
+    def hold(_payload: dict[str, Any]) -> None:
+        entered.set()
+        release.wait(5)
+
+    llm.on_call = hold
+    return llm, release, entered
+
+
+def watch_build(panel: Any, monkeypatch: pytest.MonkeyPatch) -> threading.Event:
+    """Set once the ``/dossier`` build thread ends: it runs on after its post is cancelled."""
+    done, real = threading.Event(), panel._post.build_post
+
+    def build_post(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return real(*args, **kwargs)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(panel._post, "build_post", build_post)
+    return done
 
 
 # ---------------------------------------------------------------------------
@@ -193,68 +224,74 @@ def posts(bot: PanelBot) -> list[dict[str, Any]]:
 
 
 @pytest.mark.asyncio
-async def test_contact_snapshot_ok(plug, ds, panel):
-    dossier = await build(plug, ds)
+async def test_contact_snapshot_reads_the_document(plug, ds, panel):
+    stored = await build(plug, ds)
 
     snap = panel.load_contact_snapshot(BUSINESS_ID, CHAT, now=NOW)
 
     entry = catalog_entry(plug, CHAT)
-    assert snap.kind == "contact" and snap.status == "ok" and snap.dossier == dossier
-    assert snap.label == plug._history_support._catalog_entry_display_name(entry)
-    assert (snap.enabled, snap.llm_ready, snap.refreshing, snap.cycle_busy) == (True, False, False, False)
-    cfg = ds.load_config()
-    assert (snap.provider, snap.model, snap.backfill_days) == (cfg.provider, cfg.model, cfg.backfill_days)
-    assert snap.failure_error is None and snap.stale == {} and snap.stale_error is None
-    assert sorted(snap.sources_now) == ["f1", "f2", "f3"]
-    assert [s["state"] for s in snap.sources_now["f1"]] == ["present"]
-    assert snap.sources_now["f3"] == []  # the note has no sources
-    assert (snap.business_connection_id, snap.chat_id) == (BUSINESS_ID, CHAT)
+    assert (snap.target, snap.doc, snap.corrupt) == ("contact", stored, False)
+    assert snap.name == plug._history_support._catalog_entry_display_name(entry) == "@anna_k"
+    assert (snap.enabled, snap.history_enabled, snap.chat_off, snap.llm_ready) == (True, True, False, False)
+    assert (snap.refreshing, snap.failure, snap.unqualified) == (False, None, False)
+    assert (snap.chat_id, snap.in_history, snap.manage_global) == (CHAT, True, False)
+    assert COMMITMENT in snap.doc["document"] and snap.doc["note"] == NOTE
 
 
 @pytest.mark.asyncio
 async def test_contact_snapshot_without_catalog_entry_uses_a_stub(plug, ds, panel):
     snap = panel.load_contact_snapshot(BUSINESS_ID, 4242, now=NOW)
 
-    assert (snap.status, snap.label, snap.missing_reason) == ("missing", "chat:4242", "unqualified")
+    assert (snap.name, snap.doc, snap.in_history, snap.unqualified) == ("chat:4242", None, False, False)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("rows", "reason"), [
-    ([(10, "in", "Hello there, how are you?", 60)], "unqualified"),
-    (ROWS, "pending"),
+@pytest.mark.parametrize(("rows", "unqualified"), [
+    ([(10, "in", "Hello there, how are you?", 60)], True),
+    (ROWS, False),
 ])
-async def test_contact_snapshot_missing_reason(plug, ds, panel, rows, reason):
+async def test_contact_without_a_document_says_why(plug, ds, panel, rows, unqualified):
     await seed(plug, CHAT, "anna_k", rows, first_name="Anna")
+    ds.bind_llm(FakeLlm())
 
     snap = panel.load_contact_snapshot(BUSINESS_ID, CHAT, now=NOW)
+    view = await act(panel)
 
-    assert (snap.status, snap.dossier, snap.missing_reason) == ("missing", None, reason)
+    assert (snap.doc, snap.unqualified) == (None, unqualified)
+    if unqualified:
+        assert "No dossier yet: it needs messages from both you and the contact." in view.text
+        assert args_of(view) == ["o.p"]  # a refresh could not write anything yet
+    else:
+        assert "No dossier yet. It is written a few minutes after the chat goes quiet" in view.text
+        assert args_of(view) == ["rf.c", "o.p"]
     assert ds.load_state()["failures"] == {}
 
 
 @pytest.mark.asyncio
 async def test_contact_snapshot_failed_attempt(plug, ds, panel):
     await seed(plug, CHAT, "anna_k", ROWS, first_name="Anna")
-    report = cycle(ds, FakeLlm(RuntimeError("model down with secret text")))
-    assert report.failed == 1
+    assert cycle(ds, FakeLlm(RuntimeError("model down with secret text"))).failed == 1
+    ds.bind_llm(FakeLlm())
 
     snap = panel.load_contact_snapshot(BUSINESS_ID, CHAT, now=NOW)
 
-    assert (snap.status, snap.missing_reason, snap.failure_error) == ("missing", "failed", "RuntimeError")
-    assert "RuntimeError" in panel._view.render_overview(snap, "en").text
+    assert (snap.doc, snap.failure) == (None, "RuntimeError")
+    text = panel._view.render_overview(snap, "en").text
+    assert "The dossier could not be written yet (RuntimeError)." in text and "secret" not in text
 
 
 @pytest.mark.asyncio
 async def test_contact_snapshot_corrupt(plug, ds, panel):
     await build(plug, ds)
-    (dossier_dir(ds, CHAT) / "dossier.json").write_text("{not json", encoding="utf-8")
+    ds.bind_llm(FakeLlm())
+    (dossier_dir(ds, CHAT) / "document.json").write_text("{not json", encoding="utf-8")
 
     snap = panel.load_contact_snapshot(BUSINESS_ID, CHAT, now=NOW)
     view = await act(panel)
 
-    assert (snap.status, snap.dossier) == ("corrupt", None)
-    assert "can't be read" in view.text
-    assert f"forget --connection {BUSINESS_ID} --chat {CHAT}" in view.text
+    assert (snap.corrupt, snap.doc) == (True, None)
+    assert "can't be read" in view.text and f"hermes telesec dossier forget --chat {CHAT}" in view.text
+    assert args_of(view) == ["o.p"]
 
 
 @pytest.mark.asyncio
@@ -262,43 +299,42 @@ async def test_disabled_without_dossier_explains_and_points_to_settings(dossier_
     snap = panel.load_contact_snapshot(BUSINESS_ID, CHAT, now=NOW)
     view = await act(panel)
 
-    assert (snap.enabled, snap.status, snap.missing_reason) == (False, "missing", None)
+    assert (snap.enabled, snap.doc) == (False, None)
     assert "Dossiers are off. Turn them on in Settings." in view.text
     assert args_of(view) == ["o.p"]  # the switch is in Settings
 
 
 @pytest.mark.asyncio
-async def test_history_read_failure_still_renders_the_stored_dossier(plug, ds, panel, monkeypatch):
+async def test_persona_snapshot_reads_the_persona_document(plug, ds, panel):
     await build(plug, ds)
 
-    def broken(*_args: Any, **_kwargs: Any) -> Any:
-        raise OSError("history lock gone")
+    snap = panel.load_persona_snapshot()
 
-    monkeypatch.setattr(ds, "views_for_dossier", broken)
-    snap = panel.load_contact_snapshot(BUSINESS_ID, CHAT, now=NOW)
-
-    assert (snap.status, snap.stale_error, snap.stale, snap.sources_now) == ("ok", "OSError", {}, {})
-    assert COMMITMENT in panel._view.render_overview(snap, "en").text
-
-
-@pytest.mark.asyncio
-async def test_persona_snapshot_has_chat_names(plug, ds, panel):
-    await build(plug, ds)
-
-    snap = panel.load_persona_snapshot(now=NOW)
-
-    assert (snap.kind, snap.status) == ("persona", "ok")
-    assert snap.chat_names == {"c1": plug._history_support._catalog_entry_display_name(catalog_entry(plug, CHAT))}
-    assert [f["text"] for f in snap.dossier["facts"]] == [PERSONA_FACT]
-    assert sorted(snap.sources_now) == ["f1"]
+    assert (snap.target, snap.doc, snap.corrupt, snap.manage_global) == ("persona", read_persona(ds), False, True)
+    assert PERSONA_TEXT in snap.doc["document"]
 
 
 @pytest.mark.asyncio
 async def test_persona_snapshot_missing_and_corrupt(plug, ds, panel):
-    assert panel.load_persona_snapshot(now=NOW).missing_reason == "pending"
+    ds.bind_llm(FakeLlm())
+    missing = panel.load_persona_snapshot()
+    assert (missing.doc, missing.corrupt) == (None, False)
+    assert "No persona yet." in panel._view.render_overview(missing, "en").text
+
     persona_dir(ds).mkdir(parents=True)
-    (persona_dir(ds) / "dossier.json").write_text("[]", encoding="utf-8")
-    assert panel.load_persona_snapshot(now=NOW).status == "corrupt"
+    (persona_dir(ds) / "document.json").write_text("[]", encoding="utf-8")
+    corrupt = panel.load_persona_snapshot()
+    assert (corrupt.doc, corrupt.corrupt) == (None, True)
+    assert "The persona file can't be read." in panel._view.render_overview(corrupt, "en").text
+
+
+@pytest.mark.asyncio
+async def test_llm_ready_checks_complete(plug, ds, panel):
+    assert panel.llm_ready() is False
+    assert panel.llm_ready(SimpleNamespace(complete_structured=lambda **_: None)) is False
+    assert panel.llm_ready(FakeLlm()) is True
+    ds.bind_llm(FakeLlm())
+    assert panel.llm_ready() is True
 
 
 # ---------------------------------------------------------------------------
@@ -308,109 +344,43 @@ async def test_persona_snapshot_missing_and_corrupt(plug, ds, panel):
 
 @pytest.mark.asyncio
 async def test_overview_in_english_and_russian(plug, ds, panel):
-    dossier = await build(plug, ds)
+    await build(plug, ds)
 
     en = await act(panel)
     ru = await act(panel, "o.c", lang="ru-RU")
 
-    assert COMMITMENT in en.html and NOTE in en.html and "Commitments" in en.html
-    assert "Обязательства" in ru.html and COMMITMENT in ru.html
-    assert args_of(en) == ["m.c.0", "o.p"]  # no Refresh: the model is not bound here
+    assert en.html.startswith("<h3>@anna_k</h3>")
+    assert COMMITMENT in en.html and PREFERENCE in en.html and "<h4>Commitments</h4>" in en.html
+    assert "[m11]" not in en.html and "[m10]" not in en.html  # refs stay on disk
+    assert "Your note (not posted)" in en.text and NOTE in en.text
+    assert "Ваша заметка (не публикуется)" in ru.html and COMMITMENT in ru.html
+    assert args_of(en) == ["o.p"]  # no Refresh: the model is not bound here
     assert all(len(args) <= 30 for args in args_of(en))
-    assert prefix(dossier) not in args_of(en)
 
 
 @pytest.mark.asyncio
-async def test_malformed_args_show_the_overview(plug, ds, panel):
+async def test_old_and_malformed_args_show_the_dossier_and_write_nothing(plug, ds, panel):
+    await build(plug, ds)
+    before = snapshot_tree(ds.dossier_root())
+
+    for args in ("zz", "m.c.0", "f.c.abcdef.1", "pn.c.abcdef.1", "up.c.abcdef.1", "ra.c.abcdef.2", "rd.c.abcdef.2",
+                 "ea", "ed", "ds", "rf.p", "x" * 80, "o.c\n"):
+        view = await act(panel, args)
+        assert COMMITMENT in view.html and view.notice is None, args
+
+    assert snapshot_tree(ds.dossier_root()) == before
+
+
+@pytest.mark.asyncio
+async def test_persona_screen_has_only_the_way_back(plug, ds, panel):
     await build(plug, ds)
 
-    for args in ("zz", "pn.c.xyz.1", "f.c.abcdef", "x" * 80, "o.c\n"):
-        view = await act(panel, args)
-        assert COMMITMENT in view.html and view.notice is None
+    view = await act(panel, "o.p")
 
-
-@pytest.mark.asyncio
-async def test_manage_fact_card_and_buttons(plug, ds, panel):
-    dossier = await build(plug, ds)
-    p = prefix(dossier)
-
-    picker = await act(panel, "m.c.0")
-    card = await act(panel, f"f.c.{p}.1")
-
-    assert {f"f.c.{p}.1", f"f.c.{p}.2", f"f.c.{p}.3"} <= set(args_of(picker))
-    assert COMMITMENT in card.html and "I will send the contract by Friday" in card.html
-    assert args_of(card)[:2] == [f"pn.c.{p}.1", f"ra.c.{p}.1"]
-
-
-@pytest.mark.asyncio
-async def test_pin_and_unpin_change_the_dossier_and_log_an_owner_revision(plug, ds, panel):
-    dossier = await build(plug, ds)
-    p = prefix(dossier)
-
-    pinned = await act(panel, f"pn.c.{p}.1")
-    assert pinned.notice == "f1 pinned."
-    assert f"up.c.{p}.1" in args_of(pinned)
-    stored = read_dossier(ds, CHAT)
-    assert stored["facts"][0]["pinned"] is True and stored["revision"] == dossier["revision"] + 1
-    line = read_changes(dossier_dir(ds, CHAT))[-1]
-    assert (line["actor"], line["trigger"], [op["op"] for op in line["changes"]]) == ("owner", "owner", ["pin"])
-
-    unpinned = await act(panel, f"up.c.{p}.1", lang="ru")
-    assert unpinned.notice == "f1 откреплён."
-    assert read_dossier(ds, CHAT)["facts"][0]["pinned"] is False
-    assert read_changes(dossier_dir(ds, CHAT))[-1]["changes"][0]["op"] == "unpin"
-
-
-@pytest.mark.asyncio
-async def test_remove_asks_then_removes(plug, ds, panel):
-    dossier = await build(plug, ds)
-    p = prefix(dossier)
-
-    ask = await act(panel, f"ra.c.{p}.2")
-    assert PREFERENCE in ask.html and args_of(ask) == [f"rd.c.{p}.2", f"f.c.{p}.2"]
-    assert [f["id"] for f in read_dossier(ds, CHAT)["facts"]] == ["f1", "f2", "f3"]
-
-    done = await act(panel, f"rd.c.{p}.2")
-    assert done.notice == "f2 removed."
-    stored = read_dossier(ds, CHAT)
-    assert [f["id"] for f in stored["facts"]] == ["f1", "f3"]
-    assert PREFERENCE in [r["text"] for r in stored["removed"]]
-    assert read_changes(dossier_dir(ds, CHAT))[-1]["changes"][0]["op"] == "remove"
-    assert f"f.c.{p}.2" not in args_of(done)
-
-
-@pytest.mark.asyncio
-async def test_stale_buttons_never_edit_a_rebuilt_dossier(plug, ds, panel):
-    old = await build(plug, ds, note=False)
-    ds.forget(("contact", catalog_entry(plug, CHAT)))
-    assert cycle(ds, FakeLlm(CONTACT_FACTS)).refreshed == 1
-    new = read_dossier(ds, CHAT)
-    assert prefix(new) != prefix(old)
-    before = snapshot_tree(dossier_dir(ds, CHAT))
-
-    for args in (f"pn.c.{prefix(old)}.1", f"up.c.{prefix(old)}.1", f"rd.c.{prefix(old)}.1", f"f.c.{prefix(old)}.1",
-                 f"ra.c.{prefix(old)}.1", f"pn.c.{prefix(new)}.99"):
-        view = await act(panel, args)
-        assert view.text == "This dossier changed. Open it again.", args
-        assert args_of(view) == ["o.c"]
-
-    assert snapshot_tree(dossier_dir(ds, CHAT)) == before
-
-
-@pytest.mark.asyncio
-async def test_persona_overview_and_pin(plug, ds, panel):
-    await build(plug, ds)
-    persona = read_persona(ds)
-    p = prefix(persona)
-
-    overview = await act(panel, "o.p")
-    assert PERSONA_FACT in overview.html and "My persona" in overview.html
-    assert args_of(overview) == ["m.p.0", "o.c"]
-    assert f"f.p.{p}.1" in args_of(await act(panel, "m.p.0"))
-
-    pinned = await act(panel, f"pn.p.{p}.1")
-    assert pinned.notice == "f1 pinned." and read_persona(ds)["facts"][0]["pinned"] is True
-    assert read_dossier(ds, CHAT)["facts"][0]["pinned"] is False
+    assert view.html.startswith("<h3>My persona</h3>") and PERSONA_TEXT in view.html
+    assert COMMITMENT not in view.html and NOTE not in view.html
+    assert args_of(view) == ["o.c"]
+    assert "Моя персона" in (await act(panel, "o.p", lang="ru")).html
 
 
 @pytest.mark.asyncio
@@ -419,22 +389,26 @@ async def test_switch_wakes_an_idle_worker_and_old_switch_buttons_write_nothing(
     monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 0)
     outcomes = spy_worker_cycles(monkeypatch, ds)
     ds.bind_llm(FakeLlm())
-    assert ds.ensure_worker_started()
-    assert not wait_until(lambda: outcomes, timeout=0.3)  # off: the worker idles
+    try:
+        assert ds.ensure_worker_started()
+        assert not wait_until(lambda: outcomes, timeout=0.3)  # off: the worker idles
 
-    for stale in ("ea", "ed", "ds"):  # Enable/Disable on a panel sent before the switch moved to Settings
-        view = await act(panel, stale)
-        assert view.notice is None and "Turn them on in Settings." in view.text
-    assert read_settings(ds) is None and not outcomes
+        for stale in ("ea", "ed", "ds"):  # Enable/Disable on a panel sent before the switch moved to Settings
+            view = await act(panel, stale)
+            assert view.notice is None and "Turn them on in Settings." in view.text
+        assert read_settings(ds) is None and not outcomes
 
-    panel.switch(True)  # what Settings calls after its confirm
-    settings = read_settings(ds)
-    assert (settings["enabled"], settings["updated_via"]) == (True, "telegram")
-    assert wait_until(lambda: outcomes, timeout=5)  # well before the 60 s poll
+        panel.switch(True)  # what Settings calls after its confirm
+        settings = read_settings(ds)
+        assert (settings["enabled"], settings["updated_via"]) == (True, "telegram")
+        assert wait_until(lambda: outcomes, timeout=5)  # well before the 60 s poll
+    finally:
+        ds.stop_workers(timeout=2)
+        ds.bind_llm(None)
 
 
 @pytest.mark.asyncio
-async def test_disable_keeps_stored_dossiers(plug, ds, panel):
+async def test_disable_keeps_stored_documents(plug, ds, panel):
     await build(plug, ds)
 
     panel.switch(False)
@@ -443,8 +417,8 @@ async def test_disable_keeps_stored_dossiers(plug, ds, panel):
     settings = read_settings(ds)
     assert (settings["enabled"], settings["updated_via"]) == (False, "telegram")
     assert read_dossier(ds, CHAT) is not None
-    assert COMMITMENT in off.html and "Обработка выключена: досье не обновляется. Включить можно в настройках." in off.text
-    assert args_of(off) == ["m.c.0", "o.p"]
+    assert COMMITMENT in off.html and "Досье выключены. Включите их в Настройках." in off.text
+    assert args_of(off) == ["o.p"]
 
 
 @pytest.mark.asyncio
@@ -457,8 +431,8 @@ async def test_refresh_refused_when_disabled_or_without_a_model(plug, ds, panel)
     disabled = await act(panel, "rf.c")
 
     for view in (no_model, disabled):
-        assert view.notice == "Refresh is unavailable: dossiers or history are off, or the model is not connected."
-    assert panel.load_contact_snapshot(BUSINESS_ID, CHAT).refreshing is False
+        assert view.notice == UNAVAILABLE and args_of(view) == ["o.c"]
+    assert panel._REFRESHES == {}
 
 
 @pytest.mark.asyncio
@@ -471,39 +445,60 @@ async def test_refresh_reports_a_busy_cycle(plug, ds, panel):
         view = await act(panel, "rf.c")
 
     assert view.notice == "Another dossier cycle is running. Try again in a minute."
+    assert panel._REFRESHES == {}
+
+
+@pytest.mark.asyncio
+async def test_refresh_with_nothing_new_is_up_to_date_without_a_thread_or_a_call(plug, ds, panel):
+    await build(plug, ds, note=False)
+    llm = FakeLlm()
+    ds.bind_llm(llm)
+    before = snapshot_tree(dossier_dir(ds, CHAT))
+
+    view = await act(panel, "rf.c")
+
+    assert view.notice == "Already up to date" and COMMITMENT in view.html and "rf.c" in args_of(view)
+    assert panel.start_refresh(BUSINESS_ID, CHAT, OWNER_ID) == "up_to_date"
+    assert panel._REFRESHES == {} and llm.calls == []
+    assert snapshot_tree(dossier_dir(ds, CHAT)) == before
+
+    ds.set_note(("contact", catalog_entry(plug, CHAT)), NOTE)  # a changed note is something to do
+    assert (await act(panel, "rf.c")).notice == STARTED
+    panel.join_refreshes(timeout=5)
+    assert len(llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_after_a_failure_is_not_up_to_date(plug, ds, panel):
+    await build(plug, ds, note=False)
+    state = ds.load_state()
+    state["failures"][ds.chat_key(BUSINESS_ID, CHAT)] = {"at": NOW.isoformat(), "error": "RuntimeError", "count": 1}
+    ds.save_state(state)
+    ds.bind_llm(FakeLlm())
+
+    assert panel.start_refresh(BUSINESS_ID, CHAT, OWNER_ID) == "started"
 
 
 @pytest.mark.asyncio
 async def test_refresh_runs_one_real_cycle_per_chat_in_the_background(plug, ds, panel):
     await build(plug, ds)
-    await seed(plug, CHAT, "anna_k", [(12, "in", "My new phone number is 555-0100.", 5)], first_name="Anna")
-    release, entered = threading.Event(), threading.Event()
-    llm = FakeLlm(output(change(section="shared_facts", text="The contact has a new phone number.",
-                                sources=(("m12", "My new phone number is 555-0100"),))))
-
-    def hold(_payload: dict[str, Any]) -> None:
-        entered.set()
-        release.wait(5)
-
-    llm.on_call = hold
+    await seed(plug, CHAT, "anna_k", [(12, "in", "My new phone number is +7 900 000-01-00.", 5)], first_name="Anna")
+    llm, release, entered = holding_llm(doc(f"{DOCUMENT}\n\n## Contacts\n- The contact has a new phone number. [m12]"))
     ds.bind_llm(llm)
     try:
         started = await act(panel, "rf.c")
-        assert started.notice == "Refresh started. Open the dossier again in a minute."
-        assert args_of(started) == ["o.c"]
+        assert started.notice == STARTED and args_of(started) == ["o.c"]
         assert await asyncio.to_thread(entered.wait, 5)
         again = await act(panel, "rf.c")
-        assert again.notice == "Refresh started. Open the dossier again in a minute."
+        assert again.notice == STARTED
         assert "Refreshing now" in again.text and "rf.c" not in args_of(again)
         assert panel.load_contact_snapshot(BUSINESS_ID, CHAT).refreshing is True
     finally:
         release.set()
         panel.join_refreshes(timeout=5)
 
-    assert len(llm.calls) == 1
-    stored = read_dossier(ds, CHAT)
-    assert "The contact has a new phone number." in [f["text"] for f in stored["facts"]]
-    assert stored["last_refresh"]["trigger"] == "telegram"
+    assert len(llm.calls) == 1 and llm.calls[0]["purpose"] == "telesec_dossier"
+    assert "The contact has a new phone number." in read_dossier(ds, CHAT)["document"]
     assert panel.load_contact_snapshot(BUSINESS_ID, CHAT).refreshing is False
     assert "rf.c" in args_of(await act(panel))
 
@@ -511,24 +506,16 @@ async def test_refresh_runs_one_real_cycle_per_chat_in_the_background(plug, ds, 
 @pytest.mark.asyncio
 async def test_unload_stops_a_running_refresh_without_writing(plug, ds, panel, monkeypatch):
     await build(plug, ds)
-    await seed(plug, CHAT, "anna_k", [(12, "in", "My new phone number is 555-0100.", 5),
-                                      (13, "in", "And a new email too.", 4)], first_name="Anna")
+    await seed(plug, CHAT, "anna_k", [(12, "in", "My new phone number is +7 900 000-01-00.", 5),
+                                      (13, "in", "And a new mail too: anna@example.com.", 4)], first_name="Anna")
     monkeypatch.setattr(ds, "BATCH_MAX_MESSAGES", 1)  # two batches: a second model call is possible
     before = read_dossier(ds, CHAT)
-    release, entered = threading.Event(), threading.Event()
-    llm = FakeLlm(output(change(section="shared_facts", text="The contact has a new phone number.",
-                                sources=(("m12", "My new phone number is 555-0100"),))))
-
-    def hold(_payload: dict[str, Any]) -> None:
-        entered.set()
-        release.wait(5)
-
-    llm.on_call = hold
+    llm, release, entered = holding_llm(doc(f"{DOCUMENT}\n\n## Contacts\n- A new phone number. [m12]"))
     ctx = FakeCtx(llm, with_unload=True)
     plug.register(ctx)
     ds.bind_llm(llm)
     try:
-        assert (await act(panel, "rf.c")).notice == "Refresh started. Open the dossier again in a minute."
+        assert (await act(panel, "rf.c")).notice == STARTED
         assert await asyncio.to_thread(entered.wait, 5)
         (unload,) = ctx.unload_callbacks
         unload()  # exactly what the host calls on unload: returns at once
@@ -545,10 +532,10 @@ async def test_unload_stops_a_running_refresh_without_writing(plug, ds, panel, m
 async def test_persona_and_switch_need_every_connection_owned(plug, ds, panel):
     await build(plug, ds)
     other = "business-other"
-    await seed(plug, 992, "boris", ROWS, business_id=other, first_name="Boris")
+    await seed(plug, 992, "boris_v", ROWS, business_id=other, first_name="Boris")
     cache = plug._history_support._OWNER_CACHE
     assert cache[other] == str(OWNER_ID)  # the operator owns both connections
-    assert args_of(await act(panel)) == ["m.c.0", "o.p"]
+    assert args_of(await act(panel)) == ["o.p"]
     assert panel.manages_global(OWNER_ID, BUSINESS_ID) is True
 
     for owner in ("4242", None):  # another account connected the bot, or its owner is not known yet
@@ -557,14 +544,11 @@ async def test_persona_and_switch_need_every_connection_owned(plug, ds, panel):
         else:
             cache[other] = owner
         overview = await act(panel)
-        assert args_of(overview) == ["m.c.0"] and PERSONA_FACT not in overview.html
-        for args in ("o.p", "m.p.0", "f.p.abcdef.1"):
-            refused = await act(panel, args)
-            assert refused.notice == ("Only the owner of every Business connection the bot knows about can open "
-                                      "the persona or turn dossiers on and off.")
-            assert PERSONA_FACT not in refused.html and args_of(refused) == ["o.c"]
-        for args in ("ea", "ed", "ds"):  # old switch buttons only show the overview
-            assert args_of(await act(panel, args)) == ["m.c.0"]
+        assert args_of(overview) == [] and PERSONA_TEXT not in overview.html
+        refused = await act(panel, "o.p")
+        assert refused.notice == OPERATOR_ONLY and PERSONA_TEXT not in refused.html and args_of(refused) == ["o.c"]
+        for args in ("ea", "ed", "ds"):  # old switch buttons only show the dossier
+            assert args_of(await act(panel, args)) == []
         assert ds.load_config().enabled is True and panel.manages_global(OWNER_ID, BUSINESS_ID) is False
     assert panel.manages_global(None, BUSINESS_ID) is False and panel.manages_global(OWNER_ID, None) is False
 
@@ -572,9 +556,10 @@ async def test_persona_and_switch_need_every_connection_owned(plug, ds, panel):
 @pytest.mark.asyncio
 async def test_persona_and_switch_stay_closed_when_history_is_gone(plug, ds, panel, tmp_path):
     await build(plug, ds)
+    assert read_persona(ds)["chats"]  # the persona names the chats it read
     history, cache = plug._history_support, plug._history_support._OWNER_CACHE
     other = "business-B"
-    shutil.rmtree(history.history_root())  # the archive is removed, dossiers are kept
+    shutil.rmtree(history.history_root())  # the archive is removed, documents are kept
     assert ds.private_entries() == []
     cache.clear()
     cache[BUSINESS_ID] = str(OWNER_ID)
@@ -588,10 +573,10 @@ async def test_persona_and_switch_stay_closed_when_history_is_gone(plug, ds, pan
         return await panel.handle_panel_action(owner_user_id="4242", business_connection_id=other, chat_id=992,
                                                language_code="en", args=args)
 
-    assert panel.manages_global("4242", other) is False  # the persona and a contact dossier cite the operator
+    assert panel.manages_global("4242", other) is False  # the persona and a contact document cite the operator
     assert args_of(await as_other(None)) == []
     refused = await as_other("o.p")
-    assert refused.notice.startswith("Only the owner") and PERSONA_FACT not in refused.html
+    assert refused.notice == OPERATOR_ONLY and PERSONA_TEXT not in refused.html
     for args in ("ed", "ds"):  # old switch buttons write nothing
         assert (await as_other(args)).notice is None
     assert ds.load_config().enabled is True
@@ -601,7 +586,7 @@ async def test_persona_and_switch_stay_closed_when_history_is_gone(plug, ds, pan
     assert panel.manages_global("4242", other) is False  # only the persona cites the operator's chat
     shutil.move(tmp_path / "chat", chat_dir)
     shutil.rmtree(persona_dir(ds))
-    assert panel.manages_global("4242", other) is False  # a contact dossier of a connection nobody vouched for
+    assert panel.manages_global("4242", other) is False  # a contact document of a connection nobody vouched for
     shutil.rmtree(chat_dir)
     cache[BUSINESS_ID] = str(OWNER_ID)
     assert panel.manages_global("4242", other) is False  # this process looked up the operator's connection
@@ -615,7 +600,7 @@ async def test_persona_and_switch_stay_closed_when_history_is_gone(plug, ds, pan
     assert panel.manages_global("4242", other) is False
     plug._PANEL_KNOWN_CONNECTIONS.clear()
     persona_dir(ds).mkdir(parents=True)
-    (persona_dir(ds) / "dossier.json").write_text("{", encoding="utf-8")
+    (persona_dir(ds) / "document.json").write_text("{", encoding="utf-8")
     assert panel.manages_global("4242", other) is True  # an unreadable persona adds no connections
     shutil.rmtree(persona_dir(ds))
     panel._modes.default_store().bind_connection(BUSINESS_ID, OWNER_ID)
@@ -625,16 +610,16 @@ async def test_persona_and_switch_stay_closed_when_history_is_gone(plug, ds, pan
 @pytest.mark.asyncio
 async def test_unreadable_persona_keeps_the_operator_in_control(plug, ds, panel):
     await build(plug, ds)
-    (persona_dir(ds) / "dossier.json").write_text("{", encoding="utf-8")
+    (persona_dir(ds) / "document.json").write_text("{", encoding="utf-8")
 
-    assert args_of(await act(panel)) == ["m.c.0", "o.p"]
+    assert args_of(await act(panel)) == ["o.p"]
     persona = await act(panel, "o.p")
-    assert "The stored persona file can't be read." in persona.text and "dossier forget --persona" in persona.text
+    assert "The persona file can't be read." in persona.text and "dossier forget --persona" in persona.text
     assert panel.manages_global(OWNER_ID, BUSINESS_ID) is True  # so Settings can still turn dossiers off
 
 
 @pytest.mark.asyncio
-async def test_history_capture_off_is_explained(plug, ds, panel, monkeypatch):
+async def test_history_capture_off_is_explained(plug, ds, panel):
     await build(plug, ds)
     ds.bind_llm(FakeLlm())
     assert "rf.c" in args_of(await act(panel))
@@ -645,8 +630,7 @@ async def test_history_capture_off_is_explained(plug, ds, panel, monkeypatch):
     assert "History is off, so dossiers are paused. Turn it on in Settings." in view.text
     assert "rf.c" not in args_of(view)  # start_refresh would refuse it
     assert "История выключена, поэтому досье на паузе" in (await act(panel, lang="ru")).text
-    refused = await act(panel, "rf.c")
-    assert refused.notice == "Refresh is unavailable: dossiers or history are off, or the model is not connected."
+    assert (await act(panel, "rf.c")).notice == UNAVAILABLE
 
 
 @pytest.mark.asyncio
@@ -721,6 +705,7 @@ def test_register_adds_the_dossier_section(dossier_plugin):
 @pytest.mark.asyncio
 async def test_panel_section_sends_a_rich_localized_dossier_with_panel_callbacks(plug, ds, panel):
     await build(plug, ds)
+    ds.bind_llm(FakeLlm())
     panel.register_owner_panel_section(plug._owner_panel)
     bot = OwnerPanelBot()
 
@@ -733,10 +718,9 @@ async def test_panel_section_sends_a_rich_localized_dossier_with_panel_callbacks
     assert (kwargs["chat_id"], kwargs["message_id"]) == (OWNER_ID, 700)
     assert set(kwargs["rich_message"]) == {"html", "skip_entity_detection"}
     html = kwargs["rich_message"]["html"]
-    assert "Обязательства" in html and COMMITMENT in html and NOTE in html  # the owner sees owner notes
+    assert COMMITMENT in html and NOTE in html and "Ваша заметка (не публикуется)" in html  # the owner sees notes
     rows = keyboard_of(kwargs["reply_markup"])
-    assert rows == [[("Управлять фактами", f"tb:s:{CHAT}:dossier/m.c.0")],
-                    [("Моя персона", f"tb:s:{CHAT}:dossier/o.p")],
+    assert rows == [[("Обновить", f"tb:s:{CHAT}:dossier/rf.c"), ("Моя персона", f"tb:s:{CHAT}:dossier/o.p")],
                     [("« Назад", f"tb:b:{CHAT}")]]
     for row in rows:
         for _label, data in row:
@@ -752,27 +736,28 @@ async def test_panel_section_sends_a_rich_localized_dossier_with_panel_callbacks
 
 @pytest.mark.asyncio
 async def test_panel_sub_args_reach_the_section_and_notices_head_the_text(plug, ds, panel):
-    dossier = await build(plug, ds)
+    await build(plug, ds, note=False)
+    ds.bind_llm(FakeLlm())
     panel.register_owner_panel_section(plug._owner_panel)
     bot = OwnerPanelBot()
 
-    await open_section(plug, bot, f"tb:s:{CHAT}:dossier/pn.c.{prefix(dossier)}.1")
+    await open_section(plug, bot, f"tb:s:{CHAT}:dossier/rf.c")
 
     html = bot.api[-1][1]["rich_message"]["html"]
-    assert html.startswith("<p><b>f1 pinned.</b></p>")
-    assert read_dossier(ds, CHAT)["facts"][0]["pinned"] is True
+    assert html.startswith("<p><b>Already up to date</b></p><h3>@anna_k</h3>") and COMMITMENT in html
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lang", ["en", "ru"])
 async def test_section_back_buttons_differ_from_the_panel_back(plug, ds, panel, lang):
-    dossier = await build(plug, ds)
+    await build(plug, ds)
     panel.register_owner_panel_section(plug._owner_panel)
     bot = OwnerPanelBot()
-    for args in ("o.p", "m.c.0", f"f.c.{prefix(dossier)}.1"):
+    for args in ("o.p", "o.c"):
         await open_section(plug, bot, f"tb:s:{CHAT}:dossier/{args}", lang=lang)
-    for edit in bot.edits:
-        labels = [label for row in keyboard_of(edit["reply_markup"]) for label, _data in row]
+    assert len(bot.api) == 2
+    for _endpoint, kwargs in bot.api:
+        labels = [label for row in keyboard_of(kwargs["reply_markup"]) for label, _data in row]
         panel_back = labels[-1]
         assert panel_back in ("« Back", "« Назад")
         assert all(label.strip("«‹ ") != panel_back.strip("«‹ ") for label in labels[:-1]), labels
@@ -855,8 +840,10 @@ def test_dossier_control_message_predicate(dossier_plugin):
 
 
 @pytest.mark.asyncio
-async def test_owner_command_deletes_itself_and_posts_one_rich_dossier(plug, ds, panel):
+async def test_owner_command_deletes_itself_and_posts_one_rich_summary(plug, ds, panel):
     await build(plug, ds)
+    llm = FakeLlm(doc(SUMMARY))
+    ds.bind_llm(llm)
     bot = PanelBot()
 
     assert await run_command(panel, command_update(), bot) is True
@@ -868,40 +855,29 @@ async def test_owner_command_deletes_itself_and_posts_one_rich_dossier(plug, ds,
     assert set(post) == {"business_connection_id", "chat_id", "rich_message"}
     assert (post["business_connection_id"], post["chat_id"]) == (BUSINESS_ID, CHAT)
     assert set(post["rich_message"]) == {"html", "skip_entity_detection"}
+    assert post["rich_message"]["skip_entity_detection"] is True
     html = post["rich_message"]["html"]
-    assert COMMITMENT in html and PREFERENCE in html and "Commitments" in html
-    assert NOTE not in html and PERSONA_FACT not in html
-    for owner_only in ("Processing is off", "hermes telesec", "Refresh", "not connected"):
+    assert html.startswith("<h3>Summary of our chat</h3>") and SUMMARY_LINE in html
+    assert "Prepared automatically from this chat on" in html
+    for owner_only in (NOTE, COMMITMENT, PREFERENCE, PERSONA_TEXT, "Dossier", "dossier", "Refresh", "hermes"):
         assert owner_only not in html
-
-
-@pytest.mark.asyncio
-async def test_owner_command_never_posts_a_corrected_note(plug, ds, panel):
-    await build(plug, ds)
-    corrected = "Never mention the 20% discount."
-    ds.apply_owner_edit(("contact", catalog_entry(plug, CHAT)), "correct", fact_id="f3", text=corrected)
-    assert read_dossier(ds, CHAT)["facts"][2]["owner"]["noted"] is True
-    bot = PanelBot()
-
-    assert await run_command(panel, command_update(), bot)
-
-    html = posts(bot)[0]["rich_message"]["html"]
-    assert COMMITMENT in html and corrected not in html and NOTE not in html and "<b>f3</b>" not in html
-
-
-@pytest.mark.asyncio
-async def test_command_language_follows_the_sender(plug, ds, panel):
-    await build(plug, ds)
-    bot = PanelBot()
-
-    assert await run_command(panel, command_update(lang="ru"), bot)
-
-    assert "Обязательства" in posts(bot)[0]["rich_message"]["html"]
+    (call,) = llm.calls
+    assert (call["purpose"], call["timeout"], call["system"]) == ("telesec_post", None,
+                                                                  panel._post._writer.POST_SYSTEM)
+    assert [(m["from"], m["text"]) for m in call["user"]["messages"]] == [("contact", ROWS[0][2]),
+                                                                         ("owner", ROWS[1][2])]
+    assert all(set(m) <= {"at", "from", "text", "voice"} for m in call["user"]["messages"])
+    for private in (NOTE, COMMITMENT, PERSONA_TEXT, "m10", "m11", BUSINESS_ID):
+        assert private not in call["raw"]
+    history = plug._history_support
+    assert history._is_control_message(BUSINESS_ID, CHAT, 500) and history._is_control_message(BUSINESS_ID, CHAT, 900)
+    assert panel._POST_TASKS == {}
 
 
 @pytest.mark.asyncio
 async def test_duplicate_delivery_posts_once(plug, ds, panel):
     await build(plug, ds)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
     bot, seen = PanelBot(), set()
 
     assert await run_command(panel, command_update(), bot, seen)
@@ -915,6 +891,7 @@ async def test_duplicate_delivery_posts_once(plug, ds, panel):
 @pytest.mark.parametrize("text", ["/dossier", "/dossiers", "hello"])
 async def test_contact_command_is_ordinary_text(plug, ds, panel, text):
     await build(plug, ds)
+    ds.bind_llm(FakeLlm())
     bot = PanelBot()
 
     assert await run_command(panel, command_update(text, sender=CONTACT_ID), bot) is False
@@ -949,77 +926,234 @@ async def test_unverifiable_owner_is_ordinary_text(plug, ds, panel):
 @pytest.mark.parametrize("kind", ["edited", "echo"])
 async def test_edited_command_and_echo_are_claimed_without_executing(plug, ds, panel, kind):
     await build(plug, ds)
+    llm = FakeLlm()
+    ds.bind_llm(llm)
     bot = PanelBot()
     update = command_update(edited=True) if kind == "edited" else echo_update()
 
     assert await run_command(panel, update, bot) is True
 
-    assert bot.api == [] and bot.deletes == [] and bot.sent == []
+    assert bot.api == [] and bot.deletes == [] and bot.sent == [] and llm.calls == []
+    # The echo's id is remembered, so the owner deleting the post later stays out of history.
+    assert plug._history_support._is_control_message(BUSINESS_ID, CHAT, 900) is (kind == "echo")
+
+
+async def _refusal_case(plug: ModuleType, ds: ModuleType, reason: str) -> None:
+    if reason == "window":  # the contact wrote 30 hours ago
+        await seed(plug, CHAT, "anna_k", [(10, "in", ROWS[0][2], timedelta(hours=30)),
+                                          (11, "out", ROWS[1][2], timedelta(hours=29))], first_name="Anna")
+    elif reason == "empty":  # only the contact wrote
+        await seed(plug, CHAT, "anna_k", [(10, "in", ROWS[0][2], 30)], first_name="Anna")
+    else:
+        await build(plug, ds)
+    if reason == "disabled":
+        ds.set_enabled(False, via="cli")
+    elif reason == "history_off":
+        test_history.set_switch(plug, "history", False)
+    elif reason == "chat_off":
+        plug._chat_settings.default_store().set_flag(OWNER_ID, CHAT, "dossier", False, via="cli")
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("state", "expected"), [
-    ("unchecked", "could not be checked against the chat history (OSError)"),
-    ("disabled", "Dossiers are off."),
-    ("missing", "No dossier yet.\nIt will be built in the next processing cycle."),
-    ("corrupt", f"forget --connection {BUSINESS_ID} --chat {CHAT}"),
-    ("empty", "The dossier has no facts to show yet."),
+@pytest.mark.parametrize(("reason", "expected"), [
+    ("disabled", "Dossiers are off. Turn them on in Settings (/telesec)."),
+    ("no_model", "The model is not connected."),
+    ("history_off", "History is off, so deleted messages can't be tracked. Turn history on in Settings (/telesec)."),
+    ("chat_off", "Dossier is off for this chat."),
+    ("window", ("The contact hasn't written in the last 24 hours, and Telegram lets a bot post only within 24 hours "
+                "of their last message.")),
+    ("empty", "This chat has nothing to summarise yet."),
 ])
-async def test_nothing_to_show_tells_the_owner_privately(plug, ds, panel, monkeypatch, state, expected):
-    if state == "missing":
-        await seed(plug, CHAT, "anna_k", ROWS, first_name="Anna")
-    else:
-        dossier = await build(plug, ds)
-        if state == "disabled":
-            ds.set_enabled(False, via="cli")
-        elif state == "unchecked":  # e.g. a torn history tail: quotes cannot be checked against the chat
-
-            def broken(*_args: Any, **_kwargs: Any) -> Any:
-                raise OSError(f"history read failed {COMMITMENT}")
-
-            monkeypatch.setattr(ds, "views_for_dossier", broken)
-        elif state == "corrupt":
-            (dossier_dir(ds, CHAT) / "dossier.json").write_text("{", encoding="utf-8")
-        else:
-            for fact in dossier["facts"]:
-                if fact["id"] != "f3":
-                    ds.apply_owner_edit(("contact", catalog_entry(plug, CHAT)), "remove", fact_id=fact["id"])
+async def test_refusals_tell_only_the_owner_and_call_no_model(plug, ds, panel, reason, expected):
+    await _refusal_case(plug, ds, reason)
+    llm = FakeLlm(doc(SUMMARY))
+    if reason != "no_model":
+        ds.bind_llm(llm)
     bot = PanelBot()
 
     assert await run_command(panel, command_update(), bot) is True
 
-    assert posts(bot) == [] and bot.api == []
+    assert posts(bot) == [] and bot.api == [] and llm.calls == []
     assert bot.deletes == [{"business_connection_id": BUSINESS_ID, "message_ids": [500]}]
     (sent,) = bot.sent
     assert sent["chat_id"] == OWNER_ID and sent["parse_mode"] is None and "business_connection_id" not in sent
-    assert sent["text"].startswith("Nothing was posted to the chat with @anna_k.") and expected in sent["text"]
-    for secret in (NOTE, COMMITMENT, "I will send the contract"):
-        assert secret not in sent["text"]
+    assert sent["text"] == f"{HEAD}\n{expected}"
 
 
 @pytest.mark.asyncio
-async def test_reason_is_localized(dossier_history, panel):
+@pytest.mark.parametrize(("response", "expected"), [
+    (doc("EMPTY"), "This chat has nothing to summarise yet."),
+    ("A summary without the end line", "The summary could not be written (no_end_marker)."),
+    (RuntimeError(f"provider said {COMMITMENT}"), "The summary could not be written (RuntimeError)."),
+])
+async def test_an_empty_or_failed_summary_is_told_to_the_owner(plug, ds, panel, caplog, response, expected):
+    await build(plug, ds)
+    llm = FakeLlm(response)
+    ds.bind_llm(llm)
+    bot = PanelBot()
+
+    with caplog.at_level(logging.DEBUG):
+        assert await run_command(panel, command_update(), bot) is True
+
+    assert posts(bot) == [] and len(llm.calls) == 1
+    assert [sent["text"] for sent in bot.sent] == [f"{HEAD}\n{expected}"]
+    assert "dossier not posted chat_ref=" in caplog.text
+    for secret in SECRETS:
+        assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_refusal_is_localized(dossier_history, panel):
     bot = PanelBot()
 
     assert await run_command(panel, command_update(lang="ru"), bot)
 
-    assert "Досье выключены." in bot.sent[0]["text"]
+    assert "Досье выключены. Включите их в Настройках (/telesec)." in bot.sent[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_handler_returns_before_the_summary_is_written_and_a_second_command_is_busy(plug, ds, panel):
+    await build(plug, ds)
+    llm, release, entered = holding_llm(doc(SUMMARY))
+    ds.bind_llm(llm)
+    bot = PanelBot()
+    try:
+        assert await panel.handle_dossier_command_update(command_update(), bot=bot, adapter=None,
+                                                         mark_seen=lambda _key: True)
+        assert await asyncio.to_thread(entered.wait, 5)  # the model call runs after the handler returned
+        assert posts(bot) == [] and bot.sent == []
+        assert await panel.handle_dossier_command_update(command_update(message_id=501), bot=bot, adapter=None,
+                                                         mark_seen=lambda _key: True)
+        assert [sent["text"] for sent in bot.sent] == [f"{HEAD}\nA summary for this chat is already being prepared."]
+    finally:
+        release.set()
+        await panel.join_posts()
+
+    assert len(posts(bot)) == 1 and len(llm.calls) == 1
+    assert [d["message_ids"] for d in bot.deletes] == [[500], [501]]  # both commands leave the chat
+    assert panel._POST_TASKS == {}
+
+
+@pytest.mark.asyncio
+async def test_wall_cap_tells_the_owner_and_stops_the_build(plug, ds, panel, monkeypatch):
+    await build(plug, ds)
+    llm, release, entered = holding_llm(LONG_SUMMARY)
+    ds.bind_llm(llm)
+    built = watch_build(panel, monkeypatch)
+    monkeypatch.setattr(panel._post, "POST_WALL_SECONDS", 0.2)
+    bot = PanelBot()
+    try:
+        assert await run_command(panel, command_update(), bot)
+    finally:
+        release.set()
+
+    assert entered.is_set() and posts(bot) == []
+    assert [sent["text"] for sent in bot.sent] == [f"{HEAD}\nThe summary could not be written (timeout)."]
+    assert await asyncio.to_thread(built.wait, 5)
+    assert [call["purpose"] for call in llm.calls] == ["telesec_post"]  # no shorten call after the cap
+
+
+@pytest.mark.asyncio
+async def test_wall_cap_never_cuts_a_send_that_has_started(plug, ds, panel, monkeypatch):
+    await build(plug, ds)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    monkeypatch.setattr(panel._post, "POST_WALL_SECONDS", 0.5)
+
+    class SlowBot(PanelBot):
+        async def do_api_request(self, endpoint: str, api_kwargs: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+            sent = await super().do_api_request(endpoint, api_kwargs, **kwargs)
+            await asyncio.sleep(0.5)  # Telegram has the post; its answer comes after the cap
+            return sent
+
+    bot = SlowBot()
+    assert await run_command(panel, command_update(), bot)
+
+    assert len(posts(bot)) == 1 and bot.sent == []  # the owner is never told that nothing was posted
+    assert plug._history_support._is_control_message(BUSINESS_ID, CHAT, 900)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_catalog_tells_the_owner_with_a_code_only(plug, ds, panel, monkeypatch):
+    await build(plug, ds)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise PermissionError("SECRET-PATH")
+
+    monkeypatch.setattr(panel._history, "_resolve_history_entry", broken)
+    monkeypatch.setattr(panel._history, "_catalog_entry_display_name", broken)
+    monkeypatch.setattr(panel, "contact_entry", broken)
+    bot = PanelBot()
+    assert await run_command(panel, command_update(), bot)
+
+    assert posts(bot) == []
+    assert [sent["text"] for sent in bot.sent] == [
+        f"Nothing was posted to the chat with chat:{CHAT}.\nThe summary could not be written (PermissionError)."]
+    assert "SECRET" not in bot.sent[0]["text"]
+    assert panel._POST_TASKS == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop", ["stop_refresh", "stop_background"])
+async def test_stopping_cancels_a_post_in_flight(plug, ds, panel, monkeypatch, stop):
+    await build(plug, ds)
+    llm, release, entered = holding_llm(LONG_SUMMARY)
+    ds.bind_llm(llm)
+    built = watch_build(panel, monkeypatch)
+    bot = PanelBot()
+    try:
+        assert await panel.handle_dossier_command_update(command_update(), bot=bot, adapter=None,
+                                                         mark_seen=lambda _key: True)
+        assert await asyncio.to_thread(entered.wait, 5)
+        if stop == "stop_refresh":  # "No dossier", "Don't save" and an erase call it from a worker thread
+            await asyncio.to_thread(panel.stop_refresh, BUSINESS_ID, 992)
+            task, event = panel._POST_TASKS[next(iter(panel._POST_TASKS))]
+            assert not task.done() and not event.is_set()  # another chat's stop
+            await asyncio.to_thread(panel.stop_refresh, BUSINESS_ID, CHAT)
+        else:
+            panel.stop_background()  # on_unload
+        await panel.join_posts()
+    finally:
+        release.set()
+
+    assert posts(bot) == [] and bot.sent == []  # no post and no message to the owner
+    assert panel._POST_TASKS == {}
+    assert await asyncio.to_thread(built.wait, 5)
+    assert [call["purpose"] for call in llm.calls] == ["telesec_post"]  # the build made no shorten call
+
+
+@pytest.mark.asyncio
+async def test_a_build_the_owner_stopped_tells_the_owner_nothing(plug, ds, panel, monkeypatch):
+    await build(plug, ds)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+
+    async def stopped_build(bot, entry, business_connection_id, chat_id, started, stop):
+        stop.set()  # stop_refresh set the event, and the build saw it before the cancel landed
+        return "failed", "Stopped"
+
+    monkeypatch.setattr(panel, "_build_and_send", stopped_build)
+    bot = PanelBot()
+
+    assert await run_command(panel, command_update(), bot) is True
+
+    assert posts(bot) == [] and bot.sent == []
 
 
 @pytest.mark.asyncio
 async def test_rejected_post_and_failed_delete_are_told_and_logged_by_type(plug, ds, panel, caplog):
     await build(plug, ds)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
     bot = PanelBot()
     bot.api_error = BadRequest(f"Bad Request: can't parse {COMMITMENT}")
     bot.delete_error = RuntimeError(f"no rights for {NOTE}")
-    bot.send_error = None
 
     with caplog.at_level(logging.DEBUG):
         assert await run_command(panel, command_update(), bot) is True
 
-    assert len(posts(bot)) == 1
+    assert len(posts(bot)) == 1 and [endpoint for endpoint, _ in bot.api] == ["sendRichMessage"]  # no plain retry
     (sent,) = bot.sent
-    assert "Telegram did not accept the dossier message (BadRequest)." in sent["text"]
+    assert sent["chat_id"] == OWNER_ID
+    assert "Telegram did not accept the summary (BadRequest)." in sent["text"]
     assert "BadRequest" in caplog.text and "RuntimeError" in caplog.text
     for secret in SECRETS:
         assert secret not in caplog.text
@@ -1038,24 +1172,70 @@ async def test_failed_private_reason_is_logged_by_type(dossier_history, panel, c
 
 
 @pytest.mark.asyncio
-async def test_business_handler_keeps_command_and_echo_out_of_history_and_core(plug, ds, panel, monkeypatch):
-    monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")  # even when other Business updates reach the agent
+@pytest.mark.parametrize(("where", "logged"), [
+    ("post_precheck", "dossier not posted chat_ref="),
+    ("post_recheck", "dossier not posted chat_ref="),
+    ("_start_post", "/dossier command failed error=PermissionError"),
+    ("_post_task", "dossier post failed error=PermissionError"),
+])
+async def test_a_failure_inside_the_post_is_told_and_logged_by_type_only(plug, ds, panel, monkeypatch, caplog,
+                                                                        where, logged):
     await build(plug, ds)
-    history_before = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise PermissionError("SECRET-PATH/chats/7654321")  # e.g. a history path with its ids
+
+    async def broken_async(*args: Any, **kwargs: Any) -> Any:
+        return broken(*args, **kwargs)
+
+    if where.startswith("post_"):
+        monkeypatch.setattr(panel._post, where, broken)
+    else:
+        monkeypatch.setattr(panel, where, broken_async)
     bot = PanelBot()
+    with caplog.at_level(logging.DEBUG):
+        assert await run_command(panel, command_update(), bot) is True
+
+    assert posts(bot) == [] and logged in caplog.text
+    told = [sent["text"] for sent in bot.sent]
+    if where.startswith("post_"):
+        assert told == [f"{HEAD}\nThe summary could not be written (PermissionError)."]
+        assert "reason=failed error=PermissionError" in caplog.text
+    else:
+        assert told == []
+    assert not [r for r in caplog.records if r.exc_info]
+    for secret in ("SECRET", "7654321"):
+        assert secret not in caplog.text and not [text for text in told if secret in text]
+
+
+def _business_handler(plug: ModuleType) -> Any:
     handlers: list[tuple[Any, int]] = []
     plug._register_telegram_handlers(SimpleNamespace(add_handler=lambda h, group: handlers.append((h, group))),
                                      SimpleNamespace(platform="telegram"))
     (handler,) = [h for h, _group in handlers if type(h).__name__ == "BusinessHandler"]
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_business_handler_keeps_command_and_echo_out_of_history_and_core(plug, ds, panel, monkeypatch):
+    monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")  # even when other Business updates reach the agent
+    await build(plug, ds)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    history_before = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
+    bot = PanelBot()
+    handler = _business_handler(plug)
     context = SimpleNamespace(bot=bot)
 
     for _ in range(2):  # the second is an in-process redelivery
         with pytest.raises(ApplicationHandlerStop):
             await handler.callback(command_update(message_id=600), context)
+    await panel.join_posts()
     with pytest.raises(ApplicationHandlerStop):
         await handler.callback(echo_update(901), context)
     with pytest.raises(ApplicationHandlerStop):
         await handler.callback(command_update("/dossier", edited=True, message_id=600), context)
+    await panel.join_posts()
     assert len(posts(bot)) == 1 and len(bot.deletes) == 1
     assert load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT) == history_before
 
@@ -1068,15 +1248,13 @@ async def test_business_handler_keeps_command_and_echo_out_of_history_and_core(p
 @pytest.mark.asyncio
 async def test_deleting_the_command_or_the_post_stays_out_of_history(plug, ds, panel):
     await build(plug, ds)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
     history = plug._history_support
     before = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
     bot = PanelBot()  # sendRichMessage answers message_id 900
-    handlers: list[tuple[Any, int]] = []
-    plug._register_telegram_handlers(SimpleNamespace(add_handler=lambda h, group: handlers.append((h, group))),
-                                     SimpleNamespace(platform="telegram"))
-    (handler,) = [h for h, _group in handlers if type(h).__name__ == "BusinessHandler"]
     with pytest.raises(ApplicationHandlerStop):
-        await handler.callback(command_update(message_id=610), SimpleNamespace(bot=bot))
+        await _business_handler(plug).callback(command_update(message_id=610), SimpleNamespace(bot=bot))
+    await panel.join_posts()
     assert len(posts(bot)) == 1 and bot.deletes[0]["message_ids"] == [610]
 
     fake = test_history.FakeBot(owner_id=OWNER_ID)
@@ -1101,10 +1279,7 @@ async def test_handler_failure_never_breaks_dispatch(plug, ds, panel, monkeypatc
         raise RuntimeError(f"boom {NOTE}")
 
     monkeypatch.setattr(plug._dossier_panel, "handle_dossier_command_update", broken)
-    handlers: list[tuple[Any, int]] = []
-    plug._register_telegram_handlers(SimpleNamespace(add_handler=lambda h, group: handlers.append((h, group))),
-                                     SimpleNamespace(platform="telegram"))
-    (handler,) = [h for h, _group in handlers if type(h).__name__ == "BusinessHandler"]
+    handler = _business_handler(plug)
     with caplog.at_level(logging.WARNING):
         await handler.callback(command_update("hello", message_id=602), SimpleNamespace(bot=PanelBot()))
 
@@ -1137,10 +1312,7 @@ async def test_history_filter_is_a_second_safeguard(plug, ds):
 @pytest.mark.asyncio
 async def test_owner_edit_into_the_command_still_updates_history(plug, ds, panel, monkeypatch):
     monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")
-    handlers: list[tuple[Any, int]] = []
-    plug._register_telegram_handlers(SimpleNamespace(add_handler=lambda h, group: handlers.append((h, group))),
-                                     SimpleNamespace(platform="telegram"))
-    (handler,) = [h for h, _group in handlers if type(h).__name__ == "BusinessHandler"]
+    handler = _business_handler(plug)
     bot = PanelBot()
     context = SimpleNamespace(bot=bot)
     await handler.callback(command_update("See you at 5", message_id=710), context)
@@ -1149,6 +1321,7 @@ async def test_owner_edit_into_the_command_still_updates_history(plug, ds, panel
         await handler.callback(command_update("/dossier", edited=True, message_id=710), context)
     with pytest.raises(ApplicationHandlerStop):  # an edit of a command history never stored
         await handler.callback(command_update("/dossier", edited=True, message_id=711), context)
+    await panel.join_posts()
 
     assert posts(bot) == [] and bot.deletes == []
     records = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
@@ -1159,10 +1332,7 @@ async def test_owner_edit_into_the_command_still_updates_history(plug, ds, panel
 @pytest.mark.asyncio
 async def test_owner_edit_uses_the_resolved_owner_when_the_lookup_fails(plug, ds, panel, monkeypatch):
     monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")
-    handlers: list[tuple[Any, int]] = []
-    plug._register_telegram_handlers(SimpleNamespace(add_handler=lambda h, group: handlers.append((h, group))),
-                                     SimpleNamespace(platform="telegram"))
-    (handler,) = [h for h, _group in handlers if type(h).__name__ == "BusinessHandler"]
+    handler = _business_handler(plug)
     panel._modes.default_store().bind_connection(BUSINESS_ID, OWNER_ID)  # the recorded owner
     plug._history_support._OWNER_CACHE.clear()  # a fresh gateway
 
@@ -1195,13 +1365,17 @@ async def test_edited_dossier_post_over_a_stored_id_is_not_recorded(plug, ds):
 @pytest.mark.asyncio
 async def test_logs_never_carry_dossier_text(plug, ds, panel, caplog):
     with caplog.at_level(logging.DEBUG):
-        dossier = await build(plug, ds)
-        p = prefix(dossier)
-        for args in (None, "m.c.0", f"f.c.{p}.1", f"pn.c.{p}.1", f"ra.c.{p}.2", f"rd.c.{p}.2", "o.p", "ds", "ed"):
+        await build(plug, ds)
+        ds.bind_llm(FakeLlm(doc(SUMMARY), doc(DOCUMENT)))
+        for args in (None, "o.c", "o.p", "zz", "m.c.0"):
             await act(panel, args)
         await run_command(panel, command_update(), PanelBot())
+        await act(panel, "rf.c")
+        panel.join_refreshes(timeout=5)
 
-    assert "dossier panel pin target=contact" in caplog.text and "dossier posted chat_ref=" in caplog.text
+    assert "dossier posted chat_ref=" in caplog.text and "dossier call purpose=telesec_post" in caplog.text
+    assert "dossier refresh started chat_ref=" in caplog.text
+    assert not [r for r in caplog.records if r.exc_info]
     for secret in SECRETS:
         assert secret not in caplog.text
 
@@ -1232,6 +1406,7 @@ async def test_real_ptb_dossier_command_serializes_the_rich_message_and_skips_co
     monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")  # ordinary Business messages reach the agent
     app, request = telegram_app
     await build(plug, ds)
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
     history_before = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
     plug._register_telegram_handlers(app, SimpleNamespace(platform="telegram", _bot=app.bot))
     core: list[Any] = []
@@ -1254,6 +1429,7 @@ async def test_real_ptb_dossier_command_serializes_the_rich_message_and_skips_co
         "text": "See you Friday"}}, app.bot)
 
     await app.process_update(command)
+    await plug._dossier_panel.join_posts()
     await app.process_update(echo)
     await app.process_update(plain)
 
@@ -1264,7 +1440,7 @@ async def test_real_ptb_dossier_command_serializes_the_rich_message_and_skips_co
     assert set(params) == {"business_connection_id", "chat_id", "rich_message"}
     assert (params["business_connection_id"], params["chat_id"]) == (BUSINESS_ID, str(CHAT))
     rich = json.loads(params["rich_message"])
-    assert rich["skip_entity_detection"] is True and COMMITMENT in rich["html"] and NOTE not in rich["html"]
+    assert rich["skip_entity_detection"] is True and SUMMARY_LINE in rich["html"] and NOTE not in rich["html"]
     assert json.loads(dict(request.calls)["deleteBusinessMessages"]["message_ids"]) == [500]
     texts = [r["text"] for r in load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)[len(history_before):]]
     assert texts == ["See you Friday"]
