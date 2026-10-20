@@ -156,11 +156,13 @@ def load_contact_snapshot(business_connection_id: Any, chat_id: Any, *, now: dat
     except (OSError, ValueError):
         doc, corrupt = None, True
     unqualified = False
-    if not corrupt and not (doc or {}).get("document") and private and cfg.enabled and history_enabled \
+    # Only a first build can be unqualified: no document yet, or the one converted from v1.
+    if not corrupt and (doc or {}).get("window_start") is None and private and cfg.enabled and history_enabled \
             and not chat_off:
         unqualified = _unqualified(entry, now)
     return _view.DossierSnapshot(
-        target="contact", name=_display_name(entry, private), chat_id=chat_id, doc=doc, corrupt=corrupt,
+        target="contact", name=_display_name(entry, private), chat_id=chat_id, connection=business_connection_id,
+        doc=doc, corrupt=corrupt,
         enabled=cfg.enabled, history_enabled=history_enabled, chat_off=chat_off, llm_ready=llm_ready(),
         refreshing=refreshing(business_connection_id, chat_id),
         failure=_failure(_ds.load_state(), _ds.chat_key(business_connection_id, chat_id)), unqualified=unqualified,
@@ -466,6 +468,26 @@ def _recheck(entry: dict[str, Any], inputs: dict[str, str], gen0: int) -> tuple[
     return reason, now.astimezone(_ds.today_text(now)[1])  # the footer date is the owner's local date
 
 
+# Telegram's refusals of the post itself; a timeout or a network error says nothing about the 24-hour window.
+_REJECTIONS = frozenset({"BadRequest", "Forbidden"})
+# Telegram's error for a Business chat whose contact has not written in the last 24 hours (MTProto
+# BUSINESS_PEER_USAGE_MISSING), with "_" or " " between the words.
+_WINDOW_ERROR = "PEER_USAGE_MISSING"
+
+
+def _send_failure(entry: dict[str, Any], exc: Exception) -> str:
+    """The reason for a failed send: "window" only when Telegram's error says so.
+
+    Any other refusal of a post whose window is not known open is "send_refused", which names the 24-hour
+    rule as a possible cause. The error text is compared here only, never logged or shown.
+    """
+    if _WINDOW_ERROR in str(exc).upper().replace(" ", "_"):
+        return "window"
+    if type(exc).__name__ in _REJECTIONS and not _post.post_window_open(entry, now=_history._utcnow()):
+        return "send_refused"
+    return "send_failed"
+
+
 async def _build_and_send(bot: Any, entry: dict[str, Any], conn: str, chat_id: Any, started: float,
                           stop: threading.Event) -> tuple[str | None, str | None]:
     """Precheck, clean-room build, final recheck, send: (refusal reason, error), or (None, None) once posted.
@@ -490,7 +512,7 @@ async def _build_and_send(bot: Any, entry: dict[str, Any], conn: str, chat_id: A
             "business_connection_id": conn, "chat_id": chat_id,
             "rich_message": {"html": _view.post_html(result.text, local), "skip_entity_detection": True}})
     except Exception as exc:  # noqa: BLE001 - told to the owner privately
-        return "send_failed", type(exc).__name__
+        return await asyncio.to_thread(_send_failure, entry, exc), type(exc).__name__
     _history.remember_control_message(conn, chat_id, _history._get(sent, "message_id"))
     logger.info("%s: dossier posted chat_ref=%s chars=%d ms=%d model=%s/%s", _history.PLUGIN_NAME,
                 _ds._log_ref(entry), len(result.text), int((time.monotonic() - started) * 1000),
@@ -559,6 +581,27 @@ async def join_posts() -> None:
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.sleep(0)  # gather can return at once for finished tasks; their done callbacks run now
+
+
+def note_inbound_update(update: Any) -> None:
+    """Note a new Business message from the contact, of any kind, for the 24-hour window of ``/dossier``.
+
+    An edit or a deletion is not a new message. No Telegram call: the sender is compared with the cached
+    connection owner, else with the chat, since a private chat's id is the contact's user id.
+    """
+    payload = getattr(update, "business_message", None)
+    if payload is None or _history._get(payload, "sender_business_bot") is not None:
+        return
+    conn = _history._get(payload, "business_connection_id") or _history._get(payload, "_hermes_business_connection_id")
+    chat = _history._get(payload, "chat")
+    chat_id, sender = _history._get(chat, "id"), _history._get(_history._get(payload, "from_user"), "id")
+    if not conn or chat_id is None or sender is None or _history._get(chat, "type") not in (None, "private"):
+        return
+    owner = _history.cached_business_owner(conn)
+    if str(sender) == owner or (owner is None and str(sender) != str(chat_id)):
+        return
+    at = _history._normalize_timestamp(_history._get(payload, "date")) or _history._utcnow()
+    _post.note_inbound(conn, chat_id, at)
 
 
 async def handle_dossier_command_update(update: Any, *, bot: Any, adapter: Any,

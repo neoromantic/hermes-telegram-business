@@ -5,10 +5,12 @@ Stdlib, ``dossier_doc`` and ``history_support`` only. ``dossier_support.migrate_
 
 The owner's own words go verbatim into the note: owner notes and corrections, pinned facts as
 "Keep: …", and the texts the owner corrected or removed as a "Leave out:" paragraph. Active model
-facts become a ``seed`` document that the first v2 pass rewrites. The v1 file stays as
-``v1-dossier.json`` until that pass. ``document.json`` is written before the v1 file is renamed, so a
-crash at any point re-runs cleanly and never repeats a note line. This module goes away in a later
-release, together with the backups.
+facts become the contact's document at revision 0, readable at once in every chat; the first v2 pass
+rewrites it. The v1 file stays as ``v1-dossier.json`` until that pass; a later v1 file in the same
+directory (a rollback, or a 0.14 gateway still running) goes to ``v1-dossier.<n>.json``, so no backup
+is overwritten. ``document.json`` is written before the v1 file is renamed, so a crash at any point
+re-runs cleanly and never repeats a note line. This module goes away in a later release, together
+with the backups.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from . import history_support as _history
 logger = logging.getLogger(__name__)
 
 V1_SCHEMA_VERSION = 1
-CONTACT_SECTIONS = (  # v1 section order; the seed keeps it
+CONTACT_SECTIONS = (  # v1 section order; the converted document keeps it
     "relationship",
     "preferences",
     "shared_facts",
@@ -37,6 +39,28 @@ CONTACT_SECTIONS = (  # v1 section order; the seed keeps it
     "open_questions",
     "contradictions",
 )
+SECTION_TITLES = {  # the titles v1's panel showed
+    "en": {
+        "relationship": "Relationship",
+        "preferences": "Preferences",
+        "shared_facts": "Shared facts",
+        "commitments": "Commitments",
+        "decisions": "Decisions",
+        "open_questions": "Open questions",
+        "contradictions": "Contradictions",
+        "other": "Other",
+    },
+    "ru": {
+        "relationship": "Отношения",
+        "preferences": "Предпочтения",
+        "shared_facts": "Общие факты",
+        "commitments": "Обязательства",
+        "decisions": "Решения",
+        "open_questions": "Открытые вопросы",
+        "contradictions": "Противоречия",
+        "other": "Другое",
+    },
+}
 SEED_KINDS = ("observed", "inferred")  # model-written facts; "owner" facts go to the note
 REMOVED_BY = ("correct", "remove")  # texts the owner replaced or removed
 LEAVE_OUT_MAX = 20  # newest owner removals carried into the note
@@ -59,8 +83,9 @@ def migrate_root(root: Path, now: datetime) -> dict[str, int]:
     """
     counts = {"migrated": 0, "unreadable": 0, "failed": 0}
     for kind, target in _targets(root, _doc.V1_FILE):
+        backup = ""
         try:
-            outcome = _migrate_dir(kind, target, now)
+            outcome, backup = _migrate_dir(kind, target, now)
         except Exception as exc:  # noqa: BLE001 - one bad directory never stops the others or the cycle
             outcome = "failed"
             logger.warning(
@@ -74,11 +99,11 @@ def migrate_root(root: Path, now: datetime) -> dict[str, int]:
                 "%s: old dossier file could not be read chat_ref=%s; it is kept as %s",
                 _history.PLUGIN_NAME,
                 _ref(kind, target),
-                _doc.V1_BACKUP,
+                backup,
             )
         counts[outcome] += 1
     report = {"migrated": counts["migrated"], "unreadable": counts["unreadable"]}
-    report["backups"] = len(_targets(root, _doc.V1_BACKUP))
+    report["backups"] = len(_backup_files(root))
     if any(counts.values()):
         logger.info(
             "%s: dossier migration migrated=%d unreadable=%d failed=%d backups=%d",
@@ -92,15 +117,25 @@ def migrate_root(root: Path, now: datetime) -> dict[str, int]:
 
 
 def unreadable_backups(root: Path) -> list[str]:
-    """Directories (relative to ``root``) whose ``v1-dossier.json`` the migration could not read.
+    """v1 backups (paths relative to ``root``) the migration could not read.
 
     For the status warning: these backups hold owner text that did not reach the note.
     """
     return [
-        target.relative_to(root).as_posix()
-        for kind, target in _targets(root, _doc.V1_BACKUP)
-        if _usable_v1(kind, target, _doc.V1_BACKUP) is None
+        path.relative_to(root).as_posix()
+        for kind, path in _backup_files(root)
+        if _usable_v1(kind, path.parent, path.name) is None
     ]
+
+
+def drop_migrated_backups(kind: str, target: Path) -> None:
+    """Delete the backups in ``target`` whose owner text reached the note, at the first v2 pass.
+
+    An unreadable one stays until a forget. The caller holds the dossier data lock.
+    """
+    for path in _doc.backups(target):
+        if _usable_v1(kind, target, path.name) is not None:
+            path.unlink(missing_ok=True)
 
 
 def _targets(root: Path, name: str) -> list[tuple[str, Path]]:
@@ -111,6 +146,12 @@ def _targets(root: Path, name: str) -> list[tuple[str, Path]]:
     return found
 
 
+def _backup_files(root: Path) -> list[tuple[str, Path]]:
+    """``(kind, path)`` for every v1 backup under ``root``: contacts first, then the persona."""
+    found = [("contact", path) for target in sorted(root.glob("chats/*/*")) for path in _doc.backups(target)]
+    return found + [("persona", path) for path in _doc.backups(root / "persona")]
+
+
 def _ref(kind: str, target: Path) -> str:
     """The log reference of a directory: ``dossier_support._log_ref`` of its chat, never a raw id."""
     if kind == "persona":
@@ -118,14 +159,14 @@ def _ref(kind: str, target: Path) -> str:
     return hashlib.sha256(f"{target.parent.name}/{target.name}".encode()).hexdigest()[:12]
 
 
-def _migrate_dir(kind: str, target: Path, now: datetime) -> str:
+def _migrate_dir(kind: str, target: Path, now: datetime) -> tuple[str, str]:
+    """``(outcome, backup name)`` for one directory holding ``dossier.json``."""
     data = _usable_v1(kind, target, _doc.V1_FILE)
     if data is None:
         fresh = None if (target / _doc.DOC_FILE).exists() else _fresh(kind, target, None, now)
         if fresh is not None:
             _doc.write_doc(target, fresh)
-        _retire_v1(target)
-        return "unreadable"
+        return "unreadable", _retire_v1(target)
     doc = _doc.read_doc(target)  # a crash re-run or a rollback left one: merge into it
     if doc is not None and doc["kind"] != kind:
         raise _doc.DocError
@@ -136,27 +177,31 @@ def _migrate_dir(kind: str, target: Path, now: datetime) -> str:
     if note != doc["note"]:
         doc["note"] = note
         doc["note_updated_at"] = _history._isoformat_utc(now.replace(microsecond=0))
-    if kind == "contact" and doc["window_start"] is None:  # no v2 pass yet: the newest v1 facts seed it
-        doc.pop("seed", None)
-        seed = _seed(data)
-        if seed:
-            doc["seed"] = seed
+        doc["note_from"] = "v1"  # so 'note --text' asks for --replace before it drops this text
+    if kind == "contact" and doc["window_start"] is None:  # no v2 pass yet: the newest v1 facts are the document
+        doc["document"] = _seed(data)
     if kind == "persona":
         doc["chats"] = _merged_chats(doc["chats"], data)
     doc["migrated_from"] = "v1"  # the next v2 pass deletes the backup
     _doc.write_doc(target, doc)
-    _retire_v1(target)
-    return "migrated"
+    return "migrated", _retire_v1(target)
 
 
-def _retire_v1(target: Path) -> None:
-    """Delete ``changes.jsonl``, then keep ``dossier.json`` as ``v1-dossier.json``.
+def _retire_v1(target: Path) -> str:
+    """Delete ``changes.jsonl``, then keep ``dossier.json`` as a backup; returns the backup's name.
 
-    The log goes first because a directory without ``dossier.json`` is never visited again.
+    The log goes first because a directory without ``dossier.json`` is never visited again. A backup
+    already there is never overwritten (it may be the only copy of owner text that never reached the
+    note): the newer file gets the number after the highest one kept, so the highest number is always
+    the newest file, also once a lower one is deleted. The caller holds the data lock.
     """
     (target / _doc.V1_CHANGES).unlink(missing_ok=True)
-    os.replace(target / _doc.V1_FILE, target / _doc.V1_BACKUP)
-    _history._fsync_parent_directory(target / _doc.V1_BACKUP)
+    numbers = [int(m[1] or 0) for path in _doc.backups(target) if (m := _doc.V1_BACKUP_RE.fullmatch(path.name))]
+    n = max(numbers, default=-1) + 1
+    name = _doc.V1_BACKUP if n == 0 else f"v1-dossier.{n}.json"
+    os.replace(target / _doc.V1_FILE, target / name)
+    _history._fsync_parent_directory(target / name)
+    return name
 
 
 def _usable_v1(kind: str, target: Path, name: str) -> dict[str, Any] | None:
@@ -299,10 +344,12 @@ def _merged_note(existing: str, data: dict[str, Any]) -> str:
 
 
 def _seed(data: dict[str, Any]) -> str:
-    """Active v1 model facts as Markdown for the first v2 pass, or "" when there are none.
+    """Active v1 model facts as the converted document, or "" when there are none.
 
     One ``## Section`` per v1 section in v1 order (unknown sections after them), one bullet per
-    fact in file order. No refs and no title: the writer rewrites it.
+    fact in file order, under v1's own section titles: Russian when most facts have Cyrillic. No refs
+    and no title line: the first v2 pass rewrites it. It is never clipped, so it can be longer than
+    the document limit; the panel then shows its start and names ``show``.
     """
     groups: dict[str, list[str]] = {}
     for fact in _facts(data):
@@ -312,10 +359,16 @@ def _seed(data: dict[str, Any]) -> str:
         section = fact.get("section")
         name = " ".join(section.replace("_", " ").split()) if isinstance(section, str) else ""
         groups.setdefault(name.lower() or "other", []).append(text)
+    texts = [text for group in groups.values() for text in group]
+    russian = 2 * sum(1 for text in texts if _CYRILLIC_RE.search(text)) > len(texts)
+    titles = SECTION_TITLES["ru" if russian else "en"]
     order = {name.replace("_", " "): index for index, name in enumerate(CONTACT_SECTIONS)}
     names = sorted(groups, key=lambda name: order.get(name, len(order)))
     return "\n\n".join(
-        "\n".join([f"## {name.capitalize()}", *(f"- {text}" for text in groups[name])]) for name in names
+        "\n".join(
+            [f"## {titles.get(name.replace(' ', '_')) or name.capitalize()}", *(f"- {text}" for text in groups[name])]
+        )
+        for name in names
     )
 
 

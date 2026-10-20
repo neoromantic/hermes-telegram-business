@@ -146,15 +146,19 @@ async def test_usage_lists_the_v2_commands_and_coexists_with_history(plug: Modul
     (("remove", "--persona", "--fact", "f5", "extra"), "note"),
     (("changes", "--contact", "Mira Tanaka", "--limit", "5", "--format", "json"), "changes"),
     (("show", "--contact", "Mira Tanaka", "--fact", "f3"), "note"),
+    (("note", "--contact", "Mira Tanaka", "--section", "preferences", "--text", "Prefers calls."), "append"),
 ])
 def test_removed_commands_print_the_hint_and_exit_1(dossier_history: ModuleType, argv: tuple[str, ...],
                                                      second: str) -> None:
     ds = dossier_module(dossier_history)
     code, out, err = cli(dossier_history, "dossier", *argv)
-    command = "show --fact" if "--fact" in argv and argv[0] == "show" else argv[0]
+    command = f"{argv[0]} --{'fact' if '--fact' in argv else 'section'}" if argv[0] in ("show", "note") else argv[0]
     assert (code, err) == (1, "")
-    expected = ('To see the last change: hermes telesec dossier show --contact NAME --previous' if second == "changes"
-                else 'To correct it, write an owner note: hermes telesec dossier note --contact NAME --text "..."')
+    expected = {
+        "changes": "To see the last change: hermes telesec dossier show --contact NAME --previous",
+        "append": 'To add to the owner note: hermes telesec dossier note --contact NAME --append "..."',
+        "note": 'To correct it, add to the owner note: hermes telesec dossier note --contact NAME --append "..."',
+    }[second]
     assert lines_of(out) == [
         f"'hermes telesec dossier {command}' was removed: a dossier is now one document that the model rewrites.",
         expected]
@@ -308,9 +312,28 @@ def test_status_uses_the_legacy_env_route_with_its_warning(plug: ModuleType, ds:
         "example/dossier-large from them. Remove them to use the Telesec dossiers task (choose its model with "
         "'hermes model').")
     assert ("Model: openrouter / example/dossier-large (from TELESEC_DOSSIER_PROVIDER/TELESEC_DOSSIER_MODEL; "
-            "needs plugins.entries.telesec.llm trust config)") in lines_of(out)
+            "max_tokens 16384; zero data retention not requested; needs plugins.entries.telesec.llm trust config)"
+            ) in lines_of(out)
     assert "Message check: off (writer is not on ai-gateway)" in lines_of(out)
     assert "Dossiers: enabled (" in out and "paused" not in out and "blocked" not in out.lower()
+
+
+@pytest.mark.parametrize(("provider", "cap"), [
+    ("openai", "max_tokens 16384 asked for, may not apply"),  # Hermes does not pass it on to openai
+    ("custom", "max_tokens 16384 asked for, may not apply"),  # it depends on the endpoint
+    ("auto", "max_tokens 16384 asked for, may not apply"),  # it depends on the main model
+    ("gemini", "max_tokens 16384 asked for, may not apply"),  # it may be raised to the model's limit
+    ("nvidia", "max_tokens 16384"),
+    ("vercel", "max_tokens not capped"),  # never passed on to ai-gateway
+])
+def test_status_shows_a_legacy_route_cap_only_where_hermes_applies_it(
+    plug: ModuleType, ds: ModuleType, monkeypatch: pytest.MonkeyPatch, provider: str, cap: str
+) -> None:
+    monkeypatch.setenv("TELESEC_DOSSIER_PROVIDER", provider)
+    monkeypatch.setenv("TELESEC_DOSSIER_MODEL", "example/model")
+    out = cli(plug, "dossier", "status")[1]
+    assert (f"Model: {provider} / example/model (from TELESEC_DOSSIER_PROVIDER/TELESEC_DOSSIER_MODEL; {cap}; zero data "
+            "retention not requested; needs plugins.entries.telesec.llm trust config)") in lines_of(out)
 
 
 @pytest.mark.parametrize(("task", "registered", "warning", "model_line"), [
@@ -327,7 +350,15 @@ def test_status_uses_the_legacy_env_route_with_its_warning(plug: ModuleType, ds:
       "zero data retention off)")),
     (None, False, "warning: the Telesec dossiers model task is not registered",
      ("Model: ai-gateway / google/gemini-3.8-flash (explicit route: the Telesec dossiers task is not registered; "
-      "needs plugins.entries.telesec.llm trust config)")),
+      "max_tokens not capped; zero data retention not requested; needs plugins.entries.telesec.llm trust config)")),
+    ({"provider": "anthropic", "model": "claude-example"}, True,
+     "warning: auxiliary.telesec_dossier.extra_body has providerOptions, which only ai-gateway accepts, so anthropic",
+     ("Model: anthropic / claude-example (Telesec dossiers task; reasoning low; max_tokens 8192 asked for, "
+      "may not apply)")),
+    # Hermes's native gemini client ignores the body's max_tokens: never shown as a cap.
+    ({"provider": "gemini", "model": "gemini-3.8-flash", "extra_body": {"max_tokens": 8192}}, True,
+     "warning: the native gemini provider ignores max_tokens in auxiliary.telesec_dossier.extra_body",
+     "Model: gemini / gemini-3.8-flash (Telesec dossiers task; reasoning low; max_tokens not capped)"),
 ])
 def test_status_model_line_and_warnings_follow_the_task(plug: ModuleType, ds: ModuleType,
                                                         monkeypatch: pytest.MonkeyPatch, task: dict[str, Any] | None,
@@ -342,7 +373,7 @@ def test_status_model_line_and_warnings_follow_the_task(plug: ModuleType, ds: Mo
 @pytest.mark.parametrize(("setting", "secrets", "env", "line"), [
     ("off", GATEWAY_KEY, {}, "Message check: off (setting)"),
     ("auto", {}, {}, "Message check: off (no AI_GATEWAY_API_KEY)"),
-    ("auto", GATEWAY_KEY, {"AI_GATEWAY_BASE_URL": "http://gateway.example.test"},
+    ("auto", {**GATEWAY_KEY, "AI_GATEWAY_BASE_URL": "http://gateway.example.test"}, {},
      "Message check: off (AI_GATEWAY_BASE_URL is not https)"),
     ("auto", GATEWAY_KEY, {"TELESEC_DOSSIER_PROVIDER": "gemini"}, "Message check: off (writer is not on ai-gateway)"),
     ("auto", GATEWAY_KEY, {}, "Message check: TypeSafe typesafe-ai/jev-1.13.0, on (auto)"),
@@ -547,7 +578,9 @@ async def test_migration_runs_at_cli_entry_and_backups_are_counted(plug: ModuleT
     assert (target / "v1-dossier.json").exists()
     migrated = read_dossier(ds, MIRA)
     assert migrated["note"] == "Call her Mira." and migrated["window_start"] is None
-    assert re.search(r"-  waiting for first build  \[note\] \[v1 backup\]$", row(out, "Mira Tanaka")), out
+    assert re.search(r"rev 0  \d+ chars  converted, waiting for first build  \[note\] \[v1 backup\]$",
+                     row(out, "Mira Tanaka")), out
+    assert migrated["document"] == "## Relationship\n- Leads the Orbit redesign."
     assert ", 1 owner note, 1 v1 backup" in cli(plug, "dossier", "status")[1]
 
 
@@ -712,6 +745,27 @@ async def test_preview_says_when_the_message_check_would_apply(plug: ModuleType,
 
 
 @pytest.mark.asyncio
+async def test_preview_says_when_fact_extraction_would_also_run(plug: ModuleType, ds: ModuleType,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    await mira(plug)
+    assert cycle(ds, FakeLlm(doc(FIRST))).refreshed == 1
+    await seed(plug, MIRA, None, [(3, "in", "MIRA see you on 28 October", 5)], first_name="Mira", last_name="Tanaka")
+    ds.set_clairic("on", via="cli")
+    would_run = "# would run: update, 1 new, 0 edited, 0 deleted, note unchanged\n"
+    assert cli(plug, "dossier", "preview", *chat_args(MIRA))[2] == would_run  # no Cloudflare credentials
+
+    def no_call(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("preview never calls Cloudflare")
+
+    monkeypatch.setattr(ds._writer, "clairic_hints", no_call)
+    with fake_secret_scope(CF_KEYS):
+        code, out, err = cli(plug, "dossier", "preview", *chat_args(MIRA))
+    assert code == 0 and "hints" not in json.loads(split_preview(out)[1])
+    assert err == would_run + ("# fact extraction would also send 1 new message to Cloudflare and may add hints to "
+                               "this input (not shown)\n")
+
+
+@pytest.mark.asyncio
 async def test_preview_persona_prints_exactly_what_run_persona_sends(plug: ModuleType, ds: ModuleType) -> None:
     assert cli(plug, "dossier", "preview", "--persona") == (
         0, "", "# nothing due: no sent text messages in the last 90 days\n")
@@ -785,11 +839,13 @@ async def test_preview_post_prints_the_clean_room_input_of_dossier(plug: ModuleT
 
 
 @pytest.mark.asyncio
-async def test_preview_post_names_the_window_refusal(plug: ModuleType, ds: ModuleType) -> None:
+async def test_preview_post_never_names_the_window_refusal(plug: ModuleType, ds: ModuleType) -> None:
+    # The CLI never sees the contact's voice or media messages, so it can't know the 24-hour window is closed.
     await seed(plug, MIRA, None, [(1, "in", "MIRA old question", 60 * 30), (2, "out", "MIRA old answer", 60 * 29)],
                first_name="Mira", last_name="Tanaka")
-    assert cli(plug, "dossier", "preview", "--contact", "Mira Tanaka", "--post") == (
-        0, "", "# /dossier would send nothing; refusal: window\n")
+    code, out, err = cli(plug, "dossier", "preview", "--contact", "Mira Tanaka", "--post")
+    assert (code, err) == (0, "# /dossier would send 2 messages; refusal: none\n")
+    assert "MIRA old question" in split_preview(out)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -866,7 +922,7 @@ async def test_note_limit_clear_and_control_characters(plug: ModuleType, ds: Mod
     assert ds.load_contact(BUSINESS_ID, MIRA)["note"] == "Line one[31m\nLine two"
 
     assert cli(plug, "dossier", "note", "--contact", "Mira Tanaka", "--clear") == (
-        0, "Cleared the owner note for Mira Tanaka.\n", "")
+        0, "Cleared the owner note for Mira Tanaka (21 characters).\n", "")
     assert read_dossier(ds, MIRA)["note"] == ""
     assert cli(plug, "dossier", "note", "--contact", "Mira Tanaka", "--clear") == (
         0, "No owner note for Mira Tanaka.\n", "")
@@ -878,6 +934,77 @@ async def test_note_limit_clear_and_control_characters(plug: ModuleType, ds: Mod
     assert out == ("Saved the owner note for the owner persona (31 characters). The next cycle rewrites the persona "
                    "with it; run 'hermes telesec dossier run --persona' to do it now.\n")
     assert read_persona(ds)["note"] == "I never use emoji with clients."
+
+
+@pytest.mark.asyncio
+async def test_a_converted_note_is_kept_until_the_owner_appends_or_replaces(plug: ModuleType, ds: ModuleType) -> None:
+    await mira(plug)
+    target = dossier_dir(ds, MIRA)
+    put(target, v1_contact(fact("f1", "Call her Mira.", kind="owner"), fact("f2", "Pays on the 5th.", kind="owner"),
+                           conn=BUSINESS_ID, chat=MIRA))
+    assert cli(plug, "dossier", "status")[0] == 0  # the migration runs at CLI entry
+    converted = "Call her Mira.\nPays on the 5th."
+    assert (read_dossier(ds, MIRA)["note"], read_dossier(ds, MIRA)["note_from"]) == (converted, "v1")
+    before = snapshot_tree(target)
+    note = ("hermes", "telesec", "dossier", "note", "--contact", "Mira Tanaka")
+    refused = [
+        ("error: the owner note for Mira Tanaka came from the old dossier (31 characters), and --text replaces all "
+         "of it. Nothing was changed."),
+        'To add to it: hermes telesec dossier note --contact "Mira Tanaka" --append "..."',
+        'To replace it: hermes telesec dossier note --contact "Mira Tanaka" --text "..." --replace',
+    ]
+
+    for text in ("Prefers e-mail.", ""):  # "" as from an unset shell variable
+        code, out, err = cli(plug, *note[2:], "--text", text)
+        assert (code, lines_of(out), err) == (1, refused, "")
+        assert snapshot_tree(target) == before
+    assert shlex.split(refused[1].partition(": ")[2])[:6] == list(note)  # the hint is a working command
+
+    code, out, _err = cli(plug, *note[2:], "--append", "  Prefers e-mail.  ")
+    assert code == 0 and out.startswith("Added to the owner note for Mira Tanaka; it now has 48 characters. The next")
+    stored = read_dossier(ds, MIRA)
+    assert (stored["note"], stored["note_from"]) == (f"{converted}\n\nPrefers e-mail.", "v1")  # still protected
+    assert cli(plug, *note[2:], "--text", "Only e-mail.")[0] == 1
+
+    code, out, _err = cli(plug, *note[2:], "--text", "Only e-mail.", "--replace")
+    assert code == 0 and out.startswith(
+        "Saved the owner note for Mira Tanaka (12 characters); it replaced a note of 48 characters. The next")
+    stored = read_dossier(ds, MIRA)
+    assert stored["note"] == "Only e-mail." and "note_from" not in stored
+    assert cli(plug, *note[2:], "--text", "Only calls.")[0] == 0  # an owner-typed note is replaced as before
+    assert read_dossier(ds, MIRA)["note"] == "Only calls."
+
+
+@pytest.mark.asyncio
+async def test_append_may_pass_the_limit_and_a_long_note_needs_replace(plug: ModuleType, ds: ModuleType) -> None:
+    await mira(plug)
+    note = ("dossier", "note", "--contact", "Mira Tanaka")
+    assert cli(plug, *note, "--text", "x" * 400)[0] == 0
+
+    code, out, _err = cli(plug, *note, "--append", "y" * 200)
+    assert code == 0 and out.startswith(
+        "Added to the owner note for Mira Tanaka; it now has 602 characters. The panel shows its first 500 "
+        "characters; 'note' and 'show' print all of it, and the model reads all of it. The next cycle")
+    long_note = "x" * 400 + "\n\n" + "y" * 200
+    assert read_dossier(ds, MIRA)["note"] == long_note  # owner text is never cut
+    assert cli(plug, *note)[1] == long_note + "\n"
+    before = snapshot_tree(dossier_dir(ds, MIRA))
+
+    assert cli(plug, *note, "--append", "z" * 501) == (2, "error: the note is 501 characters; the limit is 500\n", "")
+    code, out, _err = cli(plug, *note, "--text", "Short.")
+    assert code == 1 and lines_of(out)[0] == (
+        "error: the owner note for Mira Tanaka is over the 500-character limit (602 characters), and --text replaces "
+        "all of it. Nothing was changed.")
+    assert cli(plug, *note, "--replace") == (2, "error: --replace works only with --text\n", "")
+    assert cli(plug, *note, "--append", " ") == (2, "error: --append needs text\n", "")
+    assert cli(plug, *note, "--append", "a", "--text", "b")[0] == 2
+    assert snapshot_tree(dossier_dir(ds, MIRA)) == before
+
+    stored = read_dossier(ds, MIRA)
+    ds._doc.write_doc(dossier_dir(ds, MIRA), {**stored, "note_from": "v1"})
+    assert cli(plug, *note, "--clear") == (0, "Cleared the owner note for Mira Tanaka (602 characters).\n", "")
+    stored = read_dossier(ds, MIRA)
+    assert stored["note"] == "" and "note_from" not in stored  # a clear ends the converted text too
 
 
 # ---------------------------------------------------------------------------

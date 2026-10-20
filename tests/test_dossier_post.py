@@ -16,6 +16,7 @@ import io
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -303,21 +304,71 @@ async def test_precheck_reasons_come_in_order(plug, ds, post):
 
 
 @pytest.mark.asyncio
-async def test_the_window_needs_the_contact_or_a_transcript_in_the_last_24_hours(plug, ds, post):
+async def test_the_window_needs_a_contact_message_in_the_last_24_hours(plug, ds, post):
     await seed(plug, CHAT, "anna_k", [(10, "in", ASK, timedelta(hours=30)), (11, "out", AGREE, timedelta(hours=29)),
                                       (12, "out", "Are you there?", 60)], first_name="Anna")
     entry = catalog_entry(plug, CHAT)
     ds.bind_llm(FakeLlm())
+    tdp.up_two_days(plug)
     assert post.post_precheck(entry, now=NOW) == "window"  # the owner's own message does not open it
 
-    await transcript(plug, CHAT, 40, 41, ago(30))  # a voice note is never recorded, its transcript is
-    assert post.post_precheck(entry, now=NOW) is None
+    await transcript(plug, CHAT, 40, 41, ago(30))  # the owner's voice note: a transcript is nobody's side
+    assert post.post_precheck(entry, now=NOW) == "window"
+    assert post.post_window_open(entry, now=NOW) is False
+    _system, user = post.post_payload(entry, now=NOW)  # the CLI never sees media, so it never says "window"
+    assert ASK in user and VOICE[1] in user
+
+    post.note_inbound(BUSINESS_ID, CHAT, ago(20))  # a sticker, photo or voice note from the contact
+    assert post.post_precheck(entry, now=NOW) is None and post.post_window_open(entry, now=NOW) is True
+    post.note_inbound(BUSINESS_ID, CHAT, ago(25 * 60))  # an older one delivered late changes nothing
+    assert post.post_precheck(entry, now=ago(20) + timedelta(hours=24) - SECOND) is None
+    assert post.post_precheck(entry, now=ago(20) + timedelta(hours=24) + SECOND) == "window"
 
     later = NOW + timedelta(hours=2)
     await seed(plug, CHAT, "anna_k", [(50, "in", "Sorry, wrong chat.", ago(10, base=later))], first_name="Anna")
     await delete(plug, CHAT, 50, when=ago(9, base=later))
     later += timedelta(hours=23)
     assert post.post_precheck(entry, now=later) is None  # a message the contact deleted was still written
+
+
+@pytest.mark.asyncio
+async def test_a_gateway_up_less_than_24_hours_tries_the_post(plug, ds, post):
+    await seed(plug, CHAT, "anna_k", [(10, "in", ASK, timedelta(hours=30)), (11, "out", AGREE, timedelta(hours=29))],
+               first_name="Anna")
+    entry = catalog_entry(plug, CHAT)
+    ds.bind_llm(FakeLlm())
+    post._STARTED_AT = time.monotonic() - 23 * 3600  # a voice note just before the start would not have been seen
+
+    assert post.post_precheck(entry, now=NOW) is None
+    assert post.post_window_open(entry, now=NOW) is False  # not known open: Telegram's refusal means the window
+    # Uptime is not wall-clock time: a clock set two days forward after the start (a machine that booted with
+    # the wrong time) makes the gateway no older.
+    assert post.post_precheck(entry, now=NOW + timedelta(days=2)) is None
+    post._STARTED_AT = time.monotonic() - 25 * 3600
+    assert post.post_precheck(entry, now=NOW) == "window"
+
+
+@pytest.mark.asyncio
+async def test_a_chat_the_inbound_cap_may_have_dropped_is_not_known_closed(plug, ds, post, monkeypatch):
+    await seed(plug, CHAT, "anna_k", [(10, "in", ASK, timedelta(hours=30)), (11, "out", AGREE, timedelta(hours=29))],
+               first_name="Anna")
+    entry = catalog_entry(plug, CHAT)
+    ds.bind_llm(FakeLlm())
+    tdp.up_two_days(plug)
+    monkeypatch.setattr(post, "INBOUND_MAX", 2)
+
+    post.note_inbound(BUSINESS_ID, CHAT, ago(26 * 60))  # too old to matter when the cap drops it
+    post.note_inbound(BUSINESS_ID, 9001, ago(50))
+    post.note_inbound(BUSINESS_ID, 9002, ago(40))
+    assert len(post._LAST_INBOUND) == 2 and post.post_precheck(entry, now=NOW) == "window"
+
+    post.note_inbound(BUSINESS_ID, CHAT, ago(30))  # a sticker from the contact, dropped by the next two chats
+    post.note_inbound(BUSINESS_ID, 9003, ago(20))
+    post.note_inbound(BUSINESS_ID, 9004, ago(10))
+    assert (BUSINESS_ID, str(CHAT)) not in post._LAST_INBOUND
+    assert post.post_precheck(entry, now=NOW) is None  # unknown, so the post is tried
+    assert post.post_window_open(entry, now=NOW) is False  # and Telegram's refusal is told as the window
+    assert post.post_precheck(entry, now=ago(30) + timedelta(hours=24) + SECOND) == "window"
 
 
 @pytest.mark.asyncio

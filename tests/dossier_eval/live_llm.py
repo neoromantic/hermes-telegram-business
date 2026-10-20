@@ -42,7 +42,7 @@ PRICES_PER_M = {
 UNKNOWN_PRICE_PER_M = (5.0, 25.0)  # an unlisted judge model: priced high so the budget stays safe
 JEV_PRICE_PER_M = 0.042  # input tokens, as dossier_writer.JEV_PRICE_PER_M
 CLAIRIC_PRICE_PER_M = 0.10  # an upper bound for the Workers AI preview; the API reports no cost
-SECRET_NAMES = ("AI_GATEWAY_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+SECRET_NAMES = ("AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
 # Hermes ``complete_structured`` adds this to the system prompt (v1 calls).
 STRUCTURED_SUFFIX = ("Respond with a single JSON object that matches the requested shape. "
                      "Do not include prose or markdown fences.")

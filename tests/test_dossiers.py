@@ -38,6 +38,7 @@ from dossier_helpers import (
     connect_gateway,
     cycle,
     delete,
+    doc,
     dossier_module,
     edit,
     live_worker_threads,
@@ -185,6 +186,18 @@ def reasoning_warning(value: str) -> str:
             "Set auxiliary.telesec_dossier.reasoning_effort: low.")
 
 
+def gateway_options_warning(who: str) -> str:
+    # No max_tokens example: OpenAI's GPT-5 models reject it in the body, and native gemini ignores it.
+    return (f"warning: auxiliary.telesec_dossier.extra_body has providerOptions, which only ai-gateway accepts, so {who} "
+            "may reject every dossier call. Set auxiliary.telesec_dossier.extra_body without providerOptions, for "
+            "example {}.")
+
+
+def native_gemini_warning(name: str) -> str:
+    return (f"warning: the native {name} provider ignores max_tokens in auxiliary.telesec_dossier.extra_body; long "
+            "answers are not capped.")
+
+
 def legacy_warning(provider: str, model: str) -> str:
     return (f"warning: TELESEC_DOSSIER_PROVIDER/TELESEC_DOSSIER_MODEL are deprecated; dossiers use {provider} / "
             f"{model} from them. Remove them to use the Telesec dossiers task (choose its model with 'hermes model').")
@@ -222,17 +235,35 @@ async def test_default_config_routes_through_the_registered_task(
 
 
 @pytest.mark.parametrize(("task", "expected", "warnings"), [
-    ({"provider": "auto"}, ("auto", "main model", "low", 8192, True), [AUTO_WARNING]),
-    ({"provider": " ", "model": "example/model-1"}, ("auto", "main model", "low", 8192, True), [AUTO_WARNING]),
-    ({"reasoning_effort": ""}, ("ai-gateway", "google/gemini-3.8-flash", "", 8192, True),
+    # The task defaults stay under a 'hermes model' pick, so a gateway-only providerOptions reaches other providers.
+    ({"provider": "auto"}, ("auto", "main model", "low", None, 8192, True),
+     [AUTO_WARNING, gateway_options_warning("the main model")]),
+    ({"provider": " ", "model": "example/model-1"}, ("auto", "main model", "low", None, 8192, True),
+     [AUTO_WARNING, gateway_options_warning("the main model")]),
+    # Hermes's own client may drop the body's max_tokens, so it is only asked for.
+    ({"provider": "anthropic", "model": "claude-example"}, ("anthropic", "claude-example", "low", None, 8192, True),
+     [gateway_options_warning("anthropic")]),
+    ({"provider": "openai", "model": "example-5", "extra_body": {}}, ("openai", "example-5", "low", None, None, False),
+     [MAX_TOKENS_WARNING]),
+    # The native Gemini client reads neither field of extra_body, and thinking may use the whole output limit.
+    ({"provider": "gemini", "model": "gemini-3.8-flash", "extra_body": {"max_tokens": 8192}},
+     ("gemini", "gemini-3.8-flash", "low", None, None, False), [native_gemini_warning("gemini")]),
+    ({"provider": "Google", "model": "gemini-3.8-flash"}, ("Google", "gemini-3.8-flash", "low", None, None, True),
+     [native_gemini_warning("google"), gateway_options_warning("Google")]),
+    ({"provider": "gemini", "model": "gemini-3.8-flash", "extra_body": {}},
+     ("gemini", "gemini-3.8-flash", "low", None, None, False), [native_gemini_warning("gemini")]),
+    ({"provider": "vercel", "model": "google/gemini-3.9-pro"},
+     ("vercel", "google/gemini-3.9-pro", "low", 8192, None, True), []),
+    ({"provider": "AI_Gateway"}, ("AI_Gateway", "google/gemini-3.8-flash", "low", 8192, None, True), []),  # an alias
+    ({"reasoning_effort": ""}, ("ai-gateway", "google/gemini-3.8-flash", "", 8192, None, True),
      [reasoning_warning("provider default")]),
-    ({"reasoning_effort": "high"}, ("ai-gateway", "google/gemini-3.8-flash", "high", 8192, True),
+    ({"reasoning_effort": "high"}, ("ai-gateway", "google/gemini-3.8-flash", "high", 8192, None, True),
      [reasoning_warning("high")]),
-    ({"extra_body": {"temperature": 0.2}}, ("ai-gateway", "google/gemini-3.8-flash", "low", None, False),
+    ({"extra_body": {"temperature": 0.2}}, ("ai-gateway", "google/gemini-3.8-flash", "low", None, None, False),
      [MAX_TOKENS_WARNING, ZDR_WARNING]),
     ({"provider": "openrouter", "model": "example/model-1", "extra_body": {"max_tokens": 4000}},
-     ("openrouter", "example/model-1", "low", 4000, False), []),
-    ({"model": "google/gemini-3.9-pro", "timeout": 60}, ("ai-gateway", "google/gemini-3.9-pro", "low", 8192, True),
+     ("openrouter", "example/model-1", "low", 4000, None, False), []),
+    ({"model": "google/gemini-3.9-pro", "timeout": 60}, ("ai-gateway", "google/gemini-3.9-pro", "low", 8192, None, True),
      []),
 ])
 def test_host_task_config_merges_shallow_and_warns_per_setting(
@@ -242,8 +273,9 @@ def test_host_task_config_merges_shallow_and_warns_per_setting(
     ds = dossiers
     host_config(monkeypatch, task)
     cfg = ds.load_config()
-    assert (cfg.provider, cfg.model, cfg.reasoning, cfg.max_tokens, cfg.zdr) == expected
+    assert (cfg.provider, cfg.model, cfg.reasoning, cfg.max_tokens, cfg.max_tokens_asked, cfg.zdr) == expected
     assert list(cfg.warnings) == warnings
+    assert ("gateway_options" in cfg.warning_codes) is any("providerOptions, which" in w for w in warnings)
     assert route_of(ds) == DEFAULT_ROUTE  # whatever the task says, the plugin passes only the task name
 
 
@@ -252,6 +284,7 @@ async def test_an_unregistered_task_uses_the_explicit_fallback_route(plug: Modul
     ds = dossiers
     ds.set_task_registered(False)
     cfg = ds.load_config()
+    # Not capped: Hermes never passes an explicit max_tokens on to ai-gateway.
     assert (cfg.provider, cfg.model, cfg.reasoning, cfg.max_tokens, cfg.zdr, cfg.task_registered) == (
         "ai-gateway", "google/gemini-3.8-flash", ds.NOT_SET, None, False, False)
     assert cfg.warnings == (NOT_REGISTERED_WARNING,)
@@ -264,26 +297,30 @@ async def test_an_unregistered_task_uses_the_explicit_fallback_route(plug: Modul
     assert (call["provider"], call["model"]) == ("ai-gateway", "google/gemini-3.8-flash")
     assert "task" not in call  # never task= for a task the host does not know
     assert call["timeout"] == ds.MODEL_TIMEOUT_SECONDS  # no task config to read it from
+    assert call["max_tokens"] == 16_384  # nor an extra_body to cap the output; asked for anyway
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("provider", "model", "expected_model"), [
-    ("gemini", None, "gemini-3.8-flash"),
-    ("Google", None, "gemini-3.8-flash"),
-    ("openrouter", None, "google/gemini-3.8-flash"),
-    ("ai-gateway", None, "google/gemini-3.8-flash"),
-    ("gemini", "gemini-3.8-pro", "gemini-3.8-pro"),
+@pytest.mark.parametrize(("provider", "model", "expected_model", "caps"), [
+    # (cap applied, cap asked for that may not apply): Hermes passes an explicit max_tokens on only to some
+    # providers, never to ai-gateway, and native gemini may raise it to the model's limit.
+    ("gemini", None, "gemini-3.8-flash", (None, 16_384)),
+    ("Google", None, "gemini-3.8-flash", (None, 16_384)),
+    ("openrouter", None, "google/gemini-3.8-flash", (16_384, None)),
+    ("openai", "example-5", "example-5", (None, 16_384)),
+    ("ai-gateway", None, "google/gemini-3.8-flash", (None, None)),
+    ("gemini", "gemini-3.8-pro", "gemini-3.8-pro", (None, 16_384)),
 ])
 async def test_the_legacy_provider_env_is_an_explicit_route_with_a_warning(
     plug: ModuleType, dossiers: ModuleType, dossier_env: Callable[..., None], monkeypatch: pytest.MonkeyPatch,
-    provider: str, model: str | None, expected_model: str,
+    provider: str, model: str | None, expected_model: str, caps: tuple[int | None, int | None],
 ) -> None:
     ds = dossiers
     host_config(monkeypatch, {"model": "google/gemini-3.9-pro"})  # a task section without a provider overrides nothing
     dossier_env(PROVIDER=f" {provider} ", MODEL=model)
     cfg = ds.load_config()
     assert (cfg.provider, cfg.model, cfg.legacy_env) == (provider, expected_model, True)
-    assert (cfg.reasoning, cfg.max_tokens, cfg.zdr) == (ds.NOT_SET, None, False)
+    assert (cfg.reasoning, cfg.max_tokens, cfg.max_tokens_asked, cfg.zdr) == (ds.NOT_SET, *caps, False)
     assert cfg.warnings == (legacy_warning(provider, expected_model),)
     assert route_of(ds) == (None, provider, expected_model)
 
@@ -292,6 +329,7 @@ async def test_the_legacy_provider_env_is_an_explicit_route_with_a_warning(
     assert cycle(ds, fake).refreshed == 1
     (call,) = contact_calls(fake)
     assert (call["provider"], call["model"]) == (provider, expected_model) and "task" not in call
+    assert call["max_tokens"] == 16_384
 
 
 def test_a_legacy_route_with_url_credentials_is_shown_without_them(
@@ -316,7 +354,8 @@ def test_a_legacy_route_with_url_credentials_is_shown_without_them(
     ({"MODEL": "gemini-3.8-pro"}, None, ("ai-gateway", "google/gemini-3.8-flash")),
     ({"PROVIDER": "gemini", "MODEL": "gemini-3.8-pro"}, {"provider": "ai-gateway"},
      ("ai-gateway", "google/gemini-3.8-flash")),
-    ({"PROVIDER": "gemini"}, {"provider": "openrouter", "model": "example/model-1"}, ("openrouter", "example/model-1")),
+    ({"PROVIDER": "gemini"}, {"provider": "openrouter", "model": "example/model-1", "extra_body": {"max_tokens": 8192}},
+     ("openrouter", "example/model-1")),
 ])
 def test_the_legacy_env_is_ignored_alone_or_under_an_explicit_task_provider(
     dossiers: ModuleType, dossier_env: Callable[..., None], monkeypatch: pytest.MonkeyPatch, env: dict[str, str],
@@ -353,15 +392,15 @@ def test_the_message_check_needs_the_setting_a_gateway_route_and_a_key(
 ) -> None:
     ds = dossiers
     assert ds.load_config().gate_setting == ds.GATE_DEFAULT
-    with fake_secret_scope(GATEWAY_KEY):
+    with fake_secret_scope(GATEWAY_KEY) as scope:
         ds.set_gate("off", via="cli")
         assert ds.load_config().gate == "off"
         ds.set_gate("auto", via="cli")
         cfg = ds.load_config()
         assert (cfg.gate_setting, cfg.gate) == ("auto", "on")
-        monkeypatch.setenv("AI_GATEWAY_BASE_URL", "http://gateway.example.com/v1")
+        scope.secrets["AI_GATEWAY_BASE_URL"] = "http://gateway.example.com/v1"
         assert ds.load_config().gate == "bad_base_url"
-        monkeypatch.setenv("AI_GATEWAY_BASE_URL", "https://gateway.example.com/v1")
+        scope.secrets["AI_GATEWAY_BASE_URL"] = "https://gateway.example.com/v1"
         assert ds.load_config().gate == "on"
 
         dossier_env(PROVIDER="gemini")  # chat text would reach TypeSafe through a gateway the writer does not use
@@ -396,9 +435,11 @@ def test_config_warnings_are_logged_once_per_process_as_codes(
     dossier_env(MODEL="example-secret-model")
     with caplog.at_level(logging.WARNING):
         first, second = ds.load_config(), ds.load_config()
-    assert first.warnings == second.warnings and len(first.warnings) == 3
+    assert first.warnings == second.warnings and len(first.warnings) == 4
+    assert first.warning_codes == ("env_ignored", "auto", "reasoning", "gateway_options")
     lines = sorted(r.getMessage() for r in caplog.records if "dossier config warning" in r.getMessage())
-    assert lines == [f"telesec: dossier config warning={code}" for code in ("auto", "env_ignored", "reasoning")]
+    assert lines == [f"telesec: dossier config warning={code}"
+                     for code in ("auto", "env_ignored", "gateway_options", "reasoning")]
     assert "example-secret-model" not in caplog.text and "main model" not in caplog.text
 
 
@@ -796,8 +837,8 @@ async def test_preview_matches_the_next_call_and_writes_nothing(plug: ModuleType
     history_before = snapshot_history_tree(plug)
     dossiers_before = snapshot_tree(ds.dossier_root())
 
-    system, user, info, gate = ds.preview_contact(entry, now=NOW)
-    assert (system, gate) == (ds._writer.WRITER_SYSTEM, False)
+    system, user, info, gate, hints = ds.preview_contact(entry, now=NOW)
+    assert (system, gate, hints) == (ds._writer.WRITER_SYSTEM, False, 0)
     assert info == ds.Pending(first=True, qualified=True, new=2, edited=0, deleted=0, note_changed=False)
     assert ds.pending(entry, now=NOW) == info and not info.nothing()
     assert snapshot_history_tree(plug) == history_before
@@ -806,9 +847,9 @@ async def test_preview_matches_the_next_call_and_writes_nothing(plug: ModuleType
     fake = FakeLlm()
     assert cycle(ds, fake, target=("contact", entry)).refreshed == 1
     assert contact_calls(fake)[0]["raw"] == user
-    _system, user, info, _gate = ds.preview_contact(entry, now=NOW)
+    _system, user, info, _gate, _hints = ds.preview_contact(entry, now=NOW)
     assert user == "" and info.nothing()
-    _system, user, info, _gate = ds.preview_contact(catalog_entry(plug, 5619), now=NOW)
+    _system, user, info, _gate, _hints = ds.preview_contact(catalog_entry(plug, 5619), now=NOW)
     assert user == "" and (info.first, info.qualified) == (True, False)
 
 
@@ -1396,6 +1437,46 @@ async def test_recent_calls_persist_across_cycles(
     assert clock.waits == [pytest.approx(60.0)]  # the persisted tail filled the window
     assert read_state(ds)["recent_calls"] == [pytest.approx(1_060.0)]
     assert built == [2, 2, 2]  # MAX_CALLS_PER_MINUTE reached every cycle's limiter
+
+
+LONG_REPLY = doc("**The contact.**\n\n## Notes\n" + "\n".join(f"- Fact number {i}: " + "detail " * 10 for i in range(60)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("limit", "waits", "recent"), [
+    (2, [], [1_000.0, 1_000.0]),
+    (1, [pytest.approx(60.0)], [pytest.approx(1_060.0)]),  # one call a minute: the shorten call waits for the window
+])
+async def test_a_shorten_call_takes_its_own_rate_limit_slot(
+    plug: ModuleType, dossiers: ModuleType, limit: int, waits: list[float], recent: list[float]
+) -> None:
+    ds = dossiers
+    await two_sided(plug, 5544, "SHORTEN")
+    clock = FakeClock()
+    fake = FakeLlm(LONG_REPLY)  # too long: the default reply answers the shorten call
+    report = cycle(ds, fake, target=("contact", catalog_entry(plug, 5544)),
+                   limiter=ds.RateLimiter(limit, clock=clock, wait=clock.wait))
+
+    assert [c["purpose"] for c in fake.calls] == ["telesec_dossier", "telesec_shorten"]
+    assert (report.refreshed, report.calls) == (1, 2)
+    assert clock.waits == waits
+    assert read_state(ds)["recent_calls"] == recent  # the window `dossier run` shares
+
+
+@pytest.mark.asyncio
+async def test_no_shorten_call_without_a_rate_limit_slot(plug: ModuleType, dossiers: ModuleType) -> None:
+    ds = dossiers
+    await two_sided(plug, 5545, "NOSLOT")
+    stopper = FakeClock(stop=True)  # stopped while waiting for the window
+    fake = FakeLlm(LONG_REPLY)
+    report = cycle(ds, fake, target=("contact", catalog_entry(plug, 5545)),
+                   limiter=ds.RateLimiter(1, clock=stopper, wait=stopper.wait))
+
+    assert [c["purpose"] for c in fake.calls] == ["telesec_dossier"]
+    assert (report.refreshed, report.calls) == (0, 1)
+    assert read_dossier(ds, 5545) is None  # as when a switch goes off before the shorten call: nothing written
+    assert read_state(ds)["usage"][f"{NOW:%Y-%m}"]["writer"]["calls"] == 1  # the call that went out is counted
+    assert read_state(ds)["recent_calls"] == [1_000.0]
 
 
 # ---------------------------------------------------------------------------

@@ -828,7 +828,8 @@ def _s5() -> Scenario:
             _deleted("interview", "Bramble"),
             _deleted("old_price", "41 zł", "41 zl", "41zł", "41 pln"),
             _deleted("old_date", "8 October", "October 8", "8th October", "October 8th"),
-            _deleted("voice", "Mokotow", "Mokotów"),
+            # The transcript stays in the chat when its voice is deleted, so it is live content: reported only.
+            Canary("voice", "Mokotow", "deleted", ("Mokotów",), reported=("document", "post")),
         ),
         reference={chat: (
             "The owner runs a café and buys wholesale beans from Marek.",

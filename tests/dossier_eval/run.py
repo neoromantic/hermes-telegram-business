@@ -4,8 +4,8 @@ Opt-in and live: it calls Vercel AI Gateway (and Cloudflare for ``v2-clairic``) 
 process environment and stops before any call that could take the spend over ``--budget-usd``.
 ``--dry-run`` answers every request offline instead, to check the plumbing for free.
 
-    uv run python tests/dossier_eval/run.py --out /tmp/telesec-eval \\
-        --arms v1,v2,v2-gate,v2-think,v2-clairic --v1-worktree /tmp/telesec-v1
+    uv run python tests/dossier_eval/run.py --out ../telesec-eval \\
+        --arms v1,v2,v2-gate,v2-think,v2-clairic --v1-worktree ../telesec-v1
 
 Each arm, scenario and run gets a fresh temp HERMES_HOME. History is written step by step as canonical
 records (the test helper ``raw``); each checkpoint runs ``run_cycle(llm=LiveLlm, trigger="cli", ...)``
@@ -962,7 +962,7 @@ def main(argv: list[str] | None = None, *, opener: Callable[..., Any] | None = N
         worktree = args.v1_worktree
         if worktree is None or not (worktree / "__init__.py").is_file() or not (worktree / "dossier_support.py").is_file():
             print(f"error: the v1 arm needs --v1-worktree PATH with the {V1_TAG} code. Create it with:\n"
-                  f"  git worktree add /tmp/telesec-v1 {V1_TAG}", file=sys.stderr)
+                  f"  git worktree add ../telesec-v1 {V1_TAG}", file=sys.stderr)
             return 2
         roots["v1"] = worktree.resolve()
     secrets = _secrets(args.dry_run)

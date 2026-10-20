@@ -1116,9 +1116,11 @@ async def test_fact_hints_need_one_to_forty_new_messages_within_the_size_limit(
     await seed_alice(plug, new)
     fake = FakeLlm()
     with fake_secret_scope(CF_KEYS):
+        previewed = ds.preview_contact(entry, now=NOW)[4]  # the same rule, and no call to Cloudflare
         assert cycle(ds, fake).calls == 1
     asked = case in ("edit_and_new", "at_the_limits")
     assert (len(opener.calls), "hints" in contact_payloads(fake)[0]) == (int(asked), asked)
+    assert previewed == (len(new) if asked else 0)
     if case == "edit_and_new":  # only new messages go to Cloudflare
         assert opener.calls[0]["body"]["state"] == f"{local(30)} contact: The deposit is 900"
 
@@ -1134,6 +1136,7 @@ async def test_fact_hints_go_out_once_with_the_first_part(
     opener = use_hints(monkeypatch, ds, clairic_reply())
     fake = FakeLlm()
     with fake_secret_scope(CF_KEYS):
+        assert ds.preview_contact(catalog_entry(plug, ALICE), now=NOW)[4] == 7  # all seven, as below
         assert cycle(ds, fake).calls == 3
     assert len(opener.calls) == 1  # all seven new messages, asked once
     assert opener.calls[0]["body"]["state"].count(" contact: ") == 4

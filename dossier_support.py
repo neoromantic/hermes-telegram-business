@@ -67,11 +67,19 @@ TASK_DEFAULTS: dict[str, Any] = {
     "model": "google/gemini-3.8-flash",
     "timeout": 120,
     "reasoning_effort": "low",
-    "extra_body": {"max_tokens": 8192, "providerOptions": {"gateway": {"zeroDataRetention": True}}},
+    "extra_body": {"max_tokens": _writer.MAX_OUTPUT_TOKENS, "providerOptions": {"gateway": {"zeroDataRetention": True}}},
 }
 FALLBACK_PROVIDER = "ai-gateway"  # explicit route when the host cannot register the task
 FALLBACK_MODEL = "google/gemini-3.8-flash"
 LEGACY_GEMINI_MODEL = "gemini-3.8-flash"  # v1 default model name on the native gemini/google providers
+NATIVE_GEMINI = frozenset({"gemini", "google", "google-gemini", "google-ai-studio"})  # Hermes builds the request
+# Where Hermes 0.22 applies the cap the plugin asks for (agent/auxiliary_client.py). The task's extra_body goes
+# into the request body as it is on an OpenAI-compatible route such as ai-gateway or OpenRouter; Hermes's own
+# clients for other providers may drop it, and native gemini always does. An explicit max_tokens goes on only to
+# the providers _forwards_max_tokens names; native gemini may raise it to the model's limit.
+_TASK_CAPPED = _writer.GATEWAY_ALIASES | {"openrouter"}
+_EXPLICIT_CAPPED = frozenset({"openrouter", "nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron", "minimax",
+                              "minimax-oauth", "minimax-cn"})
 NOT_SET = "(not set)"
 GATE_DEFAULT = "off"  # the message check (Jev) mode when settings.json has no "gate"
 GATE_MODES = ("auto", "off")
@@ -116,14 +124,16 @@ class DossierConfig:
     provider: str  # effective writer provider; "auto" when the task follows the main model
     model: str  # effective writer model; "main model" when provider is "auto"
     reasoning: str = "low"  # effective reasoning_effort; "" = provider default; NOT_SET on an explicit route
-    max_tokens: int | None = 8192  # None when extra_body has no max_tokens
-    zdr: bool = True  # extra_body asks the gateway for zero data retention
+    max_tokens: int | None = 8192  # the output cap Hermes applies; None when there is none or it may not apply
+    max_tokens_asked: int | None = None  # a cap asked for on a route where Hermes may not apply it
+    zdr: bool = True  # extra_body asks the gateway for zero data retention; never on an explicit route
     task_registered: bool = True
     legacy_env: bool = False  # TELESEC_DOSSIER_PROVIDER routes the writer
     gate: str = "off"  # message check: on | off | no_key | not_gateway | bad_base_url
     gate_setting: str = GATE_DEFAULT  # auto | off
     clairic: str = "off"  # fact hints: on | off | no_key
     warnings: tuple[str, ...] = ()
+    warning_codes: tuple[str, ...] = ()  # the log codes of ``warnings``, e.g. "gateway_options" for Settings
 
 
 def _env_int_bounded(name: str, default: int, lo: int, hi: int, warnings: list[str]) -> int:
@@ -185,9 +195,21 @@ class _Effective:
     model: str
     reasoning: str
     max_tokens: int | None
+    max_tokens_asked: int | None
     zdr: bool
     legacy: bool
     notes: tuple[tuple[str, str], ...]  # (log code, warning line)
+
+
+def _explicit_cap(provider: str) -> tuple[int | None, int | None]:
+    """(cap applied, cap asked for that may not apply) on an explicit route: every call asks for one.
+
+    Hermes passes it on only to the providers in _EXPLICIT_CAPPED, and never to ai-gateway.
+    """
+    name = provider.strip().lower()
+    if name in _EXPLICIT_CAPPED:
+        return _writer.EXPLICIT_MAX_TOKENS, None
+    return None, (None if name in _writer.GATEWAY_ALIASES else _writer.EXPLICIT_MAX_TOKENS)
 
 
 def _effective() -> _Effective:
@@ -202,8 +224,8 @@ def _effective() -> _Effective:
         shown_provider, shown_model = without_credentials(env_provider), without_credentials(model)
         text = (f"warning: {PROVIDER_ENV}/{MODEL_ENV} are deprecated; dossiers use {shown_provider} / {shown_model} "
                 "from them. Remove them to use the Telesec dossiers task (choose its model with 'hermes model').")
-        return _Effective(_writer.Route(None, env_provider, model), shown_provider, shown_model, NOT_SET, None, False,
-                          True, (("legacy_env", text),))
+        return _Effective(_writer.Route(None, env_provider, model), shown_provider, shown_model, NOT_SET,
+                          *_explicit_cap(env_provider), False, True, (("legacy_env", text),))
     if env_provider or env_model:
         notes.append(("env_ignored", f"warning: {PROVIDER_ENV}/{MODEL_ENV} are ignored; remove them."))
     if not _TASK_REGISTERED:
@@ -212,14 +234,15 @@ def _effective() -> _Effective:
                 f"plugins.entries.{_history.PLUGIN_NAME}.llm trust config.")
         notes.append(("not_registered", text))
         eff = _Effective(_writer.Route(None, FALLBACK_PROVIDER, FALLBACK_MODEL), FALLBACK_PROVIDER, FALLBACK_MODEL,
-                         NOT_SET, None, False, False, ())
+                         NOT_SET, *_explicit_cap(FALLBACK_PROVIDER), False, False, ())
     else:
         eff = _task_effective({**TASK_DEFAULTS, **user}, notes)
     if os.environ.get(CLEANUP_PROVIDER_ENV, "").strip() and not env_provider:
         text = (f"note: dossiers no longer follow {CLEANUP_PROVIDER_ENV}; they use the Telesec dossiers task "
                 f"({eff.provider} / {eff.model}).")
         notes.append(("cleanup_env", text))
-    return _Effective(eff.route, eff.provider, eff.model, eff.reasoning, eff.max_tokens, eff.zdr, False, tuple(notes))
+    return _Effective(eff.route, eff.provider, eff.model, eff.reasoning, eff.max_tokens, eff.max_tokens_asked,
+                      eff.zdr, False, tuple(notes))
 
 
 def _task_effective(merged: dict[str, Any], notes: list[tuple[str, str]]) -> _Effective:
@@ -237,19 +260,33 @@ def _task_effective(merged: dict[str, Any], notes: list[tuple[str, str]]) -> _Ef
                                     f"Set auxiliary.{TASK_KEY}.reasoning_effort: low.")))
     extra = merged.get("extra_body")
     extra = extra if isinstance(extra, dict) else {}
-    max_tokens = extra.get("max_tokens")
-    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
-        max_tokens = None
+    asked = extra.get("max_tokens")
+    if not isinstance(asked, int) or isinstance(asked, bool) or asked <= 0:
+        asked = None
+    name = provider.lower()
+    if name in NATIVE_GEMINI:
+        asked = None
+        notes.append(("max_tokens", (f"warning: the native {name} provider ignores max_tokens in auxiliary."
+                                     f"{TASK_KEY}.extra_body; long answers are not capped.")))
+    elif asked is None:
         notes.append(("max_tokens", (f"warning: auxiliary.{TASK_KEY}.extra_body replaces the default and has no "
                                      "max_tokens; long answers are not capped.")))
+    max_tokens, max_tokens_asked = (asked, None) if name in _TASK_CAPPED else (None, asked)
     options = extra.get("providerOptions")
     gateway = options.get("gateway") if isinstance(options, dict) else None
     zdr = isinstance(gateway, dict) and gateway.get("zeroDataRetention") is True
     if provider.lower() in _writer.GATEWAY_ALIASES and not zdr:
         notes.append(("zdr", ("warning: zero data retention is off for Telesec dossiers "
                               f"(auxiliary.{TASK_KEY}.extra_body has no providerOptions.gateway.zeroDataRetention).")))
+    if provider.lower() not in _writer.GATEWAY_ALIASES and "providerOptions" in extra:
+        # The task defaults are merged under the owner's block, so a 'hermes model' pick keeps the gateway field.
+        who = "the main model" if provider == "auto" else without_credentials(provider)
+        notes.append(("gateway_options", (
+            f"warning: auxiliary.{TASK_KEY}.extra_body has providerOptions, which only ai-gateway accepts, so {who} "
+            f"may reject every dossier call. Set auxiliary.{TASK_KEY}.extra_body without providerOptions, "
+            "for example {}.")))
     return _Effective(_writer.Route(TASK_KEY, None, None), without_credentials(provider), without_credentials(model),
-                      reasoning, max_tokens, zdr, False, ())
+                      reasoning, max_tokens, max_tokens_asked, zdr, False, ())
 
 
 def route() -> _writer.Route:
@@ -311,6 +348,7 @@ def load_config() -> DossierConfig:
         model=eff.model,
         reasoning=eff.reasoning,
         max_tokens=eff.max_tokens,
+        max_tokens_asked=eff.max_tokens_asked,
         zdr=eff.zdr,
         task_registered=_TASK_REGISTERED,
         legacy_env=eff.legacy,
@@ -318,6 +356,7 @@ def load_config() -> DossierConfig:
         gate_setting=gate_setting,
         clairic=_clairic_status(settings.get("clairic", "off")),
         warnings=tuple(warnings),
+        warning_codes=tuple(dict.fromkeys(codes)),
     )
 
 
@@ -333,7 +372,8 @@ def unreadable_v1_warnings() -> list[str]:
         found = dossier_migrate.unreadable_backups(root)
     except OSError:
         return []
-    return [f"warning: 1 old dossier file could not be read; it is kept as {_doc.V1_BACKUP} in {rel}." for rel in found]
+    return [f"warning: 1 old dossier file could not be read; it is kept as {rel.rpartition('/')[2]} in "
+            f"{rel.rpartition('/')[0]}." for rel in found]
 
 
 def skill_path() -> Path:
@@ -496,32 +536,54 @@ def _target_dir(target: tuple[str, Any]) -> Path:
     return contact_dir(entry.get("business_connection_id"), entry.get("chat_id"))
 
 
-def set_note(target: tuple[str, Any], text: str | None, *, now: datetime | None = None) -> dict[str, Any]:
+class NoteKept(ValueError):
+    """``set_note`` kept a note that holds converted v1 text or is over the limit: replacing it needs ``replace``."""
+
+    def __init__(self, chars: int, converted: bool) -> None:
+        super().__init__("the owner note came from the old dossier" if converted
+                         else "the owner note is over the limit")
+        self.chars = chars
+        self.converted = converted
+
+
+def set_note(target: tuple[str, Any], text: str | None, *, append: bool = False, replace: bool = False,
+             now: datetime | None = None) -> dict[str, Any]:
     """Store the owner note of a contact or the persona; None or "" clears it.
 
-    The next cycle rewrites the document with it (the note's hash differs). Returns
-    ``{"created": bool, "chars": int}``. Raises ValueError("too long") over NOTE_MAX_CHARS.
+    ``text`` is what the owner typed: ValueError("too long") over NOTE_MAX_CHARS. ``append`` adds it to
+    the note as a new paragraph, so a note can grow past the limit; owner text is never cut. Otherwise it
+    replaces the whole note, but a note with converted v1 text (``note_from``) or one over the limit is
+    kept (NoteKept) unless ``replace``. A clear always goes. A replace or a clear ends ``note_from``.
+    The next cycle rewrites the document with the note (its hash differs). Returns
+    ``{"created": bool, "chars": int, "old_chars": int}``.
     """
-    note = "" if text is None else _doc.clean_note(text)
-    if len(note) > _doc.NOTE_MAX_CHARS:
+    typed = "" if text is None else _doc.clean_note(text)
+    if len(typed) > _doc.NOTE_MAX_CHARS:
         raise ValueError("too long")
     now = now or _history._utcnow()
     path = _target_dir(target)
     with _data_lock():
         doc = _doc.read_doc(path)
         created = doc is None
+        old = doc["note"] if doc else ""
+        note = "\n\n".join(part for part in (old, typed) if part) if append else typed
         if doc is None:
             if not note:
-                return {"created": False, "chars": 0}
+                return {"created": False, "chars": 0, "old_chars": 0}
             entry = target[1]
             doc = (_doc.new_persona(now) if target[0] == "persona"
                    else _doc.new_contact(entry["business_connection_id"], entry["chat_id"], now))
+        if (note and not append and old and note != old and not replace
+                and (doc.get("note_from") or len(old) > _doc.NOTE_MAX_CHARS)):
+            raise NoteKept(len(old), bool(doc.get("note_from")))
         if doc["note"] != note or created:
             doc["note"] = note
             doc["note_updated_at"] = _iso(now)
+            if not append:
+                doc.pop("note_from", None)  # the converted text is gone
             _doc.write_doc(path, doc)
     wake_worker()
-    return {"created": created, "chars": len(note)}
+    return {"created": created, "chars": len(note), "old_chars": len(old)}
 
 
 def _empty_state() -> dict[str, Any]:
@@ -681,9 +743,9 @@ def _v1_pending(root: Path) -> bool:
 
 
 def v1_backups() -> int:
-    """v1 files kept as ``v1-dossier.json`` until the first v2 pass (or a forget) removes them."""
+    """v1 files kept as ``v1-dossier[.<n>].json`` until the first v2 pass (or a forget) removes them."""
     root = dossier_root()
-    return len(list(root.glob(f"chats/*/*/{_doc.V1_BACKUP}"))) + int((root / "persona" / _doc.V1_BACKUP).exists())
+    return sum(len(_doc.backups(target)) for target in [*root.glob("chats/*/*"), root / "persona"])
 
 
 def migrate_v1(now: datetime | None = None) -> dict[str, int]:
@@ -876,7 +938,7 @@ class Plan:
     floor: datetime
     older_history_not_sent: bool
     note_changed: bool
-    current: str | None  # the document sent as current_dossier (the migrated seed on a first pass)
+    current: str | None  # the document sent as current_dossier (on a first pass, the one converted from v1)
     items: list[Item] = field(default_factory=list)  # new, edited and deleted, in time order
 
 
@@ -923,7 +985,9 @@ def plan_contact(doc: dict[str, Any] | None, view: ChatView, *, now: datetime, c
         live = [m for m in msgs if not m.deleted]
         cand, ws_at, older = _first_pass_candidates(live, now=now, cfg=cfg, entries=[view.entry])
         qualified = any(m.label == "contact" for m in cand) and any(m.label == "owner" for m in cand)
-        plan = Plan(True, qualified, cand, [], [], [], [], ws_at, ws_at, older, False, (doc or {}).get("seed") or None)
+        # Before any pass, only the migration writes a document: the v1 facts, rewritten by this pass.
+        current = (doc or {}).get("document") or None
+        plan = Plan(True, qualified, cand, [], [], [], [], ws_at, ws_at, older, False, current)
         plan.items = [Item(m.key, "new", m.order_at, m) for m in cand] if qualified else []
         return plan
     ws_at = _parse(doc["window_start"]) or now
@@ -1031,8 +1095,9 @@ def pending(entry: dict[str, Any], *, now: datetime | None = None) -> Pending:
     return _pending_of(_plan_for(entry, now, load_config())[2])
 
 
-def preview_contact(entry: dict[str, Any], *, now: datetime | None = None) -> tuple[str, str, Pending, bool]:
-    """(system prompt, user message of the first batch, pending, gate would apply); no model call, no writes.
+def preview_contact(entry: dict[str, Any], *, now: datetime | None = None) -> tuple[str, str, Pending, bool, int]:
+    """(system prompt, user message of the first batch, pending, gate would apply, messages fact extraction would
+    send); no model call, no writes. The fact hints are not in the user message: they exist only after that call.
 
     The user message is "" when nothing is due.
     """
@@ -1041,13 +1106,13 @@ def preview_contact(entry: dict[str, Any], *, now: datetime | None = None) -> tu
     doc, view, plan = _plan_for(entry, now, cfg)
     info = _pending_of(plan)
     if (plan.first_pass and not plan.qualified) or info.nothing():
-        return _writer.WRITER_SYSTEM, "", info, False
+        return _writer.WRITER_SYSTEM, "", info, False, 0
     today, tz = today_text(now)
     parts = batches(plan.items) or [[]]
     seen = set() if plan.first_pass or doc is None else set(doc["seen"])
     _mode, user = _batch_input(plan, view, parts[0], index=1, total=len(parts), current=plan.current,
                                note=doc["note"] if doc else "", seen=seen, today=today, tz=tz)
-    return _writer.WRITER_SYSTEM, user, info, _gate_applies(cfg, doc, plan, now)
+    return _writer.WRITER_SYSTEM, user, info, _gate_applies(cfg, doc, plan, now), _hint_messages(cfg, plan)
 
 
 def _gate_applies(cfg: DossierConfig, doc: dict[str, Any] | None, plan: Plan, now: datetime) -> bool:
@@ -1235,13 +1300,22 @@ def _call_writer(cx: _Cycle, *, kind: str, payload: str, mode: str, current: str
                  paused: Callable[[], bool]) -> _writer.CallResult:
     """One writer run, counted even when its answer is refused.
 
-    Raises OutputError, Stopped (something was switched off right before a call) or what the host raises.
+    Raises OutputError, Stopped (something was switched off right before a call, or the cycle stopped while a
+    shorten call waited for the rate limit) or what the host raises.
     """
+    first = True
+
+    def allowed() -> bool:
+        # The caller's _call_allowed took the first call's rate-limit slot; a shorten call takes its own.
+        nonlocal first
+        slot = first or cx.limiter.acquire()
+        first = False
+        return slot and _refused(cx, paused) is None
+
     try:
         # A timeout of None lets Hermes read auxiliary.telesec_dossier.timeout on the task route.
         result = _writer.write(cx.llm, kind=kind, payload=payload, mode=mode, current=current, route=cx.route,
-                               timeout=None if cx.route.task else MODEL_TIMEOUT_SECONDS,
-                               allowed=lambda: _refused(cx, paused) is None)
+                               timeout=None if cx.route.task else MODEL_TIMEOUT_SECONDS, allowed=allowed)
     except Exception as exc:
         spent = getattr(exc, "spent", None)
         if spent is not None:
@@ -1286,7 +1360,12 @@ def apply_result(doc: dict[str, Any], result: _writer.CallResult, batch: list[It
     d = {**doc, "seen": dict(doc["seen"])}
     changed = False
     if result.output.kind in ("document", "empty"):
-        changed = _set_text(d, result.output.text if result.output.kind == "document" else "")
+        text = result.output.text if result.output.kind == "document" else ""
+        if _doc.converted(d) and text == d["document"]:
+            d["revision"] += 1  # the first pass kept the converted v1 text: it is now the first v2 version
+            changed = True
+        else:
+            changed = _set_text(d, text)
         if changed:
             d["updated_at"] = _iso(now)
     d["checked_at"] = _iso(now)
@@ -1345,11 +1424,18 @@ def _check_gate(cx: _Cycle, entry: dict[str, Any], key: str, doc: dict[str, Any]
     return "deferred"
 
 
+def _hint_messages(cfg: DossierConfig, plan: Plan) -> int:
+    """How many new messages fact extraction sends with the first batch: a small burst, else 0 (it does not run)."""
+    if cfg.clairic != "on" or not plan.new or len(plan.new) > _writer.GATE_MAX_MESSAGES:
+        return 0
+    if sum(len(m.text) for m in plan.new) > _writer.GATE_MAX_CHARS:
+        return 0
+    return len(plan.new)
+
+
 def _hints(cx: _Cycle, plan: Plan, paused: Callable[[], bool]) -> list[dict[str, str]] | None:
     """Clairic fact hints for a small burst of new messages; None when off, not worth it, or failed."""
-    if cx.cfg.clairic != "on" or not plan.new or len(plan.new) > _writer.GATE_MAX_MESSAGES:
-        return None
-    if sum(len(m.text) for m in plan.new) > _writer.GATE_MAX_CHARS:
+    if not _hint_messages(cx.cfg, plan):
         return None
     if _refused(cx, paused, "clairic"):
         return None  # turned off during the cycle, or the writer call is not going out either
@@ -1502,7 +1588,7 @@ def _run_contact(cx: _Cycle, entry: dict[str, Any], path: Path, doc: dict[str, A
             migrated = updated.pop("migrated_from", None) == "v1"
             _doc.write_doc(path, updated)
             if migrated:
-                (path / _doc.V1_BACKUP).unlink(missing_ok=True)
+                dossier_migrate.drop_migrated_backups("contact", path)
         changed = changed or batch_changed
         expected, current = updated["id"], updated["document"]
         seen = set(updated["seen"])
@@ -1634,7 +1720,7 @@ def process_persona(cx: _Cycle, entries: list[dict[str, Any]], *, forced: bool =
         migrated = d.pop("migrated_from", None) == "v1"
         _doc.write_doc(path, d)
         if migrated:
-            (path / _doc.V1_BACKUP).unlink(missing_ok=True)
+            dossier_migrate.drop_migrated_backups("persona", path)
     _clear_failure(cx, "persona")
     return "empty" if empty else "refreshed"
 
@@ -1680,18 +1766,19 @@ def _reset_persona(entry: dict[str, Any]) -> bool:
     The caller holds the data lock.
     """
     path = persona_dir()
-    backup = path / _doc.V1_BACKUP
+    backups = _doc.backups(path)
     ids = (str(entry.get("business_connection_id")), str(entry.get("chat_id")))
     try:
         doc = _doc.read_doc(path)
     except (OSError, ValueError):
         (path / _doc.DOC_FILE).unlink(missing_ok=True)  # unreadable, so it may hold this chat's text
-        backup.unlink(missing_ok=True)
+        for backup in backups:
+            backup.unlink(missing_ok=True)
         return True
     cited = doc is not None and any(
         (str(c.get("business_connection_id")), str(c.get("chat_id"))) == ids
         for c in doc["chats"] + doc.get("previous_chats", []))
-    if not cited and not backup.exists():
+    if not cited and not backups:
         return False
     if doc is not None:
         doc.update(id=secrets.token_hex(6), document="", previous=None, chats=[], newest_at=None, messages=0,
@@ -1699,7 +1786,8 @@ def _reset_persona(entry: dict[str, Any]) -> bool:
         for name in ("seed", "migrated_from", "previous_chats"):
             doc.pop(name, None)
         _doc.write_doc(path, doc)
-    backup.unlink(missing_ok=True)
+    for backup in backups:
+        backup.unlink(missing_ok=True)
     return True
 
 

@@ -83,6 +83,8 @@ STRINGS = {
         "settings.retention.done": "History is kept {value}.",
         "settings.model.dossiers": "Dossier model: {name}",
         "settings.model.main": "your main model",
+        "settings.model.gateway_options": ("Warning: its extra_body has providerOptions for ai-gateway only, so this "
+                                           "model may reject dossier calls (see hermes telesec dossier status)."),
         "settings.model.cleanup": "Voice cleanup: {name}",
     },
     "ru": {
@@ -125,6 +127,9 @@ STRINGS = {
         "settings.retention.done": "История хранится {value}.",
         "settings.model.dossiers": "Модель досье: {name}",
         "settings.model.main": "ваша основная модель",
+        "settings.model.gateway_options": ("Внимание: в её extra_body есть providerOptions только для ai-gateway, "
+                                           "поэтому эта модель может отклонять вызовы досье "
+                                           "(см. hermes telesec dossier status)."),
         "settings.model.cleanup": "Очистка расшифровок: {name}",
     },
 }
@@ -168,8 +173,12 @@ def _model_name(provider: str, model: str) -> str:
 def _model_lines(ctx: _owner_panel.PanelContext) -> list[str]:
     cfg = _ds.load_config()
     # "auto" is the dossiers task following the main model; its "main model" is a placeholder, not a name.
-    name = _tr("settings.model.main", ctx) if cfg.provider == "auto" else _model_name(cfg.provider, cfg.model)
+    # The deprecated TELESEC_DOSSIER_PROVIDER=auto route names its model, as in the enable confirm.
+    main = cfg.provider == "auto" and not cfg.legacy_env
+    name = _tr("settings.model.main", ctx) if main else _model_name(cfg.provider, cfg.model)
     lines = [_tr("settings.model.dossiers", ctx, name=name)]
+    if "gateway_options" in cfg.warning_codes:
+        lines.append(_tr("settings.model.gateway_options", ctx))
     if _voice_cleanup is not None:
         cleanup = _voice_cleanup()
         name = _model_name(*cleanup) if cleanup else _tr("settings.state.off", ctx)

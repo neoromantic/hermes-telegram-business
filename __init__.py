@@ -433,6 +433,11 @@ def _register_telegram_handlers(app: Any, adapter: Any) -> None:
             _note_business_update_chat(update)
         except Exception as exc:  # noqa: BLE001 - bookkeeping must not break dispatch
             logger.debug("%s: business chat note failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+        # Any new message from the contact, text or not, opens Telegram's 24-hour window for `/dossier`.
+        try:
+            _dossier_panel.note_inbound_update(update)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping must not break dispatch
+            logger.debug("%s: inbound message note failed (%s)", _PLUGIN_NAME, type(exc).__name__)
         # The owner's `/dossier` and `/stats` are claimed before history capture, the
         # media filter, and the DM allowlist: Business ownership is the auth.
         try:

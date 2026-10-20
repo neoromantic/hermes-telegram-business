@@ -11,8 +11,10 @@ import asyncio
 import importlib
 import json
 import logging
+import shlex
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from datetime import timedelta
 from types import MappingProxyType, ModuleType, SimpleNamespace
@@ -29,11 +31,14 @@ from dossier_helpers import (
     FakeCtx,
     FakeLlm,
     catalog_entry,
+    cli,
     cycle,
     doc,
     dossier_dir,
+    maintain,
     make_deleted_update,
     persona_dir,
+    raw,
     read_dossier,
     read_persona,
     read_settings,
@@ -44,6 +49,7 @@ from dossier_helpers import (
 )
 from telegram import Update
 from telegram.ext import Application, ApplicationHandlerStop, ExtBot, TypeHandler
+from test_dossier_migrate import fact, put, v1_contact
 from test_history import load_records
 from test_telegram_integration import TelegramRequest
 
@@ -267,6 +273,95 @@ async def test_contact_without_a_document_says_why(plug, ds, panel, rows, unqual
     assert ds.load_state()["failures"] == {}
 
 
+V1_FACT = "Anna is a client at Northwind Demo."
+CONVERTED = f"## Relationship\n- {V1_FACT}"
+CONVERTED_STATUS = {
+    "paused": "Off for this chat.",
+    "inactive": ("Converted from the old dossier. It is rewritten once the chat has saved messages from both you "
+                 "and the contact."),
+    "pruned": ("Converted from the old dossier. It is rewritten once the chat has saved messages from both you "
+               "and the contact."),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", list(CONVERTED_STATUS))
+async def test_a_migrated_dossier_is_readable_where_no_refresh_can_run(plug, ds, panel, case):
+    """Paused, inactive (nothing in the backfill window) and pruned chats show the converted v1 document.
+
+    The first refresh once the chat qualifies still runs as a first pass and sends it as the current dossier.
+    """
+    if case == "paused":
+        await seed(plug, CHAT, "anna_k", ROWS, first_name="Anna")
+        plug._chat_settings.default_store().set_flag(OWNER_ID, CHAT, "dossier", False, via="cli")
+    else:
+        old = timedelta(days=200 if case == "inactive" else 70)  # older than the 90-day backfill window
+        raw(plug, CHAT, [(1, "in", "Old order: two crates", old), (2, "out", "Old reply", old - timedelta(minutes=1))],
+            username="anna_k", first_name="Anna")
+    if case == "pruned":
+        test_history.set_retention(plug, 30)
+        assert maintain(plug, 0).pruned_files >= 1
+    put(dossier_dir(ds, CHAT), v1_contact(fact("f1", V1_FACT), fact("f2", "Never call on Sundays.", kind="owner"),
+                                          conn=BUSINESS_ID, chat=CHAT))
+    fake = FakeLlm(doc(DOCUMENT))
+    cycle(ds, fake)  # migrates, then writes nothing: no refresh can run here
+    assert fake.calls == []
+    ds.bind_llm(FakeLlm())
+
+    view = await act(panel)
+
+    assert V1_FACT in view.text and "Never call on Sundays." in view.text
+    assert view.text.endswith(CONVERTED_STATUS[case])
+    assert "No dossier yet" not in view.text and "Waiting for the first build" not in view.text
+    assert args_of(view) == ["o.p"]  # no Refresh: it could not write anything here
+    for command, *ids in (("show", "--chat", str(CHAT)), ("export", "--connection", BUSINESS_ID, "--chat", str(CHAT))):
+        code, out, _err = cli(plug, "dossier", command, *ids)  # 'show --chat' is the line a clipped screen names
+        assert code == 0 and f"- {V1_FACT}" in out.splitlines(), (command, out)
+        assert "Waiting for the first build" not in out
+        converted = "Converted from the old dossier; the first refresh rewrites it." in out.splitlines()
+        assert converted is (command == "show"), (command, out)  # export prints the document only
+
+    if case == "paused":
+        plug._chat_settings.default_store().set_flag(OWNER_ID, CHAT, "dossier", True, via="cli")
+    else:
+        await seed(plug, CHAT, "anna_k", ROWS, first_name="Anna")
+    report = cycle(ds, fake, target=("contact", catalog_entry(plug, CHAT)))
+
+    assert report.refreshed == 1
+    (call,) = fake.by_purpose("telesec_dossier")
+    assert (call["user"]["mode"], call["user"]["current_dossier"]) == ("first", CONVERTED)
+    stored = read_dossier(ds, CHAT)
+    assert (stored["document"], stored["revision"], stored["previous"]) == (DOCUMENT, 1, CONVERTED)
+
+
+@pytest.mark.asyncio
+async def test_a_clipped_screen_names_show_for_this_connection(plug, ds, panel):
+    """The contact also writes to another owner, under the same chat id: the named 'show' prints this chat's text."""
+    other = "bc-other-demo"
+    old = timedelta(days=70)
+    raw(plug, CHAT, [(1, "in", "Old order: two crates", old), (2, "out", "Old reply", old - timedelta(minutes=1))],
+        username="anna_k", first_name="Anna")
+    test_history.set_retention(plug, 30)
+    assert maintain(plug, 0).pruned_files >= 1  # this owner's chat is gone from the catalog
+    await seed(plug, CHAT, "anna_k", ROWS, first_name="Anna", business_id=other)
+    facts = [fact(f"f{i}", f"Anna asked about crate size {i} for the Northwind Demo order.") for i in range(80)]
+    put(dossier_dir(ds, CHAT), v1_contact(*facts, conn=BUSINESS_ID, chat=CHAT))
+    put(dossier_dir(ds, CHAT, business_id=other), v1_contact(fact("b1", "Other owner's fact."), conn=other, chat=CHAT))
+    cycle(ds, FakeLlm(doc(DOCUMENT)))
+    ds.bind_llm(FakeLlm())
+
+    view = await act(panel)
+
+    (line,) = [line for line in view.text.splitlines() if "hermes telesec dossier show" in line]
+    args = shlex.split(line.partition("hermes telesec dossier ")[2])
+    assert args == ["show", "--connection", BUSINESS_ID, "--chat", str(CHAT)]
+    code, out, _err = cli(plug, "dossier", *args)
+    assert code == 0 and "- Anna asked about crate size 79 for the Northwind Demo order." in out.splitlines()
+    assert "Other owner" not in out and COMMITMENT not in out
+    _code, out, _err = cli(plug, "dossier", "show", "--chat", str(CHAT))  # the other owner's chat
+    assert "crate size" not in out
+
+
 @pytest.mark.asyncio
 async def test_contact_snapshot_failed_attempt(plug, ds, panel):
     await seed(plug, CHAT, "anna_k", ROWS, first_name="Anna")
@@ -290,7 +385,7 @@ async def test_contact_snapshot_corrupt(plug, ds, panel):
     view = await act(panel)
 
     assert (snap.corrupt, snap.doc) == (True, None)
-    assert "can't be read" in view.text and f"hermes telesec dossier forget --chat {CHAT}" in view.text
+    assert "can't be read" in view.text and f"hermes telesec dossier forget --connection {BUSINESS_ID} --chat {CHAT}" in view.text
     assert args_of(view) == ["o.p"]
 
 
@@ -938,10 +1033,21 @@ async def test_edited_command_and_echo_are_claimed_without_executing(plug, ds, p
     assert plug._history_support._is_control_message(BUSINESS_ID, CHAT, 900) is (kind == "echo")
 
 
+def up_two_days(plug: ModuleType) -> None:
+    """This gateway process has run longer than the window, so it would have noted any newer contact message."""
+    plug._dossier_panel._post._STARTED_AT = time.monotonic() - 2 * 86400  # a fresh plugin copy per test
+
+
+async def old_chat(plug: ModuleType) -> None:
+    """The contact's last text is 30 hours old, the owner's 29 hours."""
+    await seed(plug, CHAT, "anna_k", [(10, "in", ROWS[0][2], timedelta(hours=30)),
+                                      (11, "out", ROWS[1][2], timedelta(hours=29))], first_name="Anna")
+
+
 async def _refusal_case(plug: ModuleType, ds: ModuleType, reason: str) -> None:
-    if reason == "window":  # the contact wrote 30 hours ago
-        await seed(plug, CHAT, "anna_k", [(10, "in", ROWS[0][2], timedelta(hours=30)),
-                                          (11, "out", ROWS[1][2], timedelta(hours=29))], first_name="Anna")
+    if reason == "window":  # the contact wrote 30 hours ago, and the gateway has run since then
+        await old_chat(plug)
+        up_two_days(plug)
     elif reason == "empty":  # only the contact wrote
         await seed(plug, CHAT, "anna_k", [(10, "in", ROWS[0][2], 30)], first_name="Anna")
     else:
@@ -1159,6 +1265,54 @@ async def test_rejected_post_and_failed_delete_are_told_and_logged_by_type(plug,
         assert secret not in caplog.text
 
 
+class Forbidden(Exception):
+    pass
+
+
+class TimedOut(Exception):
+    pass
+
+
+WINDOW = ("The contact hasn't written in the last 24 hours, and Telegram lets a bot post only within 24 hours of "
+          "their last message.")
+MAYBE_WINDOW = "One possible cause: a bot can post in a Business chat only if the contact wrote there in the last 24 hours."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("noted", "error", "expected", "reason"), [
+    # Only Telegram's own inactive-chat error is told as the window, even when the window looked open.
+    (False, BadRequest("Bad Request: BUSINESS_PEER_USAGE_MISSING"), WINDOW, "window"),
+    (False, BadRequest("Bad Request: business peer usage missing"), WINDOW, "window"),
+    (True, BadRequest("Bad Request: BUSINESS_PEER_USAGE_MISSING"), WINDOW, "window"),
+    # Any other refusal while the window is unknown names the 24 hours as a possible cause only.
+    (False, BadRequest("Bad Request: can't parse entities"),
+     f"Telegram did not accept the summary (BadRequest). {MAYBE_WINDOW}", "send_refused"),
+    (False, Forbidden("Forbidden: bot can't send messages to the user"),
+     f"Telegram did not accept the summary (Forbidden). {MAYBE_WINDOW}", "send_refused"),
+    (False, TimedOut("Timed out"), "Telegram did not accept the summary (TimedOut).", "send_failed"),  # no refusal
+    (True, BadRequest("Bad Request: can't parse entities"), "Telegram did not accept the summary (BadRequest).",
+     "send_failed"),
+])
+async def test_a_fresh_gateway_tries_the_post_and_tells_only_telegram_window_error_as_the_window(
+        plug, ds, panel, caplog, noted, error, expected, reason):
+    await old_chat(plug)  # the gateway started less than 24 hours ago: a voice note before it may count
+    if noted:  # e.g. a sticker this process saw: the window is known open, so a refusal is something else
+        panel._post.note_inbound(BUSINESS_ID, CHAT, NOW - timedelta(minutes=30))
+    llm = FakeLlm(doc(SUMMARY))
+    ds.bind_llm(llm)
+    bot = PanelBot()
+    bot.api_error = error
+
+    with caplog.at_level(logging.INFO):
+        assert await run_command(panel, command_update(), bot) is True
+
+    assert len(posts(bot)) == 1 and len(llm.calls) == 1  # it tried
+    (sent,) = bot.sent
+    assert sent["chat_id"] == OWNER_ID and sent["text"] == f"{HEAD}\n{expected}"
+    assert f"reason={reason} error={type(error).__name__}" in caplog.text
+    assert str(error) not in caplog.text  # compared in memory only
+
+
 @pytest.mark.asyncio
 async def test_failed_private_reason_is_logged_by_type(dossier_history, panel, caplog):
     bot = PanelBot()
@@ -1285,6 +1439,87 @@ async def test_handler_failure_never_breaks_dispatch(plug, ds, panel, monkeypatc
 
     assert "dossier command handling failed (RuntimeError)" in caplog.text and NOTE not in caplog.text
     assert [r["text"] for r in load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)] == ["hello"]
+
+
+def chat_update(kind: str, *, message_id: int, at: Any, sender: int = CONTACT_ID, edited: bool = False) -> Any:
+    """A Business message, from the contact by default: ``text``, or media without text (a photo, a sticker, a file)."""
+    text = "Thanks!" if kind == "text" else None
+    update = command_update(text, sender=sender, edited=edited, message_id=message_id)  # type: ignore[arg-type]
+    message = update.effective_message
+    message.date = at
+    if kind == "photo":
+        message.photo, message.caption = (SimpleNamespace(file_id="photo-1"),), "please check by Friday"
+    elif kind != "text":
+        setattr(message, kind, SimpleNamespace(file_id=f"{kind}-1"))
+    return update
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["photo", "sticker", "document"])
+async def test_a_contact_who_lately_sent_only_media_still_gets_the_summary(plug, ds, panel, monkeypatch, kind):
+    monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")  # media reaches the agent; the handler notes it first
+    await _refusal_case(plug, ds, "window")  # the contact's last text is 30 hours old, the gateway is up 2 days
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    bot = PanelBot()
+    handler = _business_handler(plug)
+    context = SimpleNamespace(bot=bot)
+
+    # An edit is not a new message, even one Telegram delivers now (its date stays the original one).
+    await handler.callback(chat_update("text", message_id=10, at=NOW - timedelta(hours=30), edited=True), context)
+    await handler.callback(chat_update("photo", message_id=31, at=NOW - timedelta(minutes=40), sender=OWNER_ID),
+                           context)  # nor is the owner's own message
+    assert panel._post._LAST_INBOUND == {}
+    assert await run_command(panel, command_update(message_id=500), bot)
+    assert posts(bot) == [] and [sent["text"].split("\n")[1] for sent in bot.sent] == [WINDOW]
+
+    await handler.callback(chat_update(kind, message_id=30, at=NOW - timedelta(minutes=30)), context)
+    assert await run_command(panel, command_update(message_id=501), bot)
+
+    assert len(posts(bot)) == 1 and len(bot.sent) == 1
+    assert not any(r.get("message_id") == 30 for r in load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["voice", "video_note"])
+async def test_a_contact_voice_or_video_note_is_noted_before_transcription_claims_it(plug, ds, panel, kind):
+    """Transcription claims the update and history keeps no voice message, yet it opens the 24-hour window."""
+    await _refusal_case(plug, ds, "window")  # the contact's last text is 30 hours old, the gateway is up 2 days
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    bot = PanelBot()
+    at = NOW - timedelta(minutes=30)
+
+    with pytest.raises(ApplicationHandlerStop):  # claimed for transcription, so it never reaches core
+        await _business_handler(plug).callback(chat_update(kind, message_id=30, at=at), SimpleNamespace(bot=bot))
+
+    assert panel._post._LAST_INBOUND == {(BUSINESS_ID, str(CHAT)): at}
+    assert await run_command(panel, command_update(message_id=501), bot)
+    assert len(posts(bot)) == 1 and bot.sent == []
+
+
+def test_without_a_cached_owner_the_chat_tells_the_contact_and_telegram_is_not_asked(dossier_history, panel):
+    at = NOW - timedelta(minutes=5)
+    assert panel._history.cached_business_owner(BUSINESS_ID) is None
+
+    panel.note_inbound_update(chat_update("sticker", message_id=33, at=at, sender=OWNER_ID))
+    assert panel._post._LAST_INBOUND == {}
+    panel.note_inbound_update(chat_update("sticker", message_id=34, at=at, sender=CHAT))  # a private chat's id
+    assert panel._post._LAST_INBOUND == {(BUSINESS_ID, str(CHAT)): at}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_inbound_note_never_breaks_dispatch(plug, ds, panel, monkeypatch, caplog):
+    monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")
+
+    def broken(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError(f"boom {NOTE}")
+
+    monkeypatch.setattr(plug._dossier_panel, "note_inbound_update", broken)
+    update = chat_update("text", message_id=32, at=NOW)
+    with caplog.at_level(logging.DEBUG):
+        await _business_handler(plug).callback(update, SimpleNamespace(bot=PanelBot()))
+
+    assert "inbound message note failed (RuntimeError)" in caplog.text and NOTE not in caplog.text
+    assert [r["text"] for r in load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)] == ["Thanks!"]
 
 
 @pytest.mark.asyncio
