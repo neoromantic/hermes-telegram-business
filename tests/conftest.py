@@ -8,6 +8,7 @@ fixtures they did before.
 from __future__ import annotations
 
 import os
+import socket
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -23,6 +24,13 @@ CLEANUP_ENV = (
     "TELESEC_CLEANUP_PROVIDER",
     "TELESEC_CLEANUP_MODEL",
     "TELESEC_CLEANUP_TIMEOUT",
+)
+# Read by the message check and the fact hints; a developer's real keys must never reach a test.
+MODEL_KEY_ENV = (
+    "AI_GATEWAY_API_KEY",
+    "AI_GATEWAY_BASE_URL",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_TOKEN",
 )
 
 
@@ -49,7 +57,7 @@ def dossier_plugin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[
 
 @pytest.fixture
 def dossier_env(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
-    """Clear every dossier env var and the cleanup provider/model/timeout vars.
+    """Clear every dossier env var, the cleanup provider/model/timeout vars and the model keys.
 
     Returns ``set_env(**values)``: ``set_env(BACKFILL_MESSAGES=10)`` sets
     ``TELESEC_DOSSIER_<NAME>``; a value of None unsets it. The on/off switch is stored:
@@ -58,7 +66,7 @@ def dossier_env(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
     for name in list(os.environ):
         if name.startswith(DOSSIER_ENV_PREFIX):
             monkeypatch.delenv(name, raising=False)
-    for name in CLEANUP_ENV:
+    for name in CLEANUP_ENV + MODEL_KEY_ENV:
         monkeypatch.delenv(name, raising=False)
 
     def set_env(**values: Any) -> None:
@@ -93,15 +101,35 @@ def dossiers(
 ) -> Iterator[ModuleType]:
     """History on, dossiers switched on (stored switch, via the CLI); yields this plugin's ``dossier_support``.
 
-    ``INITIAL_DELAY_SECONDS`` is 3600, so a started worker never runs a cycle unless the
-    test lowers it. Teardown stops workers, checks that no worker thread survived, and
-    unbinds the LLM facade.
+    The dossier model task counts as registered, as on a current Hermes. ``INITIAL_DELAY_SECONDS``
+    is 3600, so a started worker never runs a cycle unless the test lowers it. Teardown stops
+    workers, checks that no worker thread survived, and unbinds the LLM facade.
     """
     ds = dossier_helpers.dossier_module(dossier_history)
     ds.set_enabled(True, via="cli")
+    set_task_registered = getattr(ds, "set_task_registered", None)
+    if set_task_registered is not None:
+        set_task_registered(True)
     monkeypatch.setattr(ds, "INITIAL_DELAY_SECONDS", 3600)
     yield ds
     ds.stop_workers(timeout=2)
     leaked = dossier_helpers.live_worker_threads()
     ds.bind_llm(None)
     assert not leaked, f"dossier worker threads still alive after stop_workers(timeout=2): {leaked}"
+
+
+@pytest.fixture
+def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test on any attempt to resolve a host or open a network connection.
+
+    ``pytest.fail`` raises an outcome exception that ``except Exception`` cannot swallow, so code
+    that turns network errors into a result still fails the test.
+    """
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("network access in an offline test")
+
+    monkeypatch.setattr(socket, "getaddrinfo", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)

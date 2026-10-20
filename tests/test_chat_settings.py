@@ -8,7 +8,7 @@ import logging
 import shutil
 import stat
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -19,7 +19,19 @@ import test_history
 import test_owner_panel as top
 import test_plugin
 import test_transcription_modes as ttm
-from dossier_helpers import BUSINESS_ID, NOW, OWNER_ID, FakeLlm, cli, cycle, quote_first, raw, read_dossier, seed
+from dossier_helpers import (
+    BUSINESS_ID,
+    NOW,
+    OWNER_ID,
+    FakeLlm,
+    cli,
+    cycle,
+    quote_first,
+    raw,
+    read_dossier,
+    read_persona,
+    seed,
+)
 
 isolate_plugin_environment = test_plugin.isolate_plugin_environment
 isolate_modes_environment = ttm.isolate_modes_environment
@@ -471,6 +483,11 @@ def test_flag_callbacks_parse_strictly_and_fit_64_bytes(plugin):
 # --- Dossiers --------------------------------------------------------------------------------------
 
 
+def owner_rows(first_id: int, start: int, tag: str = "OPEN-TAG") -> list[tuple[int, str, str, int]]:
+    """Enough owner messages in one chat for a first persona (it needs ten)."""
+    return [(first_id + i, "out", f"{tag} reply {i}", start - i) for i in range(10)]
+
+
 @pytest.mark.asyncio
 async def test_worker_skips_a_paused_chat_and_keeps_its_dossier(dossier_plugin, dossiers):
     plug, ds = dossier_plugin, dossiers
@@ -479,12 +496,12 @@ async def test_worker_skips_a_paused_chat_and_keeps_its_dossier(dossier_plugin, 
     assert cycle(ds, FakeLlm(quote_first, quote_first, quote_first)).refreshed == 2
     plug._chat_settings.default_store().set_flag(OWNER_ID, 5504, "dossier", False, via="cli")
     await seed(plug, 5504, "paused_contact", [(3, "in", "PAUSED-TAG later", 30), (4, "out", "PAUSED-TAG ok", 25)])
-    await seed(plug, 5505, "open_contact", [(3, "in", "OPEN-TAG later", 30), (4, "out", "OPEN-TAG ok", 25)])
+    await seed(plug, 5505, "open_contact", [(3, "in", "OPEN-TAG later", 30), *owner_rows(4, 25)])
     paused_before = read_dossier(ds, 5504)
     assert paused_before is not None
     fake = FakeLlm(quote_first, quote_first, quote_first)
 
-    report = cycle(ds, fake, now=NOW + timedelta(hours=25))  # the persona is due again
+    report = cycle(ds, fake)  # the open chat now has enough owner messages for a first persona
 
     assert report.persona == "refreshed" and len(fake.calls) == 2
     sent = json.dumps([payload.get("messages") for payload in fake.payloads()])
@@ -496,7 +513,7 @@ async def test_worker_skips_a_paused_chat_and_keeps_its_dossier(dossier_plugin, 
 async def test_a_chat_paused_during_the_cycle_stays_out_of_the_persona(dossier_plugin, dossiers):
     plug, ds = dossier_plugin, dossiers
     await seed(plug, 5504, "paused_contact", [(1, "in", "PAUSED-TAG question", 90), (2, "out", "PAUSED-TAG reply", 85)])
-    await seed(plug, 5505, "open_contact", [(1, "in", "OPEN-TAG question", 80), (2, "out", "OPEN-TAG reply", 75)])
+    await seed(plug, 5505, "open_contact", [(1, "in", "OPEN-TAG question", 80), *owner_rows(2, 75)])
     fake = FakeLlm(quote_first, quote_first)
 
     def pause_during_the_open_call(payload):
@@ -509,7 +526,7 @@ async def test_a_chat_paused_during_the_cycle_stays_out_of_the_persona(dossier_p
 
     assert report.persona == "refreshed" and report.refreshed == 1
     assert "PAUSED-TAG" not in json.dumps(fake.payloads())
-    assert "PAUSED-TAG" not in ds.persona_path().joinpath("dossier.json").read_text(encoding="utf-8")
+    assert "OPEN-TAG" in read_persona(ds)["document"] and "PAUSED-TAG" not in json.dumps(read_persona(ds))
     assert read_dossier(ds, 5504) is None
 
 
@@ -531,7 +548,7 @@ async def test_no_dossier_during_a_contact_call_writes_nothing(dossier_plugin, d
 async def test_dossier_and_persona_skip_a_chat_the_old_scope_keeps_out(dossier_plugin, dossiers, monkeypatch):
     plug, ds = dossier_plugin, dossiers
     await seed(plug, 5504, "kept_out", [(1, "in", "SCOPE-TAG question", 90), (2, "out", "SCOPE-TAG reply", 85)])
-    await seed(plug, 5505, "open_contact", [(1, "in", "OPEN-TAG question", 80), (2, "out", "OPEN-TAG reply", 75)])
+    await seed(plug, 5505, "open_contact", [(1, "in", "OPEN-TAG question", 80), *owner_rows(2, 75)])
     store_scope(plug._chat_settings, monkeypatch, CHATS="5505")
     fake = FakeLlm(quote_first, quote_first)
 
@@ -576,6 +593,7 @@ async def test_run_and_preview_refuse_a_paused_contact(dossier_plugin, dossiers)
 @pytest.mark.asyncio
 async def test_owner_command_in_a_paused_chat_tells_only_the_owner(dossier_plugin, dossiers, panel):
     await tdp.build(dossier_plugin, dossiers)
+    dossiers.bind_llm(FakeLlm())  # a missing model is told first
     dossier_plugin._chat_settings.default_store().set_flag(OWNER_ID, tdp.CHAT, "dossier", False, via="cli")
     bot = tdp.PanelBot()
 

@@ -10,6 +10,7 @@ every outbound action.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import inspect
 import json
@@ -3245,7 +3246,9 @@ next voice note gets; `source` is stored, default, or disabled. Change a mode on
 or `--dossier on|off`.
 - Correspondence stats: `hermes telesec stats --chat <chat_id> --format json` (or \
 `--contact @username`; without either it lists contacts).
-- History and dossiers, when enabled: skills `{_PLUGIN_NAME}:history` and `{_PLUGIN_NAME}:dossiers`.
+- History and dossiers, when enabled: skills `{_PLUGIN_NAME}:history` and `{_PLUGIN_NAME}:dossiers` \
+(read and note). Never quote a private dossier, owner note or persona into a Business chat; to share, \
+the owner sends `/dossier`, which posts a fresh summary of the chat.
 - Owner panel: a bot message that starts with "Owner panel:" or "Панель владельца:" controls one \
 Business chat and names it as `chat <id>`. When the user replies to a panel message, the question is \
 about that chat; use that id as <chat_id> above.
@@ -3263,6 +3266,28 @@ def _register_agent_reference(ctx: Any) -> None:
         register_section(AGENT_REFERENCE_SECTION_ID, AGENT_REFERENCE, max_chars=2000)
     except Exception as exc:  # noqa: BLE001 - plugin load must stay available
         logger.warning("%s: system prompt section not registered (%s)", _PLUGIN_NAME, type(exc).__name__)
+
+
+def _register_dossier_task(ctx: Any) -> None:
+    """Register the dossier model task ("hermes model" -> Telesec dossiers), so the writer needs no trust config.
+
+    A host without the API, or one that rejects the task, leaves dossiers on the explicit fallback route.
+    """
+    register_task = getattr(ctx, "register_auxiliary_task", None)
+    registered = False
+    if callable(register_task):
+        try:
+            register_task(
+                _dossier_support.TASK_KEY,
+                display_name="Telesec dossiers",
+                description="Writes private Telesec contact dossiers, the owner writing persona and /dossier chat "
+                            "summaries.",
+                defaults=copy.deepcopy(_dossier_support.TASK_DEFAULTS),  # the host keeps and merges it
+            )
+            registered = True
+        except Exception as exc:  # noqa: BLE001 - plugin load must stay available
+            logger.warning("%s: dossier model task not registered (%s)", _PLUGIN_NAME, type(exc).__name__)
+    _dossier_support.set_task_registered(registered)
 
 
 def _settings_command_fallback(raw_args: str = "") -> str:
@@ -3295,6 +3320,7 @@ def register(ctx: Any) -> None:
         _dossier_support.migrate_legacy_switch()
     except Exception as exc:  # noqa: BLE001 - plugin load must stay available
         logger.warning("%s: dossier switch migration failed (%s)", _PLUGIN_NAME, type(exc).__name__)
+    _register_dossier_task(ctx)
     try:
         moved = _global_settings.migrate_legacy(get_config=ctx.get_config)
         _global_settings.warn_ignored_env(skip=moved)
@@ -3331,7 +3357,7 @@ def register(ctx: Any) -> None:
     ctx.register_skill(
         "dossiers",
         _dossier_support.skill_path(),
-        "Telegram Business contact dossiers and owner persona: safe read and correction recipes.",
+        "Telegram Business contact dossiers and owner persona: read, note, refresh and forget.",
     )
     _register_agent_reference(ctx)
     on_unload = getattr(ctx, "on_unload", None)

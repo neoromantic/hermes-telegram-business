@@ -1,8 +1,9 @@
-"""``hermes telesec dossier ...``: inspect and correct contact dossiers and the owner persona.
+"""``hermes telesec dossier ...``: read contact dossiers and the owner persona, and write owner notes.
 
-Every text line goes through ``history_support._escape_terminal_text``: dossier text is derived
-from chat messages and must never drive the terminal. ``preview`` prints the payload bytes as
-they would be sent, so ``preview | jq .`` works and equals what ``run`` sends.
+A dossier is one Markdown document per contact that the model rewrites; the owner corrects it with
+a note. Every text line goes through ``history_support._escape_terminal_text``: dossier text is
+derived from chat messages and must never drive the terminal. ``preview`` prints the system prompt
+and the user JSON exactly as ``run`` (or ``/dossier`` with ``--post``) would send them.
 """
 
 from __future__ import annotations
@@ -13,22 +14,28 @@ import re
 import shlex
 import sys
 from collections.abc import Callable, Iterable
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import dossier_support as _dossier
+from . import dossier_doc as _doc
+from . import dossier_support as _ds
+from . import dossier_view as _view
+from . import dossier_writer as _writer
 from . import history_support as _history
+from . import model_client
 
 Target = tuple[str, Any]
 
-COMMANDS = ("status", "enable", "disable", "list", "show", "preview", "correct", "pin", "unpin", "remove",
-            "note", "changes", "export", "forget", "run")
+COMMANDS = ("status", "enable", "disable", "list", "show", "export", "preview", "note", "run", "forget", "gate",
+            "clairic")
+REMOVED = ("correct", "pin", "unpin", "remove", "changes")  # v1 fact commands: hidden, they print a hint
 USAGE = "Usage: hermes telesec dossier <" + "|".join(COMMANDS) + ">"
-MAX_CHANGES_LIMIT = 500
-ENABLE_HOW = f"'{_dossier.ENABLE_COMMAND}' or Settings (/telesec) in Telegram"
-DISABLE_COMMAND = _dossier.DISABLE_COMMAND
-FORGET_ALL_COMMAND = "hermes telesec dossier forget --all"
+CLI = "hermes telesec dossier"
+ENABLE_HOW = f"'{_ds.ENABLE_COMMAND}' or Settings (/telesec) in Telegram"
+DISABLE_COMMAND = _ds.DISABLE_COMMAND
+FORGET_ALL_COMMAND = f"{CLI} forget --all"
 DISABLED_RUN = f"error: dossiers are disabled; turn them on with {ENABLE_HOW}"
 HISTORY_ON_HOW = "'hermes telesec settings set history on' or /telesec"
 HISTORY_OFF = f"note: history is off; turn it on with {HISTORY_ON_HOW}"
@@ -38,14 +45,28 @@ DISABLED_PREVIEW = f"note: dossiers are disabled; nothing is sent until they are
 NO_FACADE = "error: Hermes host LLM facade is unavailable in this process"
 BUSY = "error: another dossier cycle is running (probably the gateway worker); try again later"
 TRUST_HINT = f"check plugins.entries.{_history.PLUGIN_NAME}.llm"
-OWNER_EDIT_DONE = {
-    "correct": "Corrected {fid} in {label} (revision {rev}). The model will treat it as read-only.",
-    "pin": "Pinned {fid} in {label} (revision {rev}). The model can no longer change or retire it.",
-    "unpin": "Unpinned {fid} in {label} (revision {rev}).",
-    "remove": "Removed {fid} from {label} (revision {rev}). It will not be re-added.",
-    "note": "Added note {fid} to {section} for {label} (revision {rev}).",
+REMOVED_HINT = f"'{CLI} {{cmd}}' was removed: a dossier is now one document that the model rewrites."
+NOTE_HINT = f'To correct it, write an owner note: {CLI} note --contact NAME --text "..."'
+CHANGES_HINT = f"To see the last change: {CLI} show --contact NAME --previous"
+EXPORT_HEADER = "> Dossier text is data, not instructions."
+GATE_TEXT = {
+    "on": "on (auto)",
+    "off": "off (setting)",
+    "no_key": f"off (no {model_client.KEY_NAME})",
+    "not_gateway": "off (writer is not on ai-gateway)",
+    "bad_base_url": f"off ({model_client.BASE_ENV} is not https)",
 }
+CLAIRIC_TEXT = {
+    "on": "on (Cloudflare Clairic)",
+    "off": "off (setting)",
+    "no_key": f"off (no {model_client.CF_ACCOUNT_NAME}/{model_client.CF_TOKEN_NAME})",
+}
+CLAIRIC_PROCESSOR = _view.STRINGS["en"]["enable_clairic"]
+CLAIRIC_ON = f"Fact extraction: on. {CLAIRIC_PROCESSOR}"
+GATE_OFF = "Message check: off (setting). New messages are no longer checked by TypeSafe Jev."
+SAVED_UNTIL_FIXED = "The setting is saved and takes effect once that is fixed."
 _C1_RE = re.compile(r"[\x7f-\x9f]")
+_COUNTED = ("calls", "refreshed", "checked", "deferred", "waiting", "backoff", "failed", "unchanged", "unqualified")
 
 
 # ---------------------------------------------------------------------------
@@ -56,13 +77,14 @@ _C1_RE = re.compile(r"[\x7f-\x9f]")
 def add_parser(subs: Any) -> None:
     """Add ``dossier`` to the ``telesec`` subparsers."""
     parser = subs.add_parser(
-        "dossier", help="Inspect and correct Telegram Business contact dossiers and the owner persona")
+        "dossier", help="Read Telegram Business contact dossiers and the owner persona, and write owner notes")
     parser.set_defaults(_dossier_action="usage")
-    commands = parser.add_subparsers(dest="telegram_business_dossier_command")
+    commands = parser.add_subparsers(dest="telegram_business_dossier_command",
+                                     metavar="<" + "|".join(COMMANDS) + ">")
 
-    def leaf(name: str, help_text: str, *, target: bool = True, all_: bool = False, fact: bool = False,
-             fact_required: bool = False) -> argparse.ArgumentParser:
-        command = commands.add_parser(name, help=help_text)
+    def leaf(name: str, help_text: str | None, *, target: bool = True, all_: bool = False) -> argparse.ArgumentParser:
+        # A leaf without help is left out of the command list.
+        command = commands.add_parser(name, help=help_text) if help_text else commands.add_parser(name)
         command.set_defaults(_dossier_action=name)
         if target:
             command.add_argument("--connection")
@@ -71,43 +93,48 @@ def add_parser(subs: Any) -> None:
             command.add_argument("--persona", action="store_true")
             if all_:
                 command.add_argument("--all", action="store_true")
-        if fact:
-            command.add_argument("--fact", required=fact_required)
         return command
 
-    leaf("status", "Show dossier settings, storage and the last cycle", target=False)
+    leaf("status", "Show the dossier settings, model, usage, failures and the last cycle", target=False)
     leaf("enable", "Turn dossiers on for all private chats (sends their text to the model)", target=False)
     leaf("disable", "Turn dossiers off; stored dossiers are kept", target=False)
     leaf("list", "List stored dossiers", target=False)
-    show = leaf("show", "Show a dossier, or follow one fact back to history", fact=True)
+    show = leaf("show", "Show a dossier with its owner note")
+    show.add_argument("--previous", action="store_true", help="Show the version before the last rewrite")
     show.add_argument("--format", choices=["text", "json"], default="text")
-    leaf("preview", "Print the exact JSON the next model call would send (no call, no writes)")
-    correct = leaf("correct", "Replace a fact with owner text", fact=True, fact_required=True)
-    correct.add_argument("--text", required=True)
-    leaf("pin", "Protect a fact from model changes", fact=True, fact_required=True)
-    leaf("unpin", "Make a pinned fact model-editable again", fact=True, fact_required=True)
-    leaf("remove", "Delete a fact and never re-add it", fact=True, fact_required=True)
-    note = leaf("note", "Add an owner note to a section")
-    note.add_argument("--section", required=True)
-    note.add_argument("--text", required=True)
-    changes = leaf("changes", "Show the revision log, newest first")
-    changes.add_argument("--limit", type=int, default=20)
-    changes.add_argument("--format", choices=["text", "json"], default="text")
-    export = leaf("export", "Export a dossier with its change log")
-    export.add_argument("--format", choices=["json", "markdown"], default="json")
-    leaf("forget", "Delete a dossier, its owner edits and its log (history is untouched)", all_=True)
+    show.add_argument("--fact", help=argparse.SUPPRESS)  # removed in v2: prints the hint
+    export = leaf("export", "Export a dossier as Markdown or JSON")
+    export.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    preview = leaf("preview", "Print the exact input of the next model call (no call, no writes)")
+    preview.add_argument("--post", action="store_true", help="Print what /dossier would send instead")
+    note = leaf("note", "Show, write or clear the owner note the model follows")
+    text = note.add_mutually_exclusive_group()
+    text.add_argument("--text")
+    text.add_argument("--clear", action="store_true")
     leaf("run", "Run one dossier cycle now (calls the model)")
+    leaf("forget", "Delete a dossier and its owner note (history is untouched)", all_=True)
+    gate = leaf("gate", "Show or set the message check (TypeSafe Jev)", target=False)
+    gate.add_argument("mode", nargs="?", choices=_ds.GATE_MODES)
+    clairic = leaf("clairic", "Show or set fact extraction (Cloudflare Clairic)", target=False)
+    clairic.add_argument("mode", nargs="?", choices=_ds.CLAIRIC_MODES)
+    for name in REMOVED:
+        removed = leaf(name, None)
+        # The v1 flags are accepted too: REMAINDER alone rejects a first argument that looks like an option.
+        for flag in ("--fact", "--text", "--section", "--limit", "--format"):
+            removed.add_argument(flag, help=argparse.SUPPRESS)
+        removed.add_argument("rest", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
 
 def handle_cli(args: argparse.Namespace) -> int:
-    action = getattr(args, "_dossier_action", None)
-    if action in (None, "usage"):
-        print(USAGE)
-        return 1
-    handler = _ACTIONS.get(action)
+    handler = _ACTIONS.get(getattr(args, "_dossier_action", None))
     if handler is None:
         print(USAGE)
         return 1
+    try:
+        _ds.migrate_v1()
+    except Exception as exc:  # noqa: BLE001 - the next cycle retries; the command still runs
+        print(f"warning: old v1 dossier files could not be moved ({type(exc).__name__}); the next cycle tries again",
+              file=sys.stderr)
     try:
         return handler(args)
     except (OSError, ValueError) as exc:
@@ -129,19 +156,33 @@ def _emit(lines: Iterable[str], stream: TextIO | None = None) -> None:
         print(_esc(line), file=stream or sys.stdout)
 
 
-def _json_text(obj: Any) -> str:
-    # json already escapes C0 controls; C1 controls would reach the terminal raw.
-    text = json.dumps(obj, ensure_ascii=False, indent=2)
+def _text_lines(text: str) -> list[str]:
+    return text.splitlines() or [""]
+
+
+def _c1_escaped(text: str) -> str:
+    """JSON text with DEL and C1 controls written as JSON escapes: the same JSON value, safe for a terminal."""
     return _C1_RE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
 
 
-def _plain(text: Any) -> str:
-    """Single-line text with control and bidi characters stripped (markdown export)."""
-    return _dossier.clip(text, sys.maxsize)
+def _json_text(obj: Any) -> str:
+    # json already escapes C0 controls; C1 controls would reach the terminal raw.
+    return _c1_escaped(json.dumps(obj, ensure_ascii=False, indent=2))
 
 
 def _plural(count: int, word: str, plural: str | None = None) -> str:
-    return f"{count} {word if count == 1 else plural or word + 's'}"
+    return f"{count:,} {word if count == 1 else plural or word + 's'}"
+
+
+def _num(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _usd(value: Any) -> str:
+    amount = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+    if amount == 0 or amount >= 0.01:
+        return f"${amount:.2f}"
+    return f"${amount:.4f}" if amount >= 0.0001 else f"${amount:.6f}"
 
 
 def _seconds(duration_ms: int) -> str:
@@ -149,37 +190,15 @@ def _seconds(duration_ms: int) -> str:
     return f"{seconds:.1f}s" if seconds < 10 else f"{round(seconds)}s"
 
 
-def _minutes(seconds: float) -> str:
-    return f"{int(seconds // 60)} min" if seconds % 60 == 0 else f"{seconds:g} s"
-
-
-def _day(value: Any) -> str:
-    return str(value)[:10] if value else "?"
-
-
-def _who(source: dict[str, Any]) -> str:
-    if source.get("transcript"):
-        return "transcript"
-    return _dossier.LABELS.get(source.get("direction"), "unknown")
-
-
-def _fact_tag(fact: dict[str, Any]) -> str:
-    tag = fact["kind"]
-    if fact["kind"] == "inferred" and fact.get("confidence"):
-        tag += f" {fact['confidence']}"
-    if fact.get("pinned"):
-        tag += ", pinned"
-    if fact.get("source_gone"):
-        tag += ", source gone"
-    return f"[{tag}]"
-
-
-def _quoted(text: Any) -> str:
-    return '"' + str(text) + '"'
+def _when(value: Any, *, utc: bool = True) -> str:
+    at = _history._parse_datetime(value)
+    if at is None:
+        return "?"
+    return f"{at.astimezone(UTC):%Y-%m-%d %H:%M}" + (" UTC" if utc else "")
 
 
 # ---------------------------------------------------------------------------
-# Target resolution and names
+# Targets, names and stored files
 # ---------------------------------------------------------------------------
 
 
@@ -225,83 +244,109 @@ def _chat_id(raw: Any) -> Any:
 
 
 def _label(target: Target) -> str:
-    return _dossier.target_label(target)
-
-
-def _catalog_names() -> dict[tuple[str, str], dict[str, Any]] | None:
-    """Private catalog entries by (connection, chat), or None when the catalog cannot be read."""
-    try:
-        entries = _dossier.private_entries()
-    except (OSError, ValueError):
-        return None
-    return {(str(e.get("business_connection_id")), str(e.get("chat_id"))): e for e in entries}
-
-
-def _dossier_name(dossier: dict[str, Any], catalog: dict[tuple[str, str], dict[str, Any]] | None) -> str:
-    entry = (catalog or {}).get((str(dossier.get("business_connection_id")), str(dossier.get("chat_id"))))
-    if entry is not None:
+    if target[0] == "persona":
+        return "the owner persona"
+    entry = target[1]
+    if "chat_type" in entry:
         return _history._catalog_entry_display_name(entry)
-    stored = (dossier.get("contact") or {}).get("display_name")
-    return str(stored) if stored else f"chat:{dossier.get('chat_id')}"
+    return f"chat:{entry.get('chat_id')}"
 
 
-def _persona_chat_names(dossier: dict[str, Any]) -> dict[str, str]:
-    """Persona chat alias -> catalog display name (stored aliases only; never sent to the model)."""
-    aliases = dossier.get("chat_aliases") or {}
-    catalog = _catalog_names() if aliases else {}
-    names = {}
-    for alias, info in aliases.items():
-        entry = (catalog or {}).get((str(info.get("business_connection_id")), str(info.get("chat_id"))))
-        names[alias] = (_history._catalog_entry_display_name(entry) if entry is not None
-                        else f"chat:{info.get('chat_id')}")
-    return names
+def _ident(entry: dict[str, Any]) -> str:
+    return f"{entry.get('business_connection_id')}:{entry.get('chat_id')}"
 
 
-def _target_info(target: Target, dossier: dict[str, Any]) -> dict[str, Any]:
-    kind, entry = target
-    if kind == "persona":
-        return {"kind": "persona", "label": _label(target), "chats": _persona_chat_names(dossier)}
-    snapshot = dossier.get("contact") or {}
-    display = _label(target)
-    aliases = _history._catalog_entry_aliases(entry) if "aliases" in entry else list(snapshot.get("aliases") or [])
-    return {"kind": "contact", "label": display, "display_name": display,
-            "aliases": [a for a in aliases if a != display],
-            "business_connection_id": dossier.get("business_connection_id"), "chat_id": dossier.get("chat_id")}
+def _load(target: Target) -> dict[str, Any] | None:
+    """The target's document or None; raises dossier_doc.DocError when it is corrupt."""
+    if target[0] == "persona":
+        return _ds.load_persona()
+    return _ds.load_contact(target[1]["business_connection_id"], target[1]["chat_id"])
 
 
-def _load_required(target: Target) -> dict[str, Any]:
-    dossier = _dossier.load_for_target(target)
-    if dossier is None:
-        raise ValueError(f"no dossier yet for {_label(target)}")
-    return dossier
-
-
-def _find_fact(dossier: dict[str, Any], fact_id: Any) -> dict[str, Any]:
-    fid = _dossier.normalize_fact_id(fact_id)
-    for fact in dossier["facts"]:
-        if fact["id"] == fid:
-            return fact
-    raise ValueError(f"no fact {fid} in this dossier")
-
-
-def _stale(dossier: dict[str, Any]) -> tuple[dict[str, Any], dict[str, list[dict[str, str]]], str | None]:
-    """One bounded fold under history read locks; nothing is written."""
+def _catalog() -> dict[str, dict[str, Any]]:
+    """Private catalog entries by chat key; {} when the catalog cannot be read."""
     try:
-        views = _dossier.views_for_dossier(dossier)
-        return views, _dossier.compute_stale(dossier, views), None
-    except Exception as exc:  # noqa: BLE001 - show must still render the stored dossier
-        return {}, {}, type(exc).__name__
+        entries = _ds.private_entries()
+    except (OSError, ValueError):
+        return {}
+    return {_ds.chat_key(e.get("business_connection_id"), e.get("chat_id")): e for e in entries}
+
+
+@dataclass(frozen=True)
+class _Stored:
+    kind: str  # contact | persona
+    key: str  # chat key (the directory under chats/), or "persona"
+    doc: dict[str, Any] | None
+    corrupt: bool
+    backup: bool  # a v1-dossier.json is still kept
+    entry: dict[str, Any] | None  # the catalog entry of a contact
+
+    @property
+    def built(self) -> bool:
+        if self.doc is None:
+            return False
+        if self.kind == "persona":
+            return self.doc.get("checked_at") is not None
+        return self.doc.get("window_start") is not None
+
+    @property
+    def label(self) -> str:
+        if self.kind == "persona":
+            return "Owner persona"
+        if self.entry is not None:
+            return _history._catalog_entry_display_name(self.entry)
+        if self.doc is not None:
+            return f"chat:{self.doc.get('chat_id')}"
+        return f"chat:{self.key.rpartition('/')[2]}"
+
+    @property
+    def ids(self) -> tuple[Any, Any] | None:
+        source = self.entry or self.doc
+        if self.kind == "persona" or source is None:
+            return None
+        return source.get("business_connection_id"), source.get("chat_id")
+
+
+def _has_files(path: Path) -> bool:
+    return path.is_dir() and any(p.is_file() for p in path.iterdir())
+
+
+def _read_stored(kind: str, key: str, path: Path, entry: dict[str, Any] | None) -> _Stored:
+    try:
+        doc, corrupt = _doc.read_doc(path), False
+    except (OSError, ValueError):
+        doc, corrupt = None, True
+    return _Stored(kind, key, doc, corrupt, (path / _doc.V1_BACKUP).exists(), entry)
+
+
+def _stored(catalog: dict[str, dict[str, Any]]) -> list[_Stored]:
+    """Every stored contact dossier (sorted by name), then the persona. Reads only."""
+    chats = _ds.dossier_root() / "chats"
+    items = []
+    if chats.is_dir():
+        for path in chats.glob("*/*"):
+            if _has_files(path):
+                key = path.relative_to(chats).as_posix()
+                items.append(_read_stored("contact", key, path, catalog.get(key)))
+    items.sort(key=lambda item: (item.label.casefold(), item.key))
+    if _has_files(_ds.persona_dir()):
+        items.append(_read_stored("persona", "persona", _ds.persona_dir(), None))
+    return items
+
+
+def _failure_text(record: dict[str, Any]) -> str:
+    return f"{record.get('error')} ×{_num(record.get('count')) or 1}"
 
 
 # ---------------------------------------------------------------------------
-# status / list
+# status / enable / disable / gate / clairic
 # ---------------------------------------------------------------------------
 
 
 def _since(settings: dict[str, Any]) -> str:
     if not settings.get("updated_at"):
         return ""
-    return f" (since {settings['updated_at']} via {settings.get('updated_via') or 'unknown'})"
+    return f" (since {_when(settings['updated_at'])} via {settings.get('updated_via') or 'unknown'})"
 
 
 def _switch_line(settings: dict[str, Any]) -> str:
@@ -310,59 +355,148 @@ def _switch_line(settings: dict[str, Any]) -> str:
     return f"Dossiers: disabled{_since(settings)}. Turn on with {ENABLE_HOW}."
 
 
+def _model_line(cfg: _ds.DossierConfig) -> str:
+    route = f"Model: {cfg.provider} / {cfg.model}"
+    trust = f"needs plugins.entries.{_history.PLUGIN_NAME}.llm trust config"
+    if cfg.legacy_env:
+        return f"{route} (from {_ds.PROVIDER_ENV}/{_ds.MODEL_ENV}; {trust})"
+    if not cfg.task_registered:
+        return f"{route} (explicit route: the Telesec dossiers task is not registered; {trust})"
+    if cfg.provider == "auto":
+        return "Model: auto (main model)"
+    details = ["Telesec dossiers task", f"reasoning {cfg.reasoning or 'provider default'}",
+               f"max_tokens {cfg.max_tokens}" if cfg.max_tokens else "max_tokens not capped"]
+    if cfg.provider.lower() in _writer.GATEWAY_ALIASES:
+        details.append(f"zero data retention {'on' if cfg.zdr else 'off'}")
+    return f"{route} ({'; '.join(details)})"
+
+
+def _same_provider(a: str, b: str) -> bool:
+    a, b = a.strip().lower(), b.strip().lower()
+    return a == b or (a in _writer.GATEWAY_ALIASES and b in _writer.GATEWAY_ALIASES)
+
+
+def _last_answer_line(cfg: _ds.DossierConfig, items: list[_Stored]) -> str:
+    calls = [item.doc["last_call"] for item in items
+             if item.doc is not None and isinstance(item.doc.get("last_call"), dict)]
+    calls = [call for call in calls if isinstance(call.get("at"), str)]
+    if not calls:
+        return "Last answer: none yet"
+    last = max(calls, key=lambda call: call["at"])
+    provider, model = (_ds.without_credentials(str(last.get(name) or "?")) for name in ("provider", "model"))
+    line = f"Last answer: {provider} / {model}"
+    if cfg.provider != "auto" and not (_same_provider(provider, cfg.provider)
+                                       and model.strip().lower() == cfg.model.strip().lower()):
+        line += " (host fallback: differs from the configured route)"
+    return line
+
+
+def _gate_line(cfg: _ds.DossierConfig) -> str:
+    if cfg.gate == "on":
+        return f"Message check: TypeSafe {model_client.JEV_MODEL}, {GATE_TEXT['on']}"
+    return f"Message check: {GATE_TEXT.get(cfg.gate, cfg.gate)}"
+
+
+def _stored_line(items: list[_Stored]) -> str:
+    contacts = [item for item in items if item.kind == "contact"]
+    details = [(sum(1 for i in contacts if i.doc is not None and not i.built), "waiting for first build"),
+               (sum(1 for i in contacts if i.built and not i.doc["document"]), "empty"),
+               (sum(1 for i in contacts if i.corrupt), "unreadable")]
+    shown = ", ".join(f"{count} {name}" for count, name in details if count)
+    persona = "yes" if any(item.kind == "persona" for item in items) else "no"
+    notes = sum(1 for item in items if item.doc is not None and item.doc.get("note"))
+    return (f"Stored: {_plural(len(contacts), 'contact dossier')}{f' ({shown})' if shown else ''}, "
+            f"owner persona {persona}, {_plural(notes, 'owner note')}, {_plural(_ds.v1_backups(), 'v1 backup')}")
+
+
+def _usage_lines(usage: dict[str, Any]) -> list[str]:
+    lines = []
+    for month in sorted(usage, reverse=True):
+        parts, shown = usage[month], []
+        writer, check, clairic = parts.get("writer"), parts.get("check"), parts.get("clairic")
+        if writer:
+            shown.append(f"writer {_plural(_num(writer.get('calls')), 'call')}, "
+                         f"{_num(writer.get('input_tokens')):,} in / {_num(writer.get('output_tokens')):,} out tokens, "
+                         f"{_usd(writer.get('cost_usd'))} ({_num(writer.get('unpriced'))} unpriced)")
+        if check:
+            shown.append(f"check {_plural(_num(check.get('calls')), 'call')}, {_usd(check.get('cost_usd'))}, "
+                         f"{_num(check.get('deferred'))} deferred, {_plural(_num(check.get('errors')), 'error')}")
+        if clairic:
+            shown.append(f"fact extraction {_plural(_num(clairic.get('calls')), 'call')}, "
+                         f"{_usd(clairic.get('cost_usd'))}, {_plural(_num(clairic.get('errors')), 'error')}")
+        if shown:
+            lines.append(f"Usage {month}: {'; '.join(shown)}")
+    return lines or ["Usage: none yet"]
+
+
+def _failures_line(failures: dict[str, Any], catalog: dict[str, dict[str, Any]]) -> str:
+    if not failures:
+        return "Failures: none"
+    shown = []
+    for key, record in sorted(failures.items())[:5]:
+        if key == "persona":
+            name = "owner persona"
+        elif key in catalog:
+            name = _history._catalog_entry_display_name(catalog[key])
+        else:
+            name = f"chat:{key.rpartition('/')[2]}"
+        shown.append(f"{name}: {_failure_text(record)}, last {_when(record.get('at'))}")
+    more = ", …" if len(failures) > 5 else ""
+    return f"Failures: {len(failures)} ({', '.join(shown)}{more})"
+
+
+def _counts(report: Any) -> str:
+    get = report.get if isinstance(report, dict) else lambda name: getattr(report, name)
+    text = " ".join(f"{name}={_num(get(name))}" for name in _COUNTED)
+    return f"{text} persona={get('persona')} cost={_usd(get('cost_usd'))}"
+
+
+def _last_cycle_lines(last: Any) -> list[str]:
+    if not isinstance(last, dict):
+        return ["Last cycle: none yet"]
+    trigger = last.get("trigger") or "unknown"
+    lines = [(f"Last cycle: {last.get('outcome')} {_when(last.get('started_at'))} ({trigger}) in "
+              f"{_seconds(_num(last.get('duration_ms')))}: {_counts(last)}")]
+    if last.get("outcome") == "aborted_trust":
+        lines.append(f"Last cycle aborted: model call denied by the Hermes trust gate; {TRUST_HINT}")
+    return lines
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
-    cfg = _dossier.load_config()
-    lines = list(cfg.warnings)
-    settings = _dossier.load_settings()
+    cfg = _ds.load_config()
+    settings = _ds.load_settings()
+    catalog = _catalog()
+    items = _stored(catalog)
+    state = _ds.load_state()
+    lines = [*cfg.warnings, *_ds.unreadable_v1_warnings()]
     lines.append(_switch_line(settings))
-    if settings["enabled"] and not _history.capture_enabled():
-        lines.append(HISTORY_PAUSED)
-    lines.append(f"Model: {cfg.provider} / {cfg.model} (timeout {_dossier.MODEL_TIMEOUT_SECONDS:g}s, "
-                 f"max {cfg.max_calls_per_minute} calls/min)")
-    lines.append(f"Worker: gateway only; checks the switch every {_minutes(_dossier.DISABLED_POLL_SECONDS)}; "
-                 f"first cycle {_minutes(_dossier.INITIAL_DELAY_SECONDS)} after connect at the earliest, "
-                 f"then every {cfg.interval_minutes} min; quiet {cfg.quiet_minutes} min")
-    lines.append(f"Backfill: last {cfg.backfill_days} days, at most {cfg.backfill_messages} messages per contact")
-    lines.append(f"Storage: {_dossier.dossier_root()}")
-    items = _dossier.list_dossiers()
-    contacts = sum(1 for i in items if i["kind"] == "contact")
-    unreadable = sum(1 for i in items if i["dossier"] is None)
-    persona = next((i["dossier"] for i in items if i["kind"] == "persona" and i["dossier"]), None)
-    stored = f"Stored: {_plural(contacts, 'contact dossier')}, "
-    stored += f"persona revision {persona['revision']}" if persona else "no persona yet"
-    if unreadable:
-        stored += f" ({unreadable} unreadable; see 'dossier list')"
-    lines.append(stored)
-    state = _dossier.load_state()
-    failures = state["failures"]
-    if failures:
-        shown = [f"{_failure_label(key, item)} {item.get('error')} x{item.get('count', 1)}"
-                 for key, item in sorted(failures.items())[:5]]
-        more = ", ..." if len(failures) > 5 else ""
-        lines.append(f"Failures: {len(failures)} ({', '.join(shown)}{more})")
-    else:
-        lines.append("Failures: none")
-    last = state.get("last_cycle")
-    if last:
-        lines.append(f"Last cycle: {last.get('trigger')} {last.get('started_at')} {last.get('outcome')} in "
-                     f"{_seconds(int(last.get('duration_ms') or 0))}: {_counts(last)}")
-        if last.get("outcome") == "aborted_trust":
-            lines.append(f"Last cycle aborted: model call denied by the Hermes trust gate; {TRUST_HINT}")
-    else:
-        lines.append("Last cycle: none yet")
-    lines.append(f"Cycle running now: {'yes' if _dossier.cycle_running() else 'no'}")
+    history_on = _history.capture_enabled()
+    lines.append("History: on" if history_on else f"History: off{'. ' + HISTORY_PAUSED if cfg.enabled else ''}")
+    lines.append(_model_line(cfg))
+    lines.append(_last_answer_line(cfg, items))
+    lines.append(_gate_line(cfg))
+    lines.append(f"Fact extraction: {CLAIRIC_TEXT.get(cfg.clairic, cfg.clairic)}")
+    lines.append(f"Worker: every {cfg.interval_minutes} min, {cfg.quiet_minutes} min after the last message, "
+                 f"up to {cfg.max_calls_per_minute} model calls a minute")
+    lines.append(f"First build: up to {cfg.backfill_messages} messages from the last {cfg.backfill_days} days")
+    lines.append(f"Storage: {_ds.dossier_root()}")
+    lines.append(_stored_line(items))
+    lines.extend(_usage_lines(state["usage"]))
+    lines.append(_failures_line(state["failures"], catalog))
+    lines.extend(_last_cycle_lines(state.get("last_cycle")))
+    lines.append(f"Cycle running now: {'yes' if _ds.cycle_running() else 'no'}")
     _emit(lines)
     return 0
 
 
 def _cmd_enable(args: argparse.Namespace) -> int:
-    result = _dossier.set_enabled(True, via="cli")
-    cfg = _dossier.load_config()  # after the write: a corrupt switch file no longer warns
+    result = _ds.set_enabled(True, via="cli")
+    cfg = _ds.load_config()  # after the write: a corrupt switch file no longer warns
     lines = list(cfg.warnings)
-    lines.append(f"Dossiers: enabled ({result['updated_at']} via cli)." if result["changed"]
+    lines.append(f"Dossiers: enabled ({_when(result['updated_at'])} via cli)." if result["changed"]
                  else f"Dossiers are already enabled{_since(result)}.")
     lines.append("The gateway worker starts its first cycle within a few minutes; no gateway restart is needed.")
-    lines.append(f"The text of all private Business chats is sent to {cfg.provider} / {cfg.model}.")
+    lines.extend(_view.enable_lines(cfg, "en"))
     if not _history.capture_enabled():
         lines.append(HISTORY_OFF)
     lines.append(f"Turn off with '{DISABLE_COMMAND}'.")
@@ -371,11 +505,11 @@ def _cmd_enable(args: argparse.Namespace) -> int:
 
 
 def _cmd_disable(args: argparse.Namespace) -> int:
-    result = _dossier.set_enabled(False, via="cli")
-    lines = list(_dossier.load_config().warnings)
+    result = _ds.set_enabled(False, via="cli")
+    lines = list(_ds.load_config().warnings)
     if result["changed"]:
-        lines.append(f"Dossiers: disabled ({result['updated_at']} via cli). No more chat text is sent to the model; "
-                     "a cycle already running stops before its next model call.")
+        lines.append(f"Dossiers: disabled ({_when(result['updated_at'])} via cli). No more chat text is sent to the "
+                     "model; a cycle already running stops before its next model call.")
     else:
         lines.append(f"Dossiers are already disabled{_since(result)}.")
     lines.append(f"Stored dossiers are kept; delete them with '{FORGET_ALL_COMMAND}'.")
@@ -383,238 +517,184 @@ def _cmd_disable(args: argparse.Namespace) -> int:
     return 0
 
 
-def _failure_label(key: str, item: dict[str, Any]) -> str:
-    if key == "persona":
-        return "persona"
-    return f"{item.get('connection')}:{item.get('chat')}" if "connection" in item else key
+def _cmd_gate(args: argparse.Namespace) -> int:
+    if args.mode is not None:
+        _ds.set_gate(args.mode, via="cli")
+    state = _ds.load_config().gate
+    if args.mode == "off":
+        line = GATE_OFF
+    elif args.mode == "auto" and state == "on":
+        line = f"Message check: {GATE_TEXT['on']}. {_view.STRINGS['en']['enable_gate']}"
+    else:
+        line = f"Message check: {GATE_TEXT.get(state, state)}."
+        if args.mode == "auto":
+            line = f"{line} {SAVED_UNTIL_FIXED}"
+    _emit([line])
+    return 0
 
 
-def _counts(report: Any) -> str:
-    get = report.get if isinstance(report, dict) else lambda name: getattr(report, name)
-    text = " ".join(f"{name}={get(name)}" for name in
-                    ("calls", "refreshed", "maintained", "waiting", "failed", "unchanged", "unqualified"))
-    if get("orphans"):
-        text += f" orphans={get('orphans')}"
-    return f"{text} persona={get('persona')}"
+def _cmd_clairic(args: argparse.Namespace) -> int:
+    if args.mode is not None:
+        _ds.set_clairic(args.mode, via="cli")
+    state = _ds.load_config().clairic
+    line = CLAIRIC_ON if args.mode == "on" and state == "on" else f"Fact extraction: {CLAIRIC_TEXT.get(state, state)}."
+    if args.mode == "on" and state != "on":
+        line = f"{line} {SAVED_UNTIL_FIXED}"
+    _emit([line])
+    return 0
 
 
-def _fact_summary(dossier: dict[str, Any]) -> str:
-    facts = dossier["facts"]
-    extra = [(sum(1 for f in facts if f["status"] == "unsupported"), "unsupported"),
-             (sum(1 for f in facts if f.get("source_gone")), "source gone"),
-             (sum(1 for f in facts if f["kind"] == "owner"), "owner")]
-    details = ", ".join(f"{n} {name}" for n, name in extra if n)
-    return f"facts {len(facts)}" + (f" ({details})" if details else "")
+# ---------------------------------------------------------------------------
+# list / show / export
+# ---------------------------------------------------------------------------
+
+
+def _list_row(item: _Stored, state: dict[str, Any]) -> tuple[str, str, str, str]:
+    doc, tags = item.doc, []
+    ident = "-" if item.ids is None else f"{item.ids[0]}:{item.ids[1]}"
+    if item.corrupt:
+        info = "-  unreadable"
+    elif not item.built:
+        info = "-  waiting for first build"
+    elif item.kind == "persona":
+        info = (f"rev {doc['revision']}  {_doc.units(doc['document']):,} chars  from "
+                f"{_plural(doc['messages'], 'message')} in {_plural(len(doc['chats']), 'chat')}  "
+                f"checked {_when(doc['checked_at'], utc=False)}")
+    else:
+        info = (f"rev {doc['revision']}  {_doc.units(doc['document']):,} chars  {_plural(doc['messages'], 'message')}"
+                f"  checked {_when(doc['checked_at'], utc=False)}")
+    if doc is not None and doc.get("note"):
+        tags.append("[note]")
+    failure = state["failures"].get(item.key)
+    if failure:
+        tags.append(f"[failed: {_failure_text(failure)}]")
+    gate = state["chats"].get(item.key) if item.kind == "contact" else None
+    if isinstance(gate, dict) and gate.get("recheck_at"):
+        tags.append("[deferred]")
+    if (doc is not None and not item.built and not failure and isinstance(gate, dict)
+            and gate.get("dossier_id") == doc["id"]):
+        tags.append("[unqualified]")  # the last pass found no first build to make
+    if item.built and not doc["document"]:
+        tags.append("[empty]")
+    if item.corrupt:
+        tags.append("[corrupt]")
+    if item.ids is not None and _ds.chat_paused(*item.ids):
+        tags.append("[off for this chat]")
+    if item.backup:
+        tags.append("[v1 backup]")
+    return item.label, ident, info, " ".join(tags)
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    items = _dossier.list_dossiers()
+    items = _stored(_catalog())
     if not items:
         print("No dossiers yet.")
         return 0
-    catalog = _catalog_names()
-    failures = _dossier.load_state()["failures"]
-    rows: list[list[str]] = []
-    for item in items:
-        d = item["dossier"]
-        if d is None:
-            rel = _relative(item["path"])
-            rows.append([item["kind"], rel, "", "", "", "", "error: unreadable; see 'dossier show'"])
-            continue
-        flags = []
-        if d["kind"] == "contact":
-            name = _dossier_name(d, catalog)
-            ident = f"{d.get('business_connection_id')}:{d.get('chat_id')}"
-            failure = failures.get(_dossier.chat_key(d.get("business_connection_id"), d.get("chat_id")))
-            if catalog is not None and (str(d.get("business_connection_id")), str(d.get("chat_id"))) not in catalog:
-                flags.append("history gone")
-        else:
-            name, ident = "persona", f"{len(d.get('chat_aliases') or {})} chats"
-            failure = failures.get("persona")
-        if failure:
-            flags.insert(0, f"failed: {failure.get('error')}")
-        coverage = d.get("coverage") or {}
-        rows.append([name, ident, f"rev {d['revision']}", _fact_summary(d),
-                     f"messages {coverage.get('messages_processed', 0)}",
-                     f"refreshed {d.get('refreshed_at') or 'never'}", "  ".join(flags)])
-    rows = [[_esc(cell) for cell in row] for row in rows]
-    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
-    for row in rows:
-        print("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+    state = _ds.load_state()
+    rows = [tuple(_esc(cell) for cell in _list_row(item, state)) for item in items]
+    name_width = max(len(row[0]) for row in rows)
+    ident_width = max(len(row[1]) for row in rows)
+    for name, ident, info, tags in rows:
+        print("  ".join(part for part in (name.ljust(name_width), ident.ljust(ident_width), info, tags) if part))
     return 0
 
 
-def _relative(path: Path) -> str:
-    try:
-        return path.relative_to(_dossier.dossier_root()).as_posix()
-    except ValueError:
-        return str(path)
+def _header_lines(target: Target, doc: dict[str, Any]) -> list[str]:
+    if target[0] == "persona":
+        head = "Owner persona"
+        source = (f"from {_plural(doc['messages'], 'message')} in {_plural(len(doc['chats']), 'chat')}"
+                  if doc.get("checked_at") else None)
+    else:
+        head = f"Dossier: {_label(target)} ({_ident(target[1])})"
+        source = f"from {_plural(doc['messages'], 'message')}" if doc.get("window_start") is not None else None
+    parts = [f"Revision {doc['revision']}"]
+    if doc.get("checked_at"):
+        parts.append(f"checked {_when(doc['checked_at'])}")
+    if doc.get("updated_at"):
+        parts.append(f"updated {_when(doc['updated_at'])}")
+    if source:
+        parts.append(source)
+    call = doc.get("last_call")
+    if isinstance(call, dict) and call.get("provider"):
+        parts.append(" / ".join(_ds.without_credentials(str(call.get(name))) for name in ("provider", "model")))
+    return [head, " · ".join(parts)]
 
 
-# ---------------------------------------------------------------------------
-# show
-# ---------------------------------------------------------------------------
+def _status_lines(target: Target, doc: dict[str, Any]) -> list[str]:
+    lines = []
+    key = "persona" if target[0] == "persona" else _ds.chat_key(target[1]["business_connection_id"],
+                                                                 target[1]["chat_id"])
+    failure = _ds.load_state()["failures"].get(key)
+    if failure:
+        lines.append(f"The last refresh failed ({_failure_text(failure)}, {_when(failure.get('at'))}); "
+                     "this is the earlier version.")
+    if target[0] == "contact" and _ds._entry_paused(target[1]):
+        lines.append(f"{_ds.CHAT_OFF} This version stays as it is.")
+    if doc.get("older_history_not_sent"):
+        cfg = _ds.load_config()
+        lines.append(f"Older history was not sent: the first build reads up to {cfg.backfill_messages} messages "
+                     f"from the last {cfg.backfill_days} days.")
+    return lines
+
+
+def _body_lines(target: Target, doc: dict[str, Any], *, previous: bool) -> list[str]:
+    built = doc.get("checked_at") if target[0] == "persona" else doc.get("window_start") is not None
+    if previous:
+        lines = ["--- previous version ---"]
+        lines.extend(_text_lines(doc["previous"]) if doc.get("previous") else ["No previous version."])
+    elif doc["document"]:
+        lines = _text_lines(doc["document"])
+    else:
+        lines = ["Nothing worth keeping yet." if built else "Waiting for the first build."]
+    if doc.get("note"):
+        lines.append("")
+        lines.append("--- owner note ---" if target[0] == "persona" else "--- owner note (not posted) ---")
+        lines.extend(_text_lines(doc["note"]))
+    return lines
+
+
+def _json_view(target: Target, doc: dict[str, Any]) -> dict[str, Any]:
+    view = {key: value for key, value in doc.items() if key != "seen"}
+    view["label"] = "Owner persona" if target[0] == "persona" else _label(target)
+    return view
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
+    if args.fact is not None:
+        return _removed_hint("show --fact")
     target = _resolve_target(args)
-    dossier = _load_required(target)
-    fact = _find_fact(dossier, args.fact) if args.fact else None
-    views, stale, stale_error = _stale(dossier)
+    doc = _load(target)
+    if doc is None:
+        _emit([f"error: no dossier for {_label(target)} yet"])
+        return 1
     if args.format == "json":
-        view = _json_view(target, dossier, stale, stale_error)
-        view["fact"] = fact
-        if fact is not None:
-            view["sources_now"] = _dossier.sources_now(dossier, fact, views)
-        print(_json_text(view))
+        print(_json_text(_json_view(target, doc)))
         return 0
-    if fact is not None:
-        _emit(_fact_lines(target, dossier, fact, views, stale, stale_error))
-    else:
-        _emit(_dossier_lines(target, dossier, stale, stale_error))
+    lines = _header_lines(target, doc)
+    lines.extend(_status_lines(target, doc))
+    lines.append("")
+    lines.extend(_body_lines(target, doc, previous=args.previous))
+    _emit(lines)
     return 0
 
 
-def _json_view(target: Target, dossier: dict[str, Any], stale: dict[str, Any], stale_error: str | None,
-               ) -> dict[str, Any]:
-    return {"target": _target_info(target, dossier),
-            "dossier": {k: v for k, v in dossier.items() if k != "seen"},
-            "stale": stale, "stale_error": stale_error}
-
-
-def _header_lines(target: Target, dossier: dict[str, Any]) -> list[str]:
-    info = _target_info(target, dossier)
-    if info["kind"] == "persona":
-        chats = ", ".join(f"{alias} ({name})" for alias, name in info["chats"].items())
-        lines = ["Dossier: owner persona" + (f"  chats: {chats}" if chats else "")]
-    else:
-        aliases = f" (aliases: {', '.join(info['aliases'])})" if info["aliases"] else ""
-        lines = [f"Dossier: {info['display_name']}{aliases}  {info['business_connection_id']}:{info['chat_id']}"]
-    refresh = dossier.get("last_refresh")
-    if refresh:
-        lines.append(f"Revision {dossier['revision']}, last refresh {refresh.get('at')} "
-                     f"({refresh.get('trigger')}) with {refresh.get('model')}")
-    else:
-        lines.append(f"Revision {dossier['revision']}, not refreshed by the model yet")
-    coverage = dossier.get("coverage")
-    if coverage:
-        text = (f"Coverage: {coverage.get('messages_processed', 0)} messages processed, "
-                f"{_day(coverage.get('first_message_at'))} .. {_day(coverage.get('last_message_at'))}")
-        if coverage.get("older_history_not_sent"):
-            text += "; older history was not sent (backfill limit)"
-        lines.append(text)
-    else:
-        lines.append("Coverage: no model pass yet")
-    return lines
-
-
-def _source_brief(source: dict[str, Any]) -> str:
-    parts = [str(source.get("ref")), _day(source.get("date")), _who(source)]
-    if source.get("deleted"):
-        parts.append("deleted")
-    if source.get("quote"):
-        parts.append(_quoted(source["quote"]))
-    return " ".join(parts)
-
-
-def _fact_line(fact: dict[str, Any], stale: dict[str, list[dict[str, str]]]) -> str:
-    line = f"{fact['id']}  {_fact_tag(fact)} {fact['text']}"
-    sources = fact.get("sources") or []
-    if sources:
-        line += "  " + "; ".join(_source_brief(s) for s in sources)
-    elif fact["status"] == "unsupported" or fact.get("source_gone"):
-        line += "  sources gone"
-    if stale.get(fact["id"]):
-        line += "  [stale: " + ", ".join(f"{c['ref']} {c['change']}" for c in stale[fact["id"]]) + "]"
-    return line
-
-
-def _dossier_lines(target: Target, dossier: dict[str, Any], stale: dict[str, list[dict[str, str]]],
-                   stale_error: str | None) -> list[str]:
-    facts = dossier["facts"]
-    active = [f for f in facts if f["status"] != "unsupported"]
-    unsupported = [f for f in facts if f["status"] == "unsupported"]
-    lines = _header_lines(target, dossier)
-    contradictions = sum(1 for f in active if f["section"] == "contradictions")
-    lines.append(f"Facts: {len(active)} active, {len(stale)} stale, {len(unsupported)} unsupported, "
-                 f"{sum(1 for f in facts if f.get('source_gone'))} source gone, "
-                 f"{_plural(contradictions, 'contradiction')}")
-    if stale_error:
-        lines.append(f"Stale check unavailable: {stale_error}")
-    sections = list(_dossier.SECTIONS[dossier["kind"]])
-    sections += sorted({f["section"] for f in active} - set(sections))
-    for section in sections:
-        in_section = [f for f in active if f["section"] == section]
-        if in_section:
-            lines.append("")
-            lines.append(f"## {section}")
-            lines.extend(_fact_line(f, stale) for f in in_section)
-    if unsupported:
-        lines.append("")
-        lines.append("## unsupported (removed on the next refresh)")
-        lines.extend(_fact_line(f, stale) for f in unsupported)
-    if not facts:
-        lines.append("")
-        lines.append("No facts yet.")
-    removed = dossier.get("removed") or []
-    if removed:
-        lines.append("")
-        lines.append(f"Owner-removed texts (not re-added): {len(removed)}")
-    return lines
-
-
-_STATE_TEXT = {
-    "old": "(older than the tracking window; not re-read)",
-    "gone": "source gone (pruned or no longer in history)",
-    "replaced": "source gone (replaced: deletion classified as a duplicate or correction)",
-    "unknown": "(history not checked)",
-}
-
-
-def _fact_lines(target: Target, dossier: dict[str, Any], fact: dict[str, Any], views: dict[str, Any],
-                stale: dict[str, list[dict[str, str]]], stale_error: str | None) -> list[str]:
-    revisions = f"revisions {fact.get('first_revision')}-{fact.get('last_revision')}"
-    lines = [f"{fact['id']}  {fact['section']}  {_fact_tag(fact)[1:-1]}  status {fact['status']}  {revisions}",
-             f"Text: {fact['text']}"]
-    owner = fact.get("owner") or {}
-    if owner.get("action") == "corrected":
-        lines.append(f"Owner: corrected {owner.get('at')}; previous text: {_quoted(owner.get('previous_text'))}")
-    elif owner.get("action") == "noted":
-        lines.append(f"Owner: note added {owner.get('at')}")
-    if stale_error:
-        lines.append(f"Stale check unavailable: {stale_error}")
-    now_sources = _dossier.sources_now(dossier, fact, views)
-    if not now_sources:
-        lines.append("Sources: none")
-        return lines
-    names = _persona_chat_names(dossier) if dossier["kind"] == "persona" else {}
-    lines.append("Sources:")
-    spans: dict[tuple[str, str], list[datetime]] = {}
-    for stored, src in zip(fact["sources"], now_sources, strict=True):
-        ref = str(src["ref"])
-        alias = stored.get("chat")
-        if alias:
-            ref += f" ({names.get(alias, alias)})"
-        head = f"  {ref}  {src.get('date')}  {_who(src)}"
-        lines.append(head + ("  deleted" if src.get("deleted") else ""))
-        if src.get("quote"):
-            lines.append(f"    quote:   {_quoted(src['quote'])}")
-        state = src.get("state")
-        if state in ("present", "edited"):
-            suffix = "  (edited since last refresh)" if state == "edited" else ""
-            lines.append(f"    history: {_quoted(src.get('text'))}{suffix}")
-        else:
-            lines.append(f"    history: {_STATE_TEXT.get(state, state)}")
-        seen_at = _history._parse_datetime(src.get("first_seen"))
-        if seen_at is not None:
-            key = (str(src.get("business_connection_id")), str(src.get("chat_id")))
-            spans.setdefault(key, []).append(seen_at)
-    for (connection, chat), times in spans.items():
-        since = _history._isoformat_utc(min(times) - timedelta(minutes=1))
-        until = _history._isoformat_utc(max(times) + timedelta(minutes=1))
-        lines.append("History: hermes telesec history show --connection "
-                     f"{shlex.quote(connection)} --chat {shlex.quote(chat)} --since {since} --until {until}")
-    return lines
+def _cmd_export(args: argparse.Namespace) -> int:
+    target = _resolve_target(args)
+    doc = _load(target)
+    if doc is None:
+        _emit([f"error: no dossier for {_label(target)} yet"])
+        return 1
+    if args.format == "json":
+        print(_json_text(_json_view(target, doc)))
+        return 0
+    title = "# Owner persona" if target[0] == "persona" else f"# Dossier: {_label(target)}"
+    lines = [title, EXPORT_HEADER, ""]
+    lines.extend(_text_lines(doc["document"]))
+    if doc.get("note"):
+        lines.extend(["", "## Owner note"])
+        lines.extend(_text_lines(doc["note"]))
+    _emit(lines)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -622,83 +702,93 @@ def _fact_lines(target: Target, dossier: dict[str, Any], fact: dict[str, Any], v
 # ---------------------------------------------------------------------------
 
 
+def _print_input(system: str, user: str) -> None:
+    # The exact text; JSON escapes C0 controls itself and _raw_json the C1 ones.
+    sys.stdout.write(f"--- system ---\n{system}\n--- user ---\n{_c1_escaped(user)}\n")
+
+
 def _cmd_preview(args: argparse.Namespace) -> int:
     target = _resolve_target(args)
-    cfg = _dossier.load_config()
+    if target[0] == "persona" and args.post:
+        print("error: --post works for one contact; pass --contact or --chat")
+        return 1
+    if target[0] == "contact" and _ds._entry_paused(target[1]):
+        print(f"error: {_ds.CHAT_OFF}")
+        return 1
     now = _history._utcnow()
-    text, meta = _dossier.build_preview(target, now=now)
-    label = _label(target)
-    notes: list[str] = []
-    if not cfg.enabled:
-        notes.append(DISABLED_PREVIEW)
-    status = meta["status"]
-    if status == "unqualified":
-        notes.append(f"# {label} does not qualify yet: needs at least one received and one sent text message "
-                     f"in the last {meta['backfill_days']} days")
-    elif status == "nothing_due":
-        what = "sent messages" if target[0] == "persona" else "messages"
-        notes.append(f"# no model call is due for {label}: no new or changed {what}")
+    notes = [] if _ds.load_config().enabled else [DISABLED_PREVIEW]
+    if not _history.capture_enabled():
+        notes.append(HISTORY_OFF)
+    if target[0] == "persona":
+        system, user, due = _ds.preview_persona(now=now)
+        if not user:
+            notes.append(f"# nothing due: no sent text messages in the last {_ds.load_config().backfill_days} days")
+        else:
+            _print_input(system, user)
+            sent = json.loads(user)["messages"]
+            chats = len({m["chat"] for m in sent})
+            source = f"{_plural(len(sent), 'message')} in {_plural(chats, 'chat')}"
+            notes.append(f"# would run: persona from {source}" if due else
+                         f"# not due yet; 'run --persona' would rebuild it from {source}")
+        _emit(notes, sys.stderr)
+        return 0
+    entry = target[1]
+    if args.post:
+        from . import dossier_post
+
+        result = dossier_post.post_payload(entry, now=now)
+        if isinstance(result, str):
+            notes.append(f"# /dossier would send nothing; refusal: {result}")
+        else:
+            system, user = result
+            _print_input(system, user)
+            sent = json.loads(user).get("messages") or []
+            notes.append(f"# /dossier would send {_plural(len(sent), 'message')}; refusal: none")
+        _emit(notes, sys.stderr)
+        return 0
+    system, user, info, gate = _ds.preview_contact(entry, now=now)
+    if info.first and not info.qualified:
+        cfg = _ds.load_config()
+        notes.append(f"# nothing due: {_label(target)} does not qualify yet; the first build needs a received and a "
+                     f"sent text message in the last {cfg.backfill_days} days")
+    elif not user:
+        notes.append("# nothing due")
     else:
-        notes.append(f"# next call for {label}: {meta['mode']}, batch {meta['batch_index']} of "
-                     f"{meta['batch_total']}, {_plural(meta['messages'], 'message')} ({meta['batch_new']} new, "
-                     f"{meta['batch_changed']} changed), {meta['current_facts']} current facts")
-        notes.append(f"# provider={meta['provider']} model={meta['model']} schema={meta['schema']} "
-                     f"purpose={meta['purpose']}")
-    if target[0] == "contact" and status != "unqualified":
-        notes.append(_quiet_note(meta, now))
-    if text is not None:
-        sys.stdout.write(text + "\n")  # exact payload bytes; JSON already escapes control characters
+        _print_input(system, user)
+        notes.append(f"# would run: {'first' if info.first else 'update'}, {info.new} new, {info.edited} edited, "
+                     f"{info.deleted} deleted, note {'changed' if info.note_changed else 'unchanged'}"
+                     f"{'; message check would apply' if gate else ''}")
     _emit(notes, sys.stderr)
     return 0
 
 
-def _quiet_note(meta: dict[str, Any], now: datetime) -> str:
-    last = _history._parse_datetime(meta.get("last_activity_at"))
-    if last is None:
-        return "# quiet rule: met (no activity recorded)"
-    ago = f"last activity {int((now - last).total_seconds() // 60)} min ago"
-    if meta.get("quiet_met"):
-        return f"# quiet rule: met ({ago})"
-    return (f"# quiet rule: not met ({ago}); the worker waits for {meta['quiet_minutes']} quiet minutes, "
-            "'dossier run --contact' does not")
-
-
 def _cmd_run(args: argparse.Namespace) -> int:
     # Check the opt-in first: a disabled run takes no lock and reads no history.
-    if not _dossier.load_config().enabled:
+    if not _ds.load_config().enabled:
         print(DISABLED_RUN)
         return 1
     if not _history.capture_enabled():
         print(HISTORY_OFF_RUN)
         return 1
-    llm = _dossier._LLM
-    if llm is None or not callable(getattr(llm, "complete_structured", None)):
+    llm = _ds._LLM
+    if llm is None or not callable(getattr(llm, "complete", None)):
         print(NO_FACADE)
         return 1
     target = _resolve_target(args) if _has_target(args) else None
-    if target is not None and target[0] == "contact" and _dossier._entry_paused(target[1]):
-        print(f"error: {_dossier.CHAT_OFF}")
+    if target is not None and target[0] == "contact" and _ds._entry_paused(target[1]):
+        print(f"error: {_ds.CHAT_OFF}")
         return 1
-    report = _dossier.run_cycle(llm=llm, trigger="cli", target=target)
-    if report.outcome == "chat_off":  # switched off for the chat since the check above
-        print(f"error: {_dossier.CHAT_OFF}")
-        return 1
-    if report.outcome == "disabled":
-        print(DISABLED_RUN)
-        return 1
-    if report.outcome == "history_off":  # turned off since the check above
-        print(HISTORY_OFF_RUN)
-        return 1
-    if report.outcome == "busy":
-        print(BUSY)
+    report = _ds.run_cycle(llm=llm, trigger="cli", target=target)
+    refusals = {"chat_off": f"error: {_ds.CHAT_OFF}", "disabled": DISABLED_RUN, "history_off": HISTORY_OFF_RUN,
+                "busy": BUSY,
+                "catalog_unavailable": "error: the contact catalog is unavailable; check it with "
+                                       "'hermes telesec history catalog'"}
+    if report.outcome in refusals:  # switched or locked since the checks above
+        print(refusals[report.outcome])
         return 1
     if report.outcome == "aborted_trust":
         print(f"error: model call denied by the Hermes trust gate: {_esc(report.error or 'denied')}")
         print(_esc(TRUST_HINT))
-        return 1
-    if report.outcome == "catalog_unavailable":
-        print("error: the contact catalog is unavailable; check it with "
-              "'hermes telesec history catalog'")
         return 1
     if report.outcome == "no_history":
         print("No Telegram Business history found; nothing to do.")
@@ -710,182 +800,100 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Owner edits
+# note / forget / removed commands
 # ---------------------------------------------------------------------------
 
 
-def _owner_edit(action: str) -> Callable[[argparse.Namespace], int]:
-    def run(args: argparse.Namespace) -> int:
-        target = _resolve_target(args)
-        dossier, op = _dossier.apply_owner_edit(
-            target, action, fact_id=getattr(args, "fact", None), text=getattr(args, "text", None),
-            section=getattr(args, "section", None))
-        _emit([OWNER_EDIT_DONE[action].format(fid=op.get("fact_id"), section=op.get("section"),
-                                              label=_label(target), rev=dossier["revision"])])
-        return 0
-
-    return run
+def _run_hint(args: argparse.Namespace, target: Target) -> str:
+    if target[0] == "persona":
+        return f"{CLI} run --persona"
+    if args.contact is not None:
+        escaped = re.sub(r'(["\\$`])', r"\\\1", args.contact)
+        return f'{CLI} run --contact "{escaped}"'
+    entry = target[1]
+    return (f"{CLI} run --connection {shlex.quote(str(entry['business_connection_id']))} "
+            f"--chat {shlex.quote(str(entry['chat_id']))}")
 
 
-# ---------------------------------------------------------------------------
-# changes / export
-# ---------------------------------------------------------------------------
-
-
-def _cmd_changes(args: argparse.Namespace) -> int:
+def _cmd_note(args: argparse.Namespace) -> int:
     target = _resolve_target(args)
-    limit = max(1, min(int(args.limit), MAX_CHANGES_LIMIT))
-    entries = list(reversed(_dossier.read_changes(_dossier.target_dir(target), limit)))
-    if args.format == "json":
-        print(_json_text(entries))
+    label = _label(target)
+    text = None if args.text is None else _doc.clean_note(args.text)
+    if args.text is None and not args.clear:
+        doc = _load(target)
+        _emit(_text_lines(doc["note"]) if doc and doc.get("note") else [f"No owner note for {label}."])
         return 0
-    if not entries:
-        _emit([f"No changes recorded for {_label(target)}."])
+    if not text:
+        doc = _load(target)
+        if not doc or not doc.get("note"):
+            _emit([f"No owner note for {label}."])
+            return 0
+        _ds.set_note(target, None)
+        _emit([f"Cleared the owner note for {label}."])
         return 0
-    lines: list[str] = []
-    for entry in entries:
-        lines.extend(_change_lines(entry))
-    _emit(lines)
-    return 0
-
-
-def _change_lines(entry: dict[str, Any]) -> list[str]:
-    head = f"rev {entry.get('revision')}  {entry.get('at')}  {entry.get('actor')}"
-    ops = [op for op in entry.get("changes") or [] if isinstance(op, dict)]
-    if entry.get("actor") == "owner":
-        return [f"{head}  " + "; ".join(_op_text(op) for op in ops)]
-    context = [str(entry.get("trigger"))]
-    batch = entry.get("batch") or {}
-    if batch:
-        context.append(f"batch {batch.get('index')}/{batch.get('total')}")
-    counts = entry.get("input") or {}
-    if counts:
-        context.append(f"{counts.get('new', 0)} new, {counts.get('changed', 0)} changed")
-    if entry.get("model"):
-        head += f" {entry['model']}"
-    head += f" ({', '.join(context)})"
-    summary = entry.get("summary") or {}
-    tally = (f"+{summary.get('added', 0)} ~{summary.get('updated', 0)} -{summary.get('retired', 0)}"
-             if entry.get("actor") == "model" else "")
-    for key, name in (("invalidated", "invalidated"), ("unsupported", "unsupported"),
-                      ("removed_unsupported", "removed"), ("source_gone", "source gone")):
-        if summary.get(key):
-            tally += f" {name} {summary[key]}"
-    dropped = {k: v for k, v in (entry.get("dropped") or {}).items() if v}
-    if dropped:
-        detail = ", ".join(f"{k} {v}" for k, v in sorted(dropped.items()))
-        tally += f" dropped {sum(dropped.values())} ({detail})"
-    return [f"{head}  {tally.strip()}".rstrip(), *(f"  {_op_text(op)}" for op in ops)]
-
-
-def _op_text(op: dict[str, Any]) -> str:
-    name, fid = op.get("op"), op.get("fact_id")
-    reason = f" ({op['reason']})" if op.get("reason") else ""
-    if name in ("update", "correct"):
-        return f"{name} {fid}: {_quoted(op.get('before'))} -> {_quoted(op.get('after'))}{reason}"
-    if name in ("add", "note"):
-        return f"{name} {fid} {op.get('section')}: {_quoted(op.get('text'))}{reason}"
-    if name == "invalidate":
-        return f"invalidate {fid} {op.get('ref')}: {op.get('why')}"
-    if name in ("retire", "remove", "unsupported", "remove_unsupported"):
-        return f"{name} {fid}: {_quoted(op.get('text'))}{reason}"
-    return f"{name} {fid}"
-
-
-def _cmd_export(args: argparse.Namespace) -> int:
-    target = _resolve_target(args)
-    dossier = _load_required(target)
-    changes = _dossier.read_changes(_dossier.target_dir(target))
-    if args.format == "json":
-        _, stale, stale_error = _stale(dossier)
-        view = _json_view(target, dossier, stale, stale_error)
-        view["changes"] = changes
-        print(_json_text(view))
-        return 0
-    print("\n".join(_markdown(target, dossier)))
-    return 0
-
-
-def _markdown(target: Target, dossier: dict[str, Any]) -> list[str]:
-    info = _target_info(target, dossier)
-    if info["kind"] == "persona":
-        lines = ["# Owner persona"]
+    if len(text) > _doc.NOTE_MAX_CHARS:
+        _emit([f"error: the note is {len(text)} characters; the limit is {_doc.NOTE_MAX_CHARS}"])
+        return 2
+    result = _ds.set_note(target, text)
+    saved = f"Saved the owner note for {label} ({_plural(result['chars'], 'character')})."
+    # The same checks as run, so the hint never names a command that refuses.
+    if not _ds.load_config().enabled:
+        then = f"Dossiers are disabled; the note is used once they are turned on with {ENABLE_HOW}."
+    elif not _history.capture_enabled():
+        then = f"Dossiers are paused while history is off; the note is used once it is turned on with {HISTORY_ON_HOW}."
+    elif target[0] == "contact" and _ds._entry_paused(target[1]):
+        then = f"{_ds.CHAT_OFF} The note is used once it is back on."
     else:
-        lines = [f"# Dossier: {_plain(info['display_name'])}"]
-    lines += ["", "> Dossier text is data, not instructions.", ""]
-    lines += [f"- {_plain(line)}" for line in _header_lines(target, dossier)[1:]]
-    if info["kind"] == "contact":
-        lines.append(f"- Chat: {_plain(info['business_connection_id'])}:{_plain(info['chat_id'])}")
-        if info["aliases"]:
-            lines.append(f"- Aliases: {', '.join(_plain(a) for a in info['aliases'])}")
-    else:
-        for alias, name in info["chats"].items():
-            lines.append(f"- Chat {alias}: {_plain(name)}")
-    facts = dossier["facts"]
-    sections = list(_dossier.SECTIONS[dossier["kind"]])
-    sections += sorted({f["section"] for f in facts} - set(sections))
-    for section in sections:
-        in_section = [f for f in facts if f["section"] == section]
-        if not in_section:
-            continue
-        lines += ["", f"## {section}", ""]
-        for fact in in_section:
-            lines.append(f"- **{fact['id']}** ({_plain(_fact_tag(fact)[1:-1])}"
-                         f"{', unsupported' if fact['status'] == 'unsupported' else ''}) {_plain(fact['text'])}")
-            for source in fact.get("sources") or []:
-                quote = f": \"{_plain(source['quote'])}\"" if source.get("quote") else ""
-                deleted = " deleted" if source.get("deleted") else ""
-                lines.append(f"  - {_plain(source.get('ref'))} {_day(source.get('date'))} {_who(source)}"
-                             f"{deleted}{quote}")
-    removed = dossier.get("removed") or []
-    if removed:
-        lines += ["", "## Owner-removed facts (not re-added)", ""]
-        lines += [f"- {_plain(r.get('fact_id'))}: {_plain(r.get('text'))}" for r in removed]
-    return lines
-
-
-# ---------------------------------------------------------------------------
-# forget
-# ---------------------------------------------------------------------------
+        what = "persona" if target[0] == "persona" else "dossier"
+        then = f"The next cycle rewrites the {what} with it; run '{_run_hint(args, target)}' to do it now."
+    _emit([f"{saved} {then}"])
+    return 0
 
 
 def _cmd_forget(args: argparse.Namespace) -> int:
     target = _resolve_target(args, allow_all=True)
-    enabled = _dossier.load_config().enabled
-    result = _dossier.forget(target)
+    enabled = _ds.load_config().enabled
+    result = _ds.forget(target)
     if target[0] == "all":
         if not result["existed"]:
             lines = ["No dossiers stored."]
         else:
             persona = "the owner persona" if result["persona"] else "no owner persona"
-            lines = [(f"Forgot {_plural(result['contacts'], 'contact dossier')} and {persona}. "
-                      "Canonical history was not changed.")]
+            lines = [f"Forgot {_plural(result['contacts'], 'contact dossier')} and {persona}. History was not touched."]
         lines.append("Dossiers are still enabled, so the worker rebuilds them from history on its next cycle. "
                      f"To stop processing: run '{DISABLE_COMMAND}', then '{FORGET_ALL_COMMAND}'." if enabled
                      else "Dossiers are disabled; nothing will be rebuilt.")
         _emit(lines)
         return 0
     label = _label(target)
-    if not result["existed"]:
-        _emit([f"No dossier stored for {label}."])
-        return 0
     what = "the owner persona" if target[0] == "persona" else f"the dossier for {label}"
-    if target[0] == "contact":
-        ident = f"{target[1].get('business_connection_id')}:{target[1].get('chat_id')}"
-        if ident != label:
-            what += f" ({ident})"
-    revision = result["revision"] if result["revision"] is not None else "unknown"
-    lines = [(f"Forgot {what}: revision {revision}, {_plural(result['facts'], 'fact')}, "
-              f"{_plural(result['owner_edits'], 'owner edit')}, "
-              f"{_plural(result['log_entries'], 'log entry', 'log entries')}. Canonical history was not changed.")]
-    if not enabled:
-        lines.append("Dossiers are disabled; nothing will be rebuilt.")
-    elif target[0] == "contact" and "chat_type" not in target[1]:
-        lines.append("Its chat is no longer in the contact catalog, so nothing will be rebuilt.")
+    if result["existed"]:
+        revision = result["revision"] if result["revision"] is not None else "unknown"
+        line = f"Forgot {what} (revision {revision}{', with owner note' if result['note'] else ''}). "
+        line += "History was not touched."
     else:
-        lines.append("Dossiers are enabled, so the worker rebuilds it from history on its next cycle.")
+        line = f"No dossier stored for {label}."
+    if result.get("persona_reset"):
+        line += " The owner persona was erased and will be rebuilt without this chat."
+    lines = [line]
+    if result["existed"] or result.get("persona_reset"):
+        if not enabled:
+            lines.append("Dossiers are disabled; nothing will be rebuilt.")
+        elif target[0] == "contact" and "chat_type" not in target[1]:
+            lines.append("Its chat is no longer in the contact catalog, so nothing will be rebuilt.")
+        else:
+            lines.append("Dossiers are enabled, so the worker rebuilds it from history on its next cycle.")
     _emit(lines)
     return 0
+
+
+def _removed_hint(command: str) -> int:
+    _emit([REMOVED_HINT.format(cmd=command), CHANGES_HINT if command == "changes" else NOTE_HINT])
+    return 1
+
+
+def _removed(command: str) -> Callable[[argparse.Namespace], int]:
+    return lambda args: _removed_hint(command)
 
 
 _ACTIONS: dict[str, Callable[[argparse.Namespace], int]] = {
@@ -894,14 +902,12 @@ _ACTIONS: dict[str, Callable[[argparse.Namespace], int]] = {
     "disable": _cmd_disable,
     "list": _cmd_list,
     "show": _cmd_show,
-    "preview": _cmd_preview,
-    "correct": _owner_edit("correct"),
-    "pin": _owner_edit("pin"),
-    "unpin": _owner_edit("unpin"),
-    "remove": _owner_edit("remove"),
-    "note": _owner_edit("note"),
-    "changes": _cmd_changes,
     "export": _cmd_export,
-    "forget": _cmd_forget,
+    "preview": _cmd_preview,
+    "note": _cmd_note,
     "run": _cmd_run,
+    "forget": _cmd_forget,
+    "gate": _cmd_gate,
+    "clairic": _cmd_clairic,
+    **{name: _removed(name) for name in REMOVED},
 }

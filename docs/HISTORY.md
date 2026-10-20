@@ -41,7 +41,7 @@ While history holds messages from a chat that saves nothing now, its panel shows
 - every record of that chat on your Business connection, whatever wrote it (the whole chat directory),
 - the chat's entry in the contact catalog (`contacts.json`),
 - pending deletion classification for the chat,
-- then the chat's dossier. A running dossier refresh stops first, and history goes before the dossier, so nothing can rebuild the dossier from it.
+- then the chat's dossier, and the owner persona's text when the persona or its previous version read this chat (its note stays; the next dossier cycle rebuilds it from the other chats). A running dossier refresh and a `/dossier` summary being written stop first, and history goes before the dossier, so nothing can rebuild the dossier from it.
 
 ![Real Telegram screenshot of the owner panel for a chat set to Don't save, with the 🗑 Erase saved history row under Save history / • Don't save. The contact's name, username, and chat ID are blurred.](images/owner-panel-erase.png)
 
@@ -55,7 +55,7 @@ hermes telesec history forget --contact @alice --yes
 hermes telesec history forget --all --yes
 ```
 
-`forget` takes the same selectors as `show`. Without `--yes` it prints what it would erase and exits with code 1. With `--yes` it erases the chat's history and dossier the same way as the button. It also works while the chat still saves history; then it says new messages are saved again. `--all --yes` erases all saved history and every dossier, including the owner persona; Telegram has no button for that. Persona facts learned from an erased chat stay until you remove them in the persona view or run `dossier forget --persona`. A running gateway notices the erase the next time it reads the chat; no restart is needed.
+`forget` takes the same selectors as `show`. Without `--yes` it prints what it would erase and exits with code 1. With `--yes` it erases the chat's history and dossier the same way as the button. It also works while the chat still saves history; then it says new messages are saved again. `--all --yes` erases all saved history and every dossier, including the owner persona; Telegram has no button for that. Erasing one chat also resets the owner persona at once when the persona or its previous version read that chat: its text goes, its note stays, and the next dossier cycle rebuilds it from the other chats. A running gateway notices the erase the next time it reads the chat; no restart is needed.
 
 ## Find a conversation
 
@@ -181,6 +181,6 @@ Don't save for one chat stops capture but keeps what that chat already has. [Era
 
 The native Telegram observer records eligible Business text before ordinary Hermes handlers. It also receives deleted-message updates, which have no effective message. Capture does not change the ordinary Hermes authorization or agent routing of text messages. Turn history off in Settings to stop capturing new messages; use Hermes's normal configuration to control agent replies.
 
-The owner's `/dossier` command (once the bot confirms the sender as the connection's owner) and the dossier the bot posts are never recorded. A `/dossier` whose owner cannot be confirmed is stored as ordinary text, and an owner's edit of a stored message into `/dossier` is recorded as an edit. Dossiers read history only through its read locks and never modify it. `dossier forget` deletes dossier data only and never touches history; [erasing a chat](#erase-one-chat) deletes both. When retention or size pruning removes a message a dossier cites, the dossier drops that source. A fact with no sources left becomes unsupported, or `source gone` if the owner pinned or corrected it ([source changes](DOSSIERS.md#source-changes)).
+The owner's `/dossier` command (once the bot confirms the sender as the connection's owner) and the summary the bot posts are never recorded. A `/dossier` whose owner cannot be confirmed is stored as ordinary text, and an owner's edit of a stored message into `/dossier` is recorded as an edit. Dossiers read history only through its read locks and never modify it. `dossier forget` deletes dossier data only and never touches history; [erasing a chat](#erase-one-chat) deletes both. A deleted message that a dossier already read is sent to the dossier model once, which removes what only that message said. When retention or size pruning removes messages, the dossier keeps what it learned: pruning is never a deletion and costs no model call ([edits, deletions and retention](DOSSIERS.md#source-changes)).
 
 The separate voice module still deletes transient audio after processing. This version does not insert voice transcripts into the text archive automatically.

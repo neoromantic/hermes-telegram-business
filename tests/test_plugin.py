@@ -433,9 +433,84 @@ def test_register_registers_hook_cli_and_skill_when_supported(plugin):
         (
             "dossiers",
             plugin._dossier_support.skill_path(),
-            "Telegram Business contact dossiers and owner persona: safe read and correction recipes.",
+            "Telegram Business contact dossiers and owner persona: read, note, refresh and forget.",
         ),
     ]
+
+
+def _task_ctx(**extra):
+    return SimpleNamespace(
+        llm=None, register_telegram_handler=lambda _callback: None, register_hook=lambda _name, _callback: None,
+        get_config={}.get, register_cli_command=lambda **_kwargs: None,
+        register_skill=lambda _name, _path, _description="": None, **extra,
+    )
+
+
+@pytest.fixture
+def no_dossier_route_env(monkeypatch: pytest.MonkeyPatch):
+    for name in ("TELESEC_DOSSIER_PROVIDER", "TELESEC_DOSSIER_MODEL", "TELESEC_CLEANUP_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_register_registers_the_dossier_model_task(plugin, no_dossier_route_env):
+    ds = plugin._dossier_support
+    tasks = []
+
+    def register_auxiliary_task(key, *, display_name, description, defaults=None, inherit_from=None):
+        tasks.append({"key": key, "display_name": display_name, "description": description, "defaults": defaults,
+                      "inherit_from": inherit_from})
+
+    plugin.register(_task_ctx(register_auxiliary_task=register_auxiliary_task))
+
+    assert tasks == [{
+        "key": "telesec_dossier",
+        "display_name": "Telesec dossiers",
+        "description": "Writes private Telesec contact dossiers, the owner writing persona and /dossier chat summaries.",
+        "defaults": ds.TASK_DEFAULTS,
+        "inherit_from": None,
+    }]
+    assert ds.TASK_DEFAULTS == {
+        "provider": "ai-gateway",
+        "model": "google/gemini-3.8-flash",
+        "timeout": 120,
+        "reasoning_effort": "low",
+        "extra_body": {"max_tokens": 8192, "providerOptions": {"gateway": {"zeroDataRetention": True}}},
+    }
+    # The host keeps the defaults and merges user config into them; the plugin's own copy must not change.
+    tasks[0]["defaults"]["extra_body"]["max_tokens"] = 1
+    assert ds.TASK_DEFAULTS["extra_body"]["max_tokens"] == 8192
+    cfg = ds.load_config()
+    assert cfg.task_registered is True and (cfg.provider, cfg.model) == ("ai-gateway", "google/gemini-3.8-flash")
+    assert ds.route().task == "telesec_dossier" and ds.route().provider is None and ds.route().model is None
+    assert not any("not registered" in line for line in cfg.warnings)
+
+
+def test_register_works_without_the_task_api(plugin, no_dossier_route_env, caplog):
+    ds = plugin._dossier_support
+    ds.set_task_registered(True)
+
+    with caplog.at_level("WARNING"):
+        plugin.register(_task_ctx())  # Hermes older than 0.21.6
+
+    assert ds.load_config().task_registered is False
+    route = ds.route()
+    assert (route.task, route.provider, route.model) == (None, "ai-gateway", "google/gemini-3.8-flash")
+    assert "dossier model task not registered" not in caplog.text
+
+
+def test_register_works_when_the_host_rejects_the_task(plugin, no_dossier_route_env, caplog):
+    ds = plugin._dossier_support
+
+    def register_auxiliary_task(key, **_kwargs):
+        raise ValueError(f"auxiliary task {key!r} already registered by plugin 'example-other'")
+
+    with caplog.at_level("WARNING"):
+        plugin.register(_task_ctx(register_auxiliary_task=register_auxiliary_task))
+
+    assert ds.load_config().task_registered is False
+    assert ds.route().task is None
+    assert "telesec: dossier model task not registered (ValueError)" in caplog.text
+    assert "example-other" not in caplog.text  # the type name only, never the host's message
 
 
 def test_register_adds_a_neutral_agent_reference_when_supported(plugin):
@@ -457,7 +532,8 @@ def test_register_adds_a_neutral_agent_reference_when_supported(plugin):
     assert re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", section_id)  # Hermes' section id rule
     assert len(content) <= kwargs["max_chars"] <= 4000
     for needle in ("mode get <chat_id or @username> --format json", "effective_mode", "stats --chat",
-                   "telesec:history", "Панель владельца:", "`chat <id>`"):
+                   "telesec:history", "Панель владельца:", "`chat <id>`", "`telesec:dossiers` (read and note)",
+                   "Never quote a private dossier, owner note or persona into a Business chat", "`/dossier`"):
         assert needle in content
 
     # A host without the API, or one that rejects the section, still loads the plugin.
@@ -2065,3 +2141,27 @@ def test_audio_file_env_defaults_and_bounds(plugin, monkeypatch):
     monkeypatch.setenv("TELESEC_AUDIO_FILE_PROBE_SECONDS", "10")
     monkeypatch.setenv("TELESEC_AUDIO_FILE_MIN_WORDS", "3")
     assert plugin._audio_file_limits() == (5, 1024 * 1024, 5, 3)
+
+
+# Critical prompt-injection rules of the Hermes plugin security scan (tools/skills_guard.py in Hermes 0.22).
+# One match outside a test tree rates the plugin "dangerous", and Hermes then refuses to install it.
+HERMES_CRITICAL_INJECTION = (
+    r"ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions",
+    r"system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override",
+    r"disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)",
+)
+
+
+def test_shipped_files_pass_the_hermes_injection_scan():
+    patterns = [re.compile(pattern, re.IGNORECASE) for pattern in HERMES_CRITICAL_INJECTION]
+    hits = []
+    for path in sorted(ROOT.rglob("*")):
+        relative = path.relative_to(ROOT)
+        if relative.parts[0] in {"tests", ".git", ".venv"} or not path.is_file():
+            continue
+        if path.suffix not in {".py", ".md", ".yaml", ".yml", ".json", ".html", ".txt", ".toml"}:
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if any(pattern.search(line) for pattern in patterns):
+                hits.append(f"{relative}:{number}")
+    assert hits == []

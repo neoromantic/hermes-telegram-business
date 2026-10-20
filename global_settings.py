@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from . import dossier_support as _ds
+from . import dossier_view as _dv
 from . import history_support as _history
 from . import transcription_modes as _modes
 
@@ -542,8 +543,7 @@ def _set(feature: str, value: str) -> int:
         print(f"warning: corrupt {SETTINGS_FILENAME} backed up to {result['backup_path']}")
     print(f"{feature}: {_state(on)}" + ("" if result["changed"] else " (unchanged)"))
     if feature == "dossiers" and on:
-        cfg = _ds.load_config()
-        print(f"The text of all private Business chats is sent to {cfg.provider} / {cfg.model}.")
+        print("\n".join(_dv.enable_lines(_ds.load_config(), "en")))
     if on and feature == "dossiers" and not enabled("history"):
         print(f"note: dossiers are paused while history is off; turn it on with '{SETTINGS_COMMAND} set history on'.")
     print("The gateway applies it to the next update; no restart is needed.")

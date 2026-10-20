@@ -49,8 +49,15 @@ The product connects readable Telegram voice messages with useful personal corre
 
 - History is switched per chat in Telegram, not by environment variables: the owner taps **Save history** or **Don't save**. `TELESEC_HISTORY_CONNECTIONS`, `TELESEC_HISTORY_CHATS`, and `TELESEC_HISTORY_CHAT_TYPES` are kept once as a stored rule that still keeps the same chats out until the owner turns one on or runs `hermes telesec chat scope clear --yes`; while the variables stay set they apply too, so going back to 0.13 keeps working. While a chat saves no history, **🗑 Erase saved history** deletes its saved history and its dossier after a confirmation; `hermes telesec history forget` does the same from the terminal, and `--all` erases everything. [Moving from the history environment variables](../README.md#moving-from-the-history-environment-variables), [erase one chat](HISTORY.md#erase-one-chat).
 
+## Unreleased
+
+- Dossiers as documents ([#17](https://github.com/neoromantic/telesec/issues/17)): each contact dossier is one short Markdown document that a model rewrites as the chat goes on, and the owner corrects it with a note. The persona is rebuilt from scratch from the owner's own messages and resets when a chat it read is erased. `/dossier` posts a fresh summary written from the chat's live messages only. Dossiers use their own Hermes model task (Vercel AI Gateway → Google, zero data retention by default), with an optional message check (TypeSafe Jev) and optional fact extraction (Cloudflare), both off by default. [Dossier guide](DOSSIERS.md).
+
 ## Next
 
+- Owner note in Telegram: a note button on the panel's Dossier screen, to write or clear the owner note without the CLI. Today notes are written with `hermes telesec dossier note`.
+- Message check and fact extraction in Settings: one Settings line that shows and switches the dossier message check and fact extraction, which only the CLI switches today (`hermes telesec dossier gate`, `hermes telesec dossier clairic`).
+- Measure fact extraction (Clairic): run the eval's `v2-clairic` arm once a Cloudflare token is available, on Russian and English chats. Keep it only if it halves date, amount, and contact-detail errors, gets at least 90% of Russian fields right, and adds less than $0.001 and 1.5 seconds (p95) per refresh; otherwise remove it and say why in the [dossier guide](DOSSIERS.md#cost-and-quality).
 - Voice notes in stats: history first needs a separate, metadata-only capture change (send time, side, and duration; no audio). Stats then add a voice row to the panel and the card. Until then, stats count text messages only.
 
 - Known limit: claimed panel taps and Business updates stop propagation before Hermes' group-99 dispatch counter, so the core "ingress healthy but deaf" warning can show a stale gap after quiet periods. The fix belongs in Hermes core (count dispatch in a group before every plugin group).
@@ -60,13 +67,13 @@ The product connects readable Telegram voice messages with useful personal corre
 | Order | Work | Result |
 |---|---|---|
 | 1 | [History #2](https://github.com/neoromantic/telesec/issues/2) | Finish integration review and prove new capture, restart, search, and deletion behavior. |
-| 2 | [Owner/contact dossiers #17](https://github.com/neoromantic/telesec/issues/17) | First slice implemented: opt-in [dossiers](DOSSIERS.md) for all private chats and an owner persona, with evidence, corrections, freshness, and forgetting. |
+| 2 | [Owner/contact dossiers #17](https://github.com/neoromantic/telesec/issues/17) | Implemented: opt-in [dossiers](DOSSIERS.md) for all private chats and an owner persona, as short documents that a model keeps current, with owner notes, forgetting, and a shareable `/dossier` summary. |
 | 3 | [Contextual drafts #18](https://github.com/neoromantic/telesec/issues/18) | Private suggestions using conversation context and approved dossiers; owner Send / Edit / Discard. |
 | 4 | [Automatic replies #19](https://github.com/neoromantic/telesec/issues/19) | Explicit per-chat activation, reply limits, pause, and owner handover. |
 
 The [assistant design](ASSISTANT.md) explains the owner experience, modes, context boundaries, and delivery lifecycle. Each issue is a set of requirements rather than a prescribed storage framework.
 
-Deferred from #17: using dossiers in drafts (#18) and automatic replies (#19), corrections and notes from Telegram (CLI only for now), voice transcripts as a dossier source, and cross-contact persona leakage filters.
+Deferred from #17: using dossiers in drafts (#18) and automatic replies (#19), owner notes from Telegram (CLI only for now), voice notes themselves as a dossier source (only their transcripts are), and cross-contact persona leakage filters.
 
 ## Independent improvements
 
