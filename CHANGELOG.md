@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.15.1 - 2026-10-20
+
 - Message refs such as `[m123]` no longer reach the owner. The Dossier screen, the `/dossier` summary, and the default `show` and `export` output leave out every ref: one id, a list such as `[m12, m15]`, or a range such as `[m12–m18]`, which the model sometimes wrote. The stored document keeps them, because a message deleted after history dropped its text comes to the model as a ref only; `show --format json` and `export --format json` still print the stored text. The writer prompt now asks for whole refs and never a range.
 - **My persona** no longer says "at least 10 messages" to an owner who has sent them. When there are enough sent messages but no persona yet, it says the persona is written at the next dossier cycle («Она появится после следующего цикла обработки»). `dossier status` says the same: `owner persona yes` only once a persona was written, `due at the next cycle`, `no`, or `unreadable`. Until the first persona is written, every cycle checks it, not once a day, and `list` shows a persona that was checked but never written as waiting for its first build.
 - When the `/dossier` send times out or loses its connection, the post may be in the chat, so the owner no longer reads "Nothing was posted". The message says the summary may have been posted and asks the owner to check the chat before sending `/dossier` again («Итоги, возможно, отправлены в чат …»).
