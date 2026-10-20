@@ -1,6 +1,6 @@
 """Scenarios for the dossier eval: made-up chats, gold facts, canaries and gate labels.
 
-Every person, company, phone (``+7 912 345-67-…``) and mail address (``@example.com``) here is
+Every person, company, phone (``+1 202 555-01…``) and mail address (``@example.com``) here is
 fictional. A scenario is a list of steps replayed in order: bursts of messages written as
 canonical history records, owner notes, a retention prune, a chat erase, and checkpoints where
 the eval runs a dossier cycle and checks the result.
@@ -47,7 +47,7 @@ class Burst:
 @dataclass(frozen=True)
 class Fact:
     """A key fact. ``match`` and ``stale_match`` are alternative tokens compared with ``judge.key`` (letters and
-    digits only), so ``+7 912 345-67-27`` and ``+7 (912) 345 67 27`` match the same token."""
+    digits only), so ``+1 202 555-0127`` and ``+1 (202) 555 01 27`` match the same token."""
 
     id: str
     chat: int
@@ -263,7 +263,7 @@ def _s1() -> Scenario:
     c.say("out", "Great, I'll write to him when I get to the data model.")
     c.say("in", "Also, I'd love a weekly check-in. Do Tuesdays at 10:00 work for you? Video call.")
     c.say("out", "Tuesdays at 10 are fine.")
-    c.say("in", "And my mobile is +7 912 345-67-27 if anything urgent comes up.")
+    c.say("in", "And my mobile is +1 202 555-0127 if anything urgent comes up.")
     c.say("out", "Saved. Telegram works best for me though.")
     c.say("out", "Could you share access to the current app build? A test account would be enough.")
     c.say("in", "Sure, Owen will set up a test account for you.")
@@ -360,7 +360,7 @@ def _s1() -> Scenario:
     cp3 = c.later()
 
     c.at(_t(9, 22, 14, 0))
-    c.say("in", "Heads up: I got a new work phone. My new number is +7 912 345-67-03.")
+    c.say("in", "Heads up: I got a new work phone. My new number is +1 202 555-0103.")
     c.say("in", "The old one stops working on Friday.")
     c.say("out", "Updated, thanks.")
     c.say("in", "Also the drivers loved the bigger route cards in the test!")
@@ -399,10 +399,10 @@ def _s1() -> Scenario:
     deadline3 = Fact("deadline", chat, "When is the final prototype due?", "30 October", ("16 October", "23 October"),
                      priority=1, kind="date", match=_en_date(30, "october"),
                      stale_match=_en_date(16, "october") + _en_date(23, "october"))
-    phone1 = Fact("phone", chat, "What is Dana's phone number?", "+7 912 345-67-27", priority=1, kind="contact",
-                  match=("9123456727",))
-    phone2 = Fact("phone", chat, "What is Dana's phone number?", "+7 912 345-67-03", ("+7 912 345-67-27",),
-                  priority=1, kind="contact", match=("9123456703",), stale_match=("9123456727",))
+    phone1 = Fact("phone", chat, "What is Dana's phone number?", "+1 202 555-0127", priority=1, kind="contact",
+                  match=("2025550127",))
+    phone2 = Fact("phone", chat, "What is Dana's phone number?", "+1 202 555-0103", ("+1 202 555-0127",),
+                  priority=1, kind="contact", match=("2025550103",), stale_match=("2025550127",))
     billing = Fact("billing", chat, "Where do invoices go?", "billing@example.com", kind="contact",
                    match=("billingexamplecom",))
     owen = Fact("owen", chat, "Who answers API and technical questions?",
@@ -580,7 +580,7 @@ def _s3() -> Scenario:
     c.at(_t(8, 20, 12, 10))
     c.say("out", "Перевела аванс 50 000")
     c.say("in", "Получил, спасибо. Работаю с напарником Тимуром, он будет приходить по утрам")
-    c.say("in", "Мой номер для связи +7 912 345-67-62, звоните, если что")
+    c.say("in", "Мой номер для связи +1 202 555-0162, звоните, если что")
     c.say("out", "Записала")
     first = c.burst("b0", True)
     cp0 = c.later()
@@ -603,7 +603,7 @@ def _s3() -> Scenario:
     cp2 = c.later()
 
     c.at(_t(9, 12, 9, 15))
-    c.say("in", "Ирина, у меня новый номер: +7 912 345-67-19. Старый больше не работает")
+    c.say("in", "Ирина, у меня новый номер: +1 202 555-0119. Старый больше не работает")
     c.say("out", "Поняла, обновлю")
     c.say("in", "И ещё: кварц придёт только к 5-му, так что монтаж 6 октября. Это уже точно")
     c.say("out", "Ох. Ладно, 6 октября. Только теперь без переносов, пожалуйста")
@@ -621,10 +621,10 @@ def _s3() -> Scenario:
                  priority=1, kind="date", match=("29сентябр",), stale_match=("22сентябр",))
     date3 = Fact("install", chat, "When is the countertop installed?", "6 October", ("22 September", "29 September"),
                  priority=1, kind="date", match=("6октябр",), stale_match=("22сентябр", "29сентябр"))
-    phone1 = Fact("phone", chat, "What is Igor's phone number?", "+7 912 345-67-62", priority=1, kind="contact",
-                  match=("9123456762",))
-    phone2 = Fact("phone", chat, "What is Igor's phone number?", "+7 912 345-67-19", ("+7 912 345-67-62",),
-                  priority=1, kind="contact", match=("9123456719",), stale_match=("9123456762",))
+    phone1 = Fact("phone", chat, "What is Igor's phone number?", "+1 202 555-0162", priority=1, kind="contact",
+                  match=("2025550162",))
+    phone2 = Fact("phone", chat, "What is Igor's phone number?", "+1 202 555-0119", ("+1 202 555-0162",),
+                  priority=1, kind="contact", match=("2025550119",), stale_match=("2025550162",))
     advance = Fact("advance", chat, "What has been paid?",
                    "An advance of 50 000 ₽, paid on 20 August; the rest is due after installation", kind="amount",
                    match=("50000",))
@@ -673,7 +673,7 @@ def _s4() -> Scenario:
     bus = c.say("in", "The bus leaves at 8:30 from your office.")
     c.say("out", "Perfect.")
     c.at(_t(9, 3, 11, 0))
-    driver = c.say("in", "The driver's phone is +7 912 345-67-44, he'll call on the day.")
+    driver = c.say("in", "The driver's phone is +1 202 555-0144, he'll call on the day.")
     c.say("out", "Thanks!")
     c.say("in", "I'll send the menu options next week. Any dietary needs?")
     c.say("out", "Three vegetarians and one gluten-free.")
@@ -693,7 +693,7 @@ def _s4() -> Scenario:
     c.at(_t(9, 10, 12, 0))
     c.edit(budget, "Budget per person is 165 EUR, including meals.")
     c.edit(bus, "The bus leaves at 9:15 from your office.", after=30)
-    c.edit(driver, "The driver's phone is +7 912 345-67-48, he'll call on the day.")
+    c.edit(driver, "The driver's phone is +1 202 555-0148, he'll call on the day.")
     c.say("in", "Small corrections above, sorry for the confusion!")
     b2 = c.burst("b2", True)
     cp2 = c.later()
@@ -717,8 +717,8 @@ def _s4() -> Scenario:
                  "180 EUR per person", 1, "amount", ("165",), ("180",), rest_on),
             fact("bus", "When does the bus leave the office?", "9:15", "8:30", 2, "date", ("915",), ("830",),
                  rest_on),
-            fact("driver", "What is the driver's phone number?", "+7 912 345-67-48", "+7 912 345-67-44", 2,
-                 "contact", ("9123456748",), ("9123456744",), rest_on),
+            fact("driver", "What is the driver's phone number?", "+1 202 555-0148", "+1 202 555-0144", 2,
+                 "contact", ("2025550148",), ("2025550144",), rest_on),
             Fact("diet", chat, "What dietary needs are there?", "Three vegetarians and one gluten-free", priority=3,
                  match=("vegetarian",)),
             Fact("company", chat, "Where does Lena work?", "Northtrail Events", match=("northtrail",)),
@@ -1033,8 +1033,8 @@ _S8_FACTS = (
      "What is the venue fee?", "21 000 EUR for both days", ("21000",)),
     (1, "in", "A 30% deposit is due by 15 October.", "deposit",
      "When is the deposit due?", "30% by 15 October", _en_date(15, "october")),
-    (1, "in", "My direct line is +7 912 345-67-10, use it on event days.", "phone",
-     "What is Irena's direct line?", "+7 912 345-67-10", ("9123456710",)),
+    (1, "in", "My direct line is +1 202 555-0110, use it on event days.", "phone",
+     "What is Irena's direct line?", "+1 202 555-0110", ("2025550110",)),
     (1, "in", "Catering is by Olive & Rye, 42 EUR per person per day.", "catering",
      "Who does the catering and at what price?", "Olive & Rye, 42 EUR per person per day", ("oliverye",)),
     (1, "in", "You get access for setup from 17 November at 14:00.", "setup",

@@ -38,7 +38,7 @@ def contact_payload(dw: ModuleType, **kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("current", CURRENT)
     kwargs.setdefault("note", "")
     kwargs.setdefault("context", [])
-    kwargs.setdefault("messages", [msg(dw, "m101", "My new number is +7 912 345-67-11.")])
+    kwargs.setdefault("messages", [msg(dw, "m101", "My new number is +1 202 555-0111.")])
     return json.loads(dw.contact_input(**kwargs))
 
 
@@ -92,7 +92,7 @@ def test_contact_input_keys_in_order(dw: ModuleType) -> None:
         note="We stop working on Orbit after December.",
         context=[msg(dw, "m88", "Can we move the review?", sender="owner", at="2026-10-12 09:58")],
         part=(2, 3),
-        hints=[{"kind": "contact", "value": "+7 912 345-67-11"}],
+        hints=[{"kind": "contact", "value": "+1 202 555-0111"}],
     )
 
     assert list(payload) == [
@@ -112,7 +112,7 @@ def test_contact_input_keys_in_order(dw: ModuleType) -> None:
     assert payload["context"] == [
         {"ref": "m88", "at": "2026-10-12 09:58", "from": "owner", "text": "Can we move the review?"}
     ]
-    assert payload["hints"] == [{"kind": "contact", "value": "+7 912 345-67-11"}]
+    assert payload["hints"] == [{"kind": "contact", "value": "+1 202 555-0111"}]
 
 
 def test_contact_input_leaves_out_keys_that_do_not_apply(dw: ModuleType) -> None:
@@ -751,7 +751,7 @@ def fake_jev(monkeypatch: pytest.MonkeyPatch, dw: ModuleType, answers: Any, **kw
 def test_gate_check_takes_the_higher_answer(monkeypatch: pytest.MonkeyPatch, dw: ModuleType) -> None:
     fake = fake_jev(monkeypatch, dw, {"update": 0.2, "promise": 0.81})
     opener = object()
-    messages = [msg(dw, "m101", "My new number is +7 912 345-67-11."), msg(dw, "m102", "Thanks!", sender="owner")]
+    messages = [msg(dw, "m101", "My new number is +1 202 555-0111."), msg(dw, "m102", "Thanks!", sender="owner")]
 
     result = dw.gate_check(CURRENT, messages, opener=opener)
 
@@ -763,7 +763,7 @@ def test_gate_check_takes_the_higher_answer(monkeypatch: pytest.MonkeyPatch, dw:
     assert call["state"] == {
         "current_dossier": CURRENT,
         "new_messages": [
-            {"ref": "m101", "at": "2026-10-19 09:02", "from": "contact", "text": "My new number is +7 912 345-67-11."},
+            {"ref": "m101", "at": "2026-10-19 09:02", "from": "contact", "text": "My new number is +1 202 555-0111."},
             {"ref": "m102", "at": "2026-10-19 09:02", "from": "owner", "text": "Thanks!"},
         ],
     }
@@ -885,7 +885,7 @@ def test_clairic_hints_keep_confident_values(monkeypatch: pytest.MonkeyPatch, dw
         {
             "dates": answer(["2026-10-23", "2026-10-24"]),
             "amounts": answer([900.0, 12.5, 1500]),
-            "contacts": answer(["+7 912 345-67-11", "mira@example.com"]),
+            "contacts": answer(["+1 202 555-0111", "mira@example.com"]),
         },
     )
 
@@ -897,7 +897,7 @@ def test_clairic_hints_keep_confident_values(monkeypatch: pytest.MonkeyPatch, dw
         {"kind": "amount", "value": "900"},
         {"kind": "amount", "value": "12.5"},
         {"kind": "amount", "value": "1500"},
-        {"kind": "contact", "value": "+7 912 345-67-11"},
+        {"kind": "contact", "value": "+1 202 555-0111"},
         {"kind": "contact", "value": "mira@example.com"},
     ]
 
@@ -931,7 +931,7 @@ def test_clairic_hints_flatten_and_dedupe(monkeypatch: pytest.MonkeyPatch, dw: M
         {
             "dates": answer("2026-10-23"),  # a single value, not a list
             "amounts": answer([900, 900.0, "900", None, True, math.inf]),
-            "contacts": answer(["  +7 912\n345-67-11 ", "+7 912 345-67-11", ""]),
+            "contacts": answer(["  +1 202\n555-0111 ", "+1 202 555-0111", ""]),
             "unknown_field": answer(["ignored"]),
         },
     )
@@ -941,7 +941,7 @@ def test_clairic_hints_flatten_and_dedupe(monkeypatch: pytest.MonkeyPatch, dw: M
     assert result.hints == [
         {"kind": "date", "value": "2026-10-23"},
         {"kind": "amount", "value": "900"},
-        {"kind": "contact", "value": "+7 912 345-67-11"},
+        {"kind": "contact", "value": "+1 202 555-0111"},
     ]
 
 
@@ -993,13 +993,13 @@ def test_quote_first_answers() -> None:
     contact = {
         "messages": [
             {"ref": "m1", "from": "owner", "text": "Hi"},
-            {"ref": "m2", "from": "contact", "text": "My new  number\nis +7 912 345-67-11."},
+            {"ref": "m2", "from": "contact", "text": "My new  number\nis +1 202 555-0111."},
         ]
     }
     persona = {"messages": [{"chat": "c1", "at": "2026-10-19 09:12", "text": "Добрый день!"}]}
 
     assert quote_first(contact) == (
-        '**The contact.**\n\n## Notes\n- The contact said "My new number is +7 912 345-67-11.".\n<<END>>'
+        '**The contact.**\n\n## Notes\n- The contact said "My new number is +1 202 555-0111.".\n<<END>>'
     )
     assert quote_first(persona) == '## Style\n- The owner wrote "Добрый день!".\n<<END>>'
     assert quote_first({"messages": [{"ref": "m3", "from": "owner", "text": "Only me"}]}) == "EMPTY\n<<END>>"
