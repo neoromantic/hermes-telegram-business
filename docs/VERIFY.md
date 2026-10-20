@@ -14,6 +14,18 @@ History checks must cover one-time opt-in, private-chat defaults, the stored old
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## 0.15.0 release and live smoke: 2026-10-20
+
+Before tagging, `hermes plugins validate --install-deps --json` ran on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`, Python 3.14) with a fresh `HERMES_HOME`. It passed with exit 0, `ok: true`, and all 14 checks. The security scan was `safe`, and stderr had no "unsatisfiable". 2180 tests passed locally (1 skipped: the old-dossier eval arm), and CI passed on Python 3.11–3.14.
+
+The production gateway (Hermes 0.21.6) got a plugin-only update. The plugin checkout was fast-forwarded to `v0.15.0` (`3cebd94418493ceb13bbe90fc24e981a82acadc9`) and the gateway restarted. Before that, the dossier directory was backed up, and `AI_GATEWAY_API_KEY` was added to the Hermes environment for the default dossier route. `TELESEC_DOSSIER_PROVIDER` and `TELESEC_DOSSIER_MODEL` were not set.
+
+- **Migration.** The first start converted every old dossier and the persona: 5 converted, 0 unreadable, 0 failed, 5 `v1-dossier.json` backups. The panel's Dossier screen showed the converted revision-0 document with **Refresh**, **My persona**, and **Back**.
+- **Model.** `hermes telesec dossier status` showed `ai-gateway / google/gemini-3.8-flash` on the dossiers task, reasoning `low`, `max_tokens 8192`, and zero data retention on.
+- **Refresh.** **Refresh** on a controlled chat made one model call (about 8 seconds) and opened the new document. The first worker cycle rebuilt the other dossiers and the persona with no failures, and the `v1-dossier.json` backups were removed after each first new pass, as designed.
+- **`/dossier`** was not posted in a live chat, because the contact sees the summary.
+- The gateway log had no Telesec errors. The `cleanup_env` note is logged on every dossier status call and cycle while `TELESEC_CLEANUP_PROVIDER` is set for voice cleanup.
+
 ## 0.14.0 release and live smoke: 2026-10-20
 
 Before tagging, `hermes plugins validate --install-deps --json` ran on an isolated Hermes v0.22.2 (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`, Python 3.14) with a fresh `HERMES_HOME`. It passed with exit 0, `ok: true`, and all 14 checks. The security scan was `safe`, and stderr had no "unsatisfiable". 1268 tests passed locally, and CI passed on Python 3.11–3.14.
