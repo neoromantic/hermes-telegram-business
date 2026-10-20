@@ -487,7 +487,7 @@ The next refresh sends the current dossier, the note, the three earlier messages
   "messages": [
     {"ref": "m104", "at": "2026-10-16 10:03", "from": "contact", "text": "We'd like oak worktops, not marble. Installation has to be finished before 1 April.", "edited": true},
     {"ref": "m106", "at": "2026-10-19 18:20", "from": "contact", "text": "Between us, we might sell the flat next year.", "deleted": true},
-    {"ref": "m107", "at": "2026-10-20 09:05", "from": "contact", "text": "Photos attached. My new number is +1 202 555-0121."}
+    {"ref": "m107", "at": "2026-10-20 09:05", "from": "contact", "text": "Photos attached. My new number is +1 555 555-0121."}
   ]
 }
 ```
@@ -506,7 +506,7 @@ A good answer moves the date, drops the plan that only the deleted message said,
 - You send the quote by email by **19 October** [m102]
 
 ## Contact
-- Phone: +1 202 555-0121 [m107]
+- Phone: +1 555 555-0121 [m107]
 - Mail: casey@example.com; rarely reads Telegram during the day [m103]
 <<END>>
 ```
@@ -526,7 +526,7 @@ When the owner sends `/dossier` in the chat, the summary call gets only the chat
     {"at": "2026-10-16 10:02", "from": "contact", "text": "Great, thanks. Please email it to casey@example.com, I rarely check Telegram during the day."},
     {"at": "2026-10-16 10:03", "from": "contact", "text": "We'd like oak worktops, not marble. Installation has to be finished before 1 April."},
     {"at": "2026-10-16 10:17", "from": "owner", "text": "Noted: oak worktops. Could you send a few photos of the current kitchen?"},
-    {"at": "2026-10-20 09:05", "from": "contact", "text": "Photos attached. My new number is +1 202 555-0121."}
+    {"at": "2026-10-20 09:05", "from": "contact", "text": "Photos attached. My new number is +1 555 555-0121."}
   ]
 }
 ```
