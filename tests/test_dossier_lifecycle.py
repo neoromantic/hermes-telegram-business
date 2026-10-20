@@ -169,7 +169,7 @@ def answer(value: Any, *, confidence: float = 0.98, p_null: float = 0.01) -> dic
 DEFAULT_ANSWERS = {
     "dates": answer(["2026-10-28"]),
     "amounts": answer([900.0]),
-    "contacts": answer(["+1 202 555-0113"], confidence=0.5),  # not sure enough: dropped
+    "contacts": answer(["+1 555 555-0113"], confidence=0.5),  # not sure enough: dropped
 }
 DEFAULT_HINTS = [{"kind": "date", "value": "2026-10-28"}, {"kind": "amount", "value": "900"}]
 
@@ -894,7 +894,7 @@ async def test_the_message_check_is_bypassed(
         assert cycle(ds, first, now=ago(40)).calls == 1
     opener = use_gate(monkeypatch, ds)  # nothing queued: a check would fail the refresh
     now, target, secrets = NOW, None, KEYS
-    new = [(13, "in", "My new number is +1 202 555-0113", 30)]
+    new = [(13, "in", "My new number is +1 555 555-0113", 30)]
     if bypass == "forced":
         target = ("contact", entry)
     elif bypass == "note":
