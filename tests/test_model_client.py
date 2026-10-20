@@ -37,21 +37,21 @@ CLAIRIC_URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/ru
 STATE = {
     "current_dossier": "**Mira Tanaka.** Design lead at Northwind Studio.",
     "new_messages": [
-        {"ref": "m1", "at": "2026-10-19 09:15", "from": "contact", "text": "Мой новый номер +7 900 000-00-01"},
+        {"ref": "m1", "at": "2026-10-19 09:15", "from": "contact", "text": "Мой новый номер +7 912 345-67-01"},
     ],
 }
 QUESTIONS = {
     "update": {"type": "boolean", "instructions": "Does `new_messages` change `current_dossier`?"},
     "promise": {"type": "boolean", "instructions": "Does any message make or change a promise?"},
 }
-CLAIRIC_STATE = "2026-10-19 09:15 contact: Созвонимся 23 октября, мой номер +7 900 000-00-02"
+CLAIRIC_STATE = "2026-10-19 09:15 contact: Созвонимся 23 октября, мой номер +7 912 345-67-02"
 FIELDS = {
     "dates": {"type": "list", "items": "date", "instructions": "Dates of meetings."},
     "contacts": {"type": "list", "items": "text", "instructions": "Phone numbers."},
 }
 CLAIRIC_ANSWERS = {
     "dates": {"type": "list", "value": ["2026-10-23"], "p_null": 0.01, "confidence": 0.97},
-    "contacts": {"type": "list", "value": ["+7 900 000-00-02"], "p_null": 0.02, "confidence": 0.95},
+    "contacts": {"type": "list", "value": ["+7 912 345-67-02"], "p_null": 0.02, "confidence": 0.95},
 }
 
 
@@ -642,7 +642,7 @@ def test_clairic_logs_and_errors_carry_no_token_account_state_or_url(mc, scope, 
         ACCOUNT_ID,
         "Bearer",
         "Созвонимся",
-        "+7 900",
+        "+7 912",
         "2026-10-23",
         "Dates of meetings",
         "cloudflare.com",

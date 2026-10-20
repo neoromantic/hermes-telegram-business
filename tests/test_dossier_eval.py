@@ -28,7 +28,7 @@ V1_WORKTREE = Path("/tmp/telesec-v1")  # run.main prints this path in its git wo
 O6_SCENARIOS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S12"]
 FACT_KINDS = ("other", "date", "amount", "contact")
 PHONE_RE = re.compile(r"\+?\d(?:[\s().-]*\d){8,}")
-MADE_UP_PHONE_RE = re.compile(r"\+7 900 000-\d\d-\d\d")
+MADE_UP_PHONE_RE = re.compile(r"\+7 912 345-67-\d\d")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 HOME_PATH_RE = re.compile(r"/(?:Users|home)/\w|[A-Za-z]:\\\\Users")
 KEY_ENV = ("AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
@@ -224,7 +224,7 @@ def test_the_deleted_voice_is_a_legacy_transcript() -> None:
 def test_scenario_uses_made_up_data_only(scenario: sc.Scenario) -> None:
     for text in _all_texts(scenario):
         for phone in PHONE_RE.findall(text):
-            assert MADE_UP_PHONE_RE.fullmatch(phone), "phones must be +7 900 000-.."
+            assert MADE_UP_PHONE_RE.fullmatch(phone), "phones must be +7 912 345-67-.."
         for mail in EMAIL_RE.findall(text):
             assert mail.endswith("@example.com"), "mail must be @example.com"
         assert not HOME_PATH_RE.search(text)
@@ -429,8 +429,8 @@ def test_a_judge_answer_that_is_not_json_is_an_error_code() -> None:
 
 def test_fact_presence_matches_any_format() -> None:
     phone = next(f for f in sc.BY_ID["S1"].checkpoints()[-1].facts if f.kind == "contact" and f.stale)
-    assert jd.fact_presence("Mobile: +7 (900) 000 58 03", phone) == "current"
-    assert jd.fact_presence("Mobile: +7 900 000-14-27", phone) == "stale"
+    assert jd.fact_presence("Mobile: +7 (912) 345 67 03", phone) == "current"
+    assert jd.fact_presence("Mobile: +7 912 345-67-27", phone) == "stale"
     assert jd.fact_presence("No phone yet.", phone) == "missing"
 
 

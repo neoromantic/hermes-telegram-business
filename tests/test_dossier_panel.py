@@ -482,7 +482,7 @@ async def test_refresh_after_a_failure_is_not_up_to_date(plug, ds, panel):
 @pytest.mark.asyncio
 async def test_refresh_runs_one_real_cycle_per_chat_in_the_background(plug, ds, panel):
     await build(plug, ds)
-    await seed(plug, CHAT, "anna_k", [(12, "in", "My new phone number is +7 900 000-01-00.", 5)], first_name="Anna")
+    await seed(plug, CHAT, "anna_k", [(12, "in", "My new phone number is +7 912 345-67-00.", 5)], first_name="Anna")
     llm, release, entered = holding_llm(doc(f"{DOCUMENT}\n\n## Contacts\n- The contact has a new phone number. [m12]"))
     ds.bind_llm(llm)
     try:
@@ -506,7 +506,7 @@ async def test_refresh_runs_one_real_cycle_per_chat_in_the_background(plug, ds, 
 @pytest.mark.asyncio
 async def test_unload_stops_a_running_refresh_without_writing(plug, ds, panel, monkeypatch):
     await build(plug, ds)
-    await seed(plug, CHAT, "anna_k", [(12, "in", "My new phone number is +7 900 000-01-00.", 5),
+    await seed(plug, CHAT, "anna_k", [(12, "in", "My new phone number is +7 912 345-67-00.", 5),
                                       (13, "in", "And a new mail too: anna@example.com.", 4)], first_name="Anna")
     monkeypatch.setattr(ds, "BATCH_MAX_MESSAGES", 1)  # two batches: a second model call is possible
     before = read_dossier(ds, CHAT)

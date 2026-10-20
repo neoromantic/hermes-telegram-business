@@ -69,7 +69,7 @@ LANGUAGES = {
 - Wants feedback as a list, one point per screen.
 
 ## Contact details
-- New work number: +7 900 000-00-11 [m112]
+- New work number: +7 912 345-67-11 [m112]
 - Mail: mira.tanaka@example.com
 """,
         "note": "We stop working on Orbit after December. Don't remind her about the old logo.",
@@ -120,7 +120,7 @@ LANGUAGES = {
 - Просит согласовывать изменения одним сообщением, списком.
 
 ## Контакты
-- Рабочий телефон: +7 900 000-00-12
+- Рабочий телефон: +7 912 345-67-12
 - Почта для документов: olga.mironova@example.com
 """,
         "note": "Договор подписан на меня, а не на жену. Скидку не обсуждаем.",
