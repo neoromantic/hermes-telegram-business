@@ -24,7 +24,8 @@ JUDGE_TIMEOUT = 120.0
 DOC_MAX_UNITS = 3200  # dossier_doc.DOC_MAX_UNITS
 VERDICTS = ("current", "stale", "missing")
 RUBRIC = ("accuracy", "currency", "usefulness", "concision", "structure")
-_REF_RE = re.compile(r"\s?\[m\d{1,12}(?:\s*,\s*m\d{1,12})*\]")
+_REF_ITEM = r"m\d{1,12}(?:\s*(?:[-–—]|\.\.)\s*m?\d{1,12})?"  # dossier_writer.REF_RE
+_REF_RE = re.compile(rf"[^\S\n]?\[{_REF_ITEM}(?:\s*[,;]\s*{_REF_ITEM})*\]")
 _MARKUP_RE = re.compile(r"[*_`#]")
 
 JUDGE_SYSTEM = """\

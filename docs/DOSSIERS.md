@@ -51,7 +51,7 @@ Message check: off (setting)
 Fact extraction: off (setting)
 Worker: every 30 min, 10 min after the last message, up to 20 model calls a minute
 First build: up to 500 messages from the last 90 days
-Storage: /home/owner/.hermes/data/telesec/dossiers
+Storage: /home/user/.hermes/data/telesec/dossiers
 Stored: 0 contact dossiers, owner persona no, 0 owner notes, 0 v1 backups
 Usage: none yet
 Failures: none
@@ -59,7 +59,7 @@ Last cycle: none yet
 Cycle running now: no
 ```
 
-`status` starts with a warning line for each problem it finds: a numeric setting that is invalid or out of range and was replaced by its default, model task settings that undo the defaults ([Model](#model)), deprecated variables, and old dossier files that could not be converted ([Upgrade and rollback](#upgrade-and-rollback)). Once dossiers have run, `Last answer` names the model that answered last, and `Usage` shows model calls, tokens, and the estimated cost per month for the last 3 months.
+`status` starts with a warning line for each problem it finds: a numeric setting that is invalid or out of range and was replaced by its default, model task settings that undo the defaults ([Model](#model)), deprecated variables, and old dossier files that could not be converted ([Upgrade and rollback](#upgrade-and-rollback)). Once dossiers have run, `Last answer` names the model that answered last, and `Usage` shows model calls, tokens, and the estimated cost per month for the last 3 months. In `Stored`, `owner persona yes` means a persona was written; before that it says `due at the next cycle` once you have sent enough messages ([Owner persona](#owner-persona)), and `no` until then.
 
 ## Model
 
@@ -105,7 +105,7 @@ A trust-gate denial, which only the two explicit routes below can get, stops the
 - On a Hermes without plugin model tasks, dossiers call `ai-gateway` / `google/gemini-3.8-flash` directly, and `status` warns.
 - `TELESEC_DOSSIER_PROVIDER` and `TELESEC_DOSSIER_MODEL` are deprecated. While `TELESEC_DOSSIER_PROVIDER` is set and `config.yaml` names no `auxiliary.telesec_dossier.provider`, dossiers use that provider with `TELESEC_DOSSIER_MODEL`, or `gemini-3.8-flash` for `gemini` or `google`, or `google/gemini-3.8-flash` for any other provider. `status` warns. `TELESEC_DOSSIER_MODEL` alone is ignored, and so are both once `config.yaml` names a provider for the task. Remove them to use the task.
 
-`TELESEC_CLEANUP_PROVIDER`, `TELESEC_CLEANUP_MODEL`, and `TELESEC_CLEANUP_DISABLE` do not affect dossiers.
+`TELESEC_CLEANUP_PROVIDER`, `TELESEC_CLEANUP_MODEL`, and `TELESEC_CLEANUP_DISABLE` do not affect dossiers. While `TELESEC_CLEANUP_PROVIDER` is set, `status` prints a `note:` line saying so, and the log gets one INFO line per process, not a warning.
 
 ### Message check
 
@@ -174,7 +174,7 @@ With [fact extraction](#fact-extraction) on, the next refresh may add `hints` to
 
 The document starts with one bold sentence saying who the contact is to you, then short `##` sections that fit the relationship (a client may get Project, Agreements, Deadlines; a friend may get Family, Plans, Interests), with one fact per bullet. It addresses you as "you" ("вы" in Russian), uses absolute dates, and is written in the main language of the chat. The model aims at 3,000 characters and drops the least useful, oldest, or settled details first.
 
-After a fact that rests on one or two messages, the model may add their refs, such as `[m90]`. The CLI shows them; Telegram leaves them out.
+After a fact that rests on one or two messages, the model may add their refs, such as `[m90]` or `[m90, m94]`. The stored document keeps them, because a message deleted after history dropped its text reaches the model as a ref only. You never see them: the Dossier screen, the `/dossier` summary, and the default `show` and `export` output leave out every ref, including a range such as `[m90–m94]`. `show --format json` and `export --format json` print the stored text with its refs.
 
 The model keeps every fact that is still true and changes only what the messages change: a moved deadline replaces the old date, a new phone number replaces the old one, and plans that are clearly over go away. Each content change raises the revision, and the dossier keeps the version before the last change (`show --previous`).
 
@@ -204,7 +204,7 @@ hermes telesec dossier note --contact @alice --clear
 The persona describes how you write: languages and when you switch, tone and formality, message length, greetings and sign-offs, punctuation, emoji and formatting habits, recurring phrases, how you agree, decline, and thank, and rules you state about how you communicate. Its examples replace every name, number, date, and place with "…". It never describes who you are or the people you write to.
 
 - It is rebuilt from scratch from your own sent text messages in private chats with dossiers on (not paused): the newest 300 within the backfill window, at most 60,000 characters in total and 1,000 per message. Received messages, voice transcripts, and messages of unknown direction are never part of it. Chats appear only as `c1`, `c2`, … within one call; no refs, ids, or names are sent.
-- The first persona is built once there are at least 10 such messages. After that it is rebuilt when there are at least 20 newer messages and the last rebuild is at least 7 days old. The check runs at most once a day, after the contacts. `run --persona`, or a changed persona note, rebuilds it now.
+- The first persona is built once there are at least 10 such messages. Until then every cycle checks it, after the contacts, and **My persona** says either that it needs at least 10 sent messages or, once you have them, that it is written at the next dossier cycle. **Refresh** on a contact screen does not build it. After that it is rebuilt when there are at least 20 newer messages and the last rebuild is at least 7 days old, and the check runs at most once a day. `run --persona`, or a changed persona note, rebuilds it now.
 - Forgetting or erasing a chat that the persona or its previous version read resets the persona at once: its text and previous version are deleted and its note is kept. The next cycle rebuilds it from the other chats. A paused chat only leaves the next rebuild.
 - There is one persona per Hermes profile, shared by all Business connections. It is never posted.
 
@@ -278,6 +278,7 @@ So the contact gets a summary of what the chat shows now. It may differ from you
 - Only a bare `/dossier` (or `/dossier@YourBot`) from the owner counts. `/dossier <text>`, a contact's `/dossier`, and a forwarded or inline-bot one are ordinary messages. So is a `/dossier` the bot cannot confirm as yours: its owner lookup failed and the [modes file](../README.md#per-chat-transcription-modes) records no owner for the connection.
 - Telegram lets a Business bot post only in chats where the contact wrote in the last 24 hours. Any message from the contact counts: text, a voice note, a photo, a sticker, or a file. Your own messages, voice transcripts, and edits don't. History keeps text only, so the gateway also remembers when each contact last wrote, in memory and without the content. Telesec refuses at once only when it knows the contact has not written for 24 hours: history has no text from them in that time, and the gateway has been running for more than 24 hours without seeing any other message from them. Otherwise it writes the summary and tries to post it. If Telegram refuses the post because the contact has not written for 24 hours, the bot gives you that reason. If Telegram refuses it for another reason and Telesec did not know of a recent message, the bot names Telegram's error and says the 24-hour rule is one possible cause. Either way your command is deleted and nothing is posted; send `/dossier` again after the contact writes.
 - When nothing is posted, nothing appears in the chat. The bot tells you why in your private chat with it, which you need to have started once (Manage Bot does that): dossiers or history are off, the model is not connected, the chat is set to [No dossier or Don't save](#one-chat), the contact has not written in the last 24 hours, the chat has nothing to summarise, a summary for the chat is already being prepared, messages changed meanwhile, the summary could not be written, or Telegram rejected the message.
+- When the send times out or loses its connection, Telegram may still have delivered the post. The bot then says the summary may have been posted and asks you to check the chat before you send `/dossier` again, instead of saying that nothing was posted. It never retries on its own.
 - Deleting the command needs the bot's "Delete messages" permission in Telegram Business > Chatbots. Without it the command stays and the gateway log says so.
 - Once the bot confirms you as the owner, the command and the posted summary are never written to history and never reach the ordinary Hermes path. An edited `/dossier` is never executed; when you edit a message history already has into `/dossier`, history records that edit.
 - **Erase saved history** or `history forget` for the chat cancels a summary that is being written.

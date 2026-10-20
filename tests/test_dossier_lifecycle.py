@@ -33,6 +33,7 @@ from dossier_helpers import (
     FakeLlm,
     ago,
     catalog_entry,
+    cli,
     cycle,
     delete,
     doc,
@@ -1348,6 +1349,27 @@ async def test_the_persona_is_built_from_ten_owner_messages_and_checked_once_a_d
     report = cycle(ds, fake, now=built_at + timedelta(days=7))
     assert report.persona == "refreshed" and len(persona_calls(fake)) == 2
     assert read_persona(ds)["messages"] == 35
+
+
+@pytest.mark.asyncio
+async def test_a_persona_never_written_is_checked_every_cycle(plug: ModuleType, dossiers: ModuleType) -> None:
+    ds = dossiers
+    await seed_owner_chat(plug, ALICE, "ALPHA", owner=9)
+    ds._doc.write_doc(persona_dir(ds), ds._doc.new_persona(ago(60)))  # e.g. erased with a chat: nothing written
+    fake = FakeLlm()
+    assert cycle(ds, fake).persona == "not_due"
+    assert read_persona(ds)["checked_at"] == ds._iso(NOW) and not ds.persona_first_due(read_persona(ds), now=NOW)
+    shown = cli(plug, "dossier", "show", "--persona")[1]
+    assert "Waiting for the first build." in shown and "from 0 messages" not in shown  # checked, never written
+    assert "waiting for first build" in cli(plug, "dossier", "list")[1]
+
+    await seed_alice(plug, [(20, "out", "ALPHA owner message 20", 0)])
+    assert ds.persona_first_due(read_persona(ds), now=NOW)  # what the screen and status say: the next cycle
+    assert cycle(ds, fake, now=ago(-10)).persona == "refreshed"  # not a day later
+    assert ds.persona_written(read_persona(ds)) and len(persona_calls(fake)) == 1
+
+    ds.set_note(("persona", None), "Short replies.")  # a changed note is due with a single message
+    assert ds.persona_first_due({**ds._doc.new_persona(NOW), "note": "Short replies."}, now=NOW)
 
 
 @pytest.mark.asyncio

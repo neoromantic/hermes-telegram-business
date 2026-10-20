@@ -502,7 +502,7 @@ def test_read_error_logs_only_exception_type(
 ):
     _alice_fixture(enabled_history)
     caplog.set_level(logging.WARNING)
-    message = "cannot read /home/owner/history/Alice Example SECRET-101"
+    message = "cannot read /home/user/history/Alice Example SECRET-101"
 
     def explode(*_args: Any, **_kwargs: Any):
         raise error(message)
@@ -515,7 +515,7 @@ def test_read_error_logs_only_exception_type(
     assert [record.getMessage() for record in _panel_records(caplog, sp)] == [
         f"telesec stats panel: history could not be read ({error.__name__})"
     ]
-    for secret in (message, "Alice", "SECRET", "/home/owner"):
+    for secret in (message, "Alice", "SECRET", "/home/user"):
         assert secret not in caplog.text
 
 

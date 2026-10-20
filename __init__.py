@@ -350,7 +350,7 @@ Content fidelity:
 Editing:
 - Remove empty filler sounds only when they are isolated, such as "э" or "эм", plus exact immediate stutters and exact accidental duplicated fragments. Keep "ну", "вот", "там", "как бы", "то есть", "короче", and equivalents whenever they shape tone, emphasis, uncertainty, sequence, or meaning.
 - Correct obvious ASR, grammar, agreement, and word-boundary errors when the intended wording is clear. Preserve uncertain content instead of guessing.
-- Correct clear names from context: Telegram, Baus, Hermes, Groq, Whisper, Gemini, Blender, SMM, 3D, вайб-кодинг.
+- Correct clear names from context: Telegram, Hermes, Groq, Whisper, Gemini, Blender, SMM, 3D, вайб-кодинг.
 - Make the text readable mainly through punctuation, capitalization, paragraph breaks, and only clearly justified ASR corrections. Do not rewrite for elegance.
 - Use active punctuation.
 - Separate different thoughts or topics into paragraphs with exactly one blank line.

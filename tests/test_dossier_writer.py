@@ -266,6 +266,35 @@ def test_prompts_have_no_leave_out_list_and_mention_hints(dw: ModuleType) -> Non
     assert "hints" not in dw.POST_SYSTEM and "owner_note" not in dw.POST_SYSTEM
 
 
+def test_the_writer_asks_for_whole_refs_never_ranges(dw: ModuleType) -> None:
+    # A deleted message that history no longer has comes as a ref only, so the document keeps whole refs.
+    assert "then remove the facts marked with its ref" in dw.WRITER_SYSTEM
+    assert "never a range such as [m120–m125]" in dw.WRITER_SYSTEM
+    assert "Never write a message id in any other form." in dw.WRITER_SYSTEM
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("- Review on **Friday** [m90]", "- Review on **Friday**"),
+    ("- Paid **900** [m901, m905]", "- Paid **900**"),
+    ("- Agreed on the plan [m4000100–m4000107]", "- Agreed on the plan"),  # the live form
+    ("- Agreed [m40-m47], then moved", "- Agreed, then moved"),
+    ("- Agreed [m40 — m47; m52]", "- Agreed"),
+    ("- Agreed [m40..47]", "- Agreed"),
+    ("- Agreed [m40–47, m52, m60-m61].", "- Agreed."),
+    ("- Notes [m] [x12] [m12a] [Section m1] stay", "- Notes [m] [x12] [m12a] [Section m1] stay"),
+    ("line one\n[m7] line two", "line one\n line two"),  # a ref never joins two lines
+])
+def test_strip_refs_removes_single_list_and_range_refs(dw: ModuleType, text: str, expected: str) -> None:
+    assert dw.strip_refs(text) == expected
+
+
+@pytest.mark.parametrize("kind", ["persona", "post"])
+def test_a_ranged_ref_never_reaches_a_post_or_the_persona(dw: ModuleType, kind: str) -> None:
+    text = doc("## Plans\n- Review on **28 October** [m90–m94]\n- Bring the slides [m95, m96-m98]")
+
+    assert dw.parse_output(text, kind=kind).text == "## Plans\n- Review on **28 October**\n- Bring the slides"
+
+
 def test_prompt_limits_match_the_constants(dw: ModuleType) -> None:
     assert f"At most {dw.DOC_TARGET_CHARS} characters" in dw.WRITER_SYSTEM
     assert f"At most {dw.PERSONA_TARGET_CHARS} characters" in dw.PERSONA_SYSTEM

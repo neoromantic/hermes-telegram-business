@@ -30,7 +30,10 @@ GATEWAY_ALIASES = frozenset({"ai-gateway", "vercel", "aigateway", "ai_gateway", 
 END_MARKER = "<<END>>"
 NO_CHANGE = "NO_CHANGE"
 EMPTY = "EMPTY"
-REF_RE = re.compile(r"\s?\[m\d{1,12}(?:\s*,\s*m\d{1,12})*\]")
+# A message ref such as [m123] in a writer document, also a list ([m1, m2]) or a range ([m1–m5], [m1-5]).
+# The owner never sees one: the panel, /dossier and the default CLI output remove them.
+_REF_ITEM = r"m\d{1,12}(?:\s*(?:[-–—]|\.\.)\s*m?\d{1,12})?"
+REF_RE = re.compile(rf"[^\S\n]?\[{_REF_ITEM}(?:\s*[,;]\s*{_REF_ITEM})*\]")
 
 DOC_TARGET_CHARS = 3000  # the prompt targets stay under DOC_MAX_UNITS, so a shorten call is rare
 PERSONA_TARGET_CHARS = 2500
@@ -101,7 +104,7 @@ Format:
 - Bullets "- ", one fact per bullet, short. Use **bold** only for key dates, amounts and deadlines. No tables, links, backticks, code, HTML or other heading levels.
 - Address the owner as "you" (in Russian "вы"). Name the contact by the name used in the chat, or "the contact".
 - Use absolute dates, without the year when it is the current year ("6 November", "6 ноября"). "today" gives the current date and weekday; each message's "at" gives its time.
-- Optional source refs: after a fact that rests on one or two messages you may add their refs, like [m123]. Use them for agreements, numbers and dates, not for every bullet. Use only refs from the input.
+- Optional source refs: after a fact that rests on one or two messages you may add their refs, like [m123] or [m123, m125]. Use them for agreements, numbers and dates, not for every bullet. Use only refs from the input, each written out in full: never a range such as [m120–m125]. Never write a message id in any other form.
 - Write in the main language of the conversation. Keep names as written.
 - At most 3000 characters. When it gets long, drop the least useful, oldest or settled details first.
 
