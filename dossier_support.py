@@ -72,6 +72,14 @@ TASK_DEFAULTS: dict[str, Any] = {
 FALLBACK_PROVIDER = "ai-gateway"  # explicit route when the host cannot register the task
 FALLBACK_MODEL = "google/gemini-3.8-flash"
 LEGACY_GEMINI_MODEL = "gemini-3.8-flash"  # v1 default model name on the native gemini/google providers
+NATIVE_GEMINI = frozenset({"gemini", "google", "google-gemini", "google-ai-studio"})  # Hermes builds the request
+# Where Hermes 0.22 applies the cap the plugin asks for (agent/auxiliary_client.py). The task's extra_body goes
+# into the request body as it is on an OpenAI-compatible route such as ai-gateway or OpenRouter; Hermes's own
+# clients for other providers may drop it, and native gemini always does. An explicit max_tokens goes on only to
+# the providers _forwards_max_tokens names; native gemini may raise it to the model's limit.
+_TASK_CAPPED = _writer.GATEWAY_ALIASES | {"openrouter"}
+_EXPLICIT_CAPPED = frozenset({"openrouter", "nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron", "minimax",
+                              "minimax-oauth", "minimax-cn"})
 NOT_SET = "(not set)"
 GATE_DEFAULT = "off"  # the message check (Jev) mode when settings.json has no "gate"
 GATE_MODES = ("auto", "off")
@@ -116,7 +124,8 @@ class DossierConfig:
     provider: str  # effective writer provider; "auto" when the task follows the main model
     model: str  # effective writer model; "main model" when provider is "auto"
     reasoning: str = "low"  # effective reasoning_effort; "" = provider default; NOT_SET on an explicit route
-    max_tokens: int | None = 8192  # None when extra_body has no max_tokens, or on an explicit ai-gateway route
+    max_tokens: int | None = 8192  # the output cap Hermes applies; None when there is none or it may not apply
+    max_tokens_asked: int | None = None  # a cap asked for on a route where Hermes may not apply it
     zdr: bool = True  # extra_body asks the gateway for zero data retention; never on an explicit route
     task_registered: bool = True
     legacy_env: bool = False  # TELESEC_DOSSIER_PROVIDER routes the writer
@@ -186,14 +195,21 @@ class _Effective:
     model: str
     reasoning: str
     max_tokens: int | None
+    max_tokens_asked: int | None
     zdr: bool
     legacy: bool
     notes: tuple[tuple[str, str], ...]  # (log code, warning line)
 
 
-def _explicit_cap(provider: str) -> int | None:
-    """The output cap of an explicit route: every call asks for it, but Hermes never passes it on to ai-gateway."""
-    return None if provider.strip().lower() in _writer.GATEWAY_ALIASES else _writer.EXPLICIT_MAX_TOKENS
+def _explicit_cap(provider: str) -> tuple[int | None, int | None]:
+    """(cap applied, cap asked for that may not apply) on an explicit route: every call asks for one.
+
+    Hermes passes it on only to the providers in _EXPLICIT_CAPPED, and never to ai-gateway.
+    """
+    name = provider.strip().lower()
+    if name in _EXPLICIT_CAPPED:
+        return _writer.EXPLICIT_MAX_TOKENS, None
+    return None, (None if name in _writer.GATEWAY_ALIASES else _writer.EXPLICIT_MAX_TOKENS)
 
 
 def _effective() -> _Effective:
@@ -209,7 +225,7 @@ def _effective() -> _Effective:
         text = (f"warning: {PROVIDER_ENV}/{MODEL_ENV} are deprecated; dossiers use {shown_provider} / {shown_model} "
                 "from them. Remove them to use the Telesec dossiers task (choose its model with 'hermes model').")
         return _Effective(_writer.Route(None, env_provider, model), shown_provider, shown_model, NOT_SET,
-                          _explicit_cap(env_provider), False, True, (("legacy_env", text),))
+                          *_explicit_cap(env_provider), False, True, (("legacy_env", text),))
     if env_provider or env_model:
         notes.append(("env_ignored", f"warning: {PROVIDER_ENV}/{MODEL_ENV} are ignored; remove them."))
     if not _TASK_REGISTERED:
@@ -218,14 +234,15 @@ def _effective() -> _Effective:
                 f"plugins.entries.{_history.PLUGIN_NAME}.llm trust config.")
         notes.append(("not_registered", text))
         eff = _Effective(_writer.Route(None, FALLBACK_PROVIDER, FALLBACK_MODEL), FALLBACK_PROVIDER, FALLBACK_MODEL,
-                         NOT_SET, _explicit_cap(FALLBACK_PROVIDER), False, False, ())
+                         NOT_SET, *_explicit_cap(FALLBACK_PROVIDER), False, False, ())
     else:
         eff = _task_effective({**TASK_DEFAULTS, **user}, notes)
     if os.environ.get(CLEANUP_PROVIDER_ENV, "").strip() and not env_provider:
         text = (f"note: dossiers no longer follow {CLEANUP_PROVIDER_ENV}; they use the Telesec dossiers task "
                 f"({eff.provider} / {eff.model}).")
         notes.append(("cleanup_env", text))
-    return _Effective(eff.route, eff.provider, eff.model, eff.reasoning, eff.max_tokens, eff.zdr, False, tuple(notes))
+    return _Effective(eff.route, eff.provider, eff.model, eff.reasoning, eff.max_tokens, eff.max_tokens_asked,
+                      eff.zdr, False, tuple(notes))
 
 
 def _task_effective(merged: dict[str, Any], notes: list[tuple[str, str]]) -> _Effective:
@@ -243,11 +260,18 @@ def _task_effective(merged: dict[str, Any], notes: list[tuple[str, str]]) -> _Ef
                                     f"Set auxiliary.{TASK_KEY}.reasoning_effort: low.")))
     extra = merged.get("extra_body")
     extra = extra if isinstance(extra, dict) else {}
-    max_tokens = extra.get("max_tokens")
-    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
-        max_tokens = None
+    asked = extra.get("max_tokens")
+    if not isinstance(asked, int) or isinstance(asked, bool) or asked <= 0:
+        asked = None
+    name = provider.lower()
+    if name in NATIVE_GEMINI:
+        asked = None
+        notes.append(("max_tokens", (f"warning: the native {name} provider ignores max_tokens in auxiliary."
+                                     f"{TASK_KEY}.extra_body; long answers are not capped.")))
+    elif asked is None:
         notes.append(("max_tokens", (f"warning: auxiliary.{TASK_KEY}.extra_body replaces the default and has no "
                                      "max_tokens; long answers are not capped.")))
+    max_tokens, max_tokens_asked = (asked, None) if name in _TASK_CAPPED else (None, asked)
     options = extra.get("providerOptions")
     gateway = options.get("gateway") if isinstance(options, dict) else None
     zdr = isinstance(gateway, dict) and gateway.get("zeroDataRetention") is True
@@ -259,10 +283,10 @@ def _task_effective(merged: dict[str, Any], notes: list[tuple[str, str]]) -> _Ef
         who = "the main model" if provider == "auto" else without_credentials(provider)
         notes.append(("gateway_options", (
             f"warning: auxiliary.{TASK_KEY}.extra_body has providerOptions, which only ai-gateway accepts, so {who} "
-            f"may reject every dossier call. Set auxiliary.{TASK_KEY}.extra_body for it, e.g. "
-            f"{{max_tokens: {_writer.MAX_OUTPUT_TOKENS}}}, or {{}} for none.")))
+            f"may reject every dossier call. Set auxiliary.{TASK_KEY}.extra_body without providerOptions, "
+            "for example {}.")))
     return _Effective(_writer.Route(TASK_KEY, None, None), without_credentials(provider), without_credentials(model),
-                      reasoning, max_tokens, zdr, False, ())
+                      reasoning, max_tokens, max_tokens_asked, zdr, False, ())
 
 
 def route() -> _writer.Route:
@@ -324,6 +348,7 @@ def load_config() -> DossierConfig:
         model=eff.model,
         reasoning=eff.reasoning,
         max_tokens=eff.max_tokens,
+        max_tokens_asked=eff.max_tokens_asked,
         zdr=eff.zdr,
         task_registered=_TASK_REGISTERED,
         legacy_env=eff.legacy,
@@ -720,7 +745,7 @@ def _v1_pending(root: Path) -> bool:
 def v1_backups() -> int:
     """v1 files kept as ``v1-dossier[.<n>].json`` until the first v2 pass (or a forget) removes them."""
     root = dossier_root()
-    return len(list(root.glob(f"chats/*/*/{_doc.V1_BACKUPS}"))) + len(_doc.backups(root / "persona"))
+    return sum(len(_doc.backups(target)) for target in [*root.glob("chats/*/*"), root / "persona"])
 
 
 def migrate_v1(now: datetime | None = None) -> dict[str, int]:

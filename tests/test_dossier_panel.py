@@ -11,6 +11,7 @@ import asyncio
 import importlib
 import json
 import logging
+import shlex
 import shutil
 import threading
 import time
@@ -334,6 +335,34 @@ async def test_a_migrated_dossier_is_readable_where_no_refresh_can_run(plug, ds,
 
 
 @pytest.mark.asyncio
+async def test_a_clipped_screen_names_show_for_this_connection(plug, ds, panel):
+    """The contact also writes to another owner, under the same chat id: the named 'show' prints this chat's text."""
+    other = "bc-other-demo"
+    old = timedelta(days=70)
+    raw(plug, CHAT, [(1, "in", "Old order: two crates", old), (2, "out", "Old reply", old - timedelta(minutes=1))],
+        username="anna_k", first_name="Anna")
+    test_history.set_retention(plug, 30)
+    assert maintain(plug, 0).pruned_files >= 1  # this owner's chat is gone from the catalog
+    await seed(plug, CHAT, "anna_k", ROWS, first_name="Anna", business_id=other)
+    facts = [fact(f"f{i}", f"Anna asked about crate size {i} for the Northwind Demo order.") for i in range(80)]
+    put(dossier_dir(ds, CHAT), v1_contact(*facts, conn=BUSINESS_ID, chat=CHAT))
+    put(dossier_dir(ds, CHAT, business_id=other), v1_contact(fact("b1", "Other owner's fact."), conn=other, chat=CHAT))
+    cycle(ds, FakeLlm(doc(DOCUMENT)))
+    ds.bind_llm(FakeLlm())
+
+    view = await act(panel)
+
+    (line,) = [line for line in view.text.splitlines() if "hermes telesec dossier show" in line]
+    args = shlex.split(line.partition("hermes telesec dossier ")[2])
+    assert args == ["show", "--connection", BUSINESS_ID, "--chat", str(CHAT)]
+    code, out, _err = cli(plug, "dossier", *args)
+    assert code == 0 and "- Anna asked about crate size 79 for the Northwind Demo order." in out.splitlines()
+    assert "Other owner" not in out and COMMITMENT not in out
+    _code, out, _err = cli(plug, "dossier", "show", "--chat", str(CHAT))  # the other owner's chat
+    assert "crate size" not in out
+
+
+@pytest.mark.asyncio
 async def test_contact_snapshot_failed_attempt(plug, ds, panel):
     await seed(plug, CHAT, "anna_k", ROWS, first_name="Anna")
     assert cycle(ds, FakeLlm(RuntimeError("model down with secret text"))).failed == 1
@@ -356,7 +385,7 @@ async def test_contact_snapshot_corrupt(plug, ds, panel):
     view = await act(panel)
 
     assert (snap.corrupt, snap.doc) == (True, None)
-    assert "can't be read" in view.text and f"hermes telesec dossier forget --chat {CHAT}" in view.text
+    assert "can't be read" in view.text and f"hermes telesec dossier forget --connection {BUSINESS_ID} --chat {CHAT}" in view.text
     assert args_of(view) == ["o.p"]
 
 
@@ -1246,17 +1275,26 @@ class TimedOut(Exception):
 
 WINDOW = ("The contact hasn't written in the last 24 hours, and Telegram lets a bot post only within 24 hours of "
           "their last message.")
+MAYBE_WINDOW = "One possible cause: a bot can post in a Business chat only if the contact wrote there in the last 24 hours."
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("noted", "error", "expected"), [
-    (False, BadRequest("Bad Request: business peer usage missing"), WINDOW),
-    (False, Forbidden("Forbidden: bot can't send messages to the user"), WINDOW),
-    (False, TimedOut("Timed out"), "Telegram did not accept the summary (TimedOut)."),  # not Telegram's refusal
-    (True, BadRequest("Bad Request: can't parse entities"), "Telegram did not accept the summary (BadRequest)."),
+@pytest.mark.parametrize(("noted", "error", "expected", "reason"), [
+    # Only Telegram's own inactive-chat error is told as the window, even when the window looked open.
+    (False, BadRequest("Bad Request: BUSINESS_PEER_USAGE_MISSING"), WINDOW, "window"),
+    (False, BadRequest("Bad Request: business peer usage missing"), WINDOW, "window"),
+    (True, BadRequest("Bad Request: BUSINESS_PEER_USAGE_MISSING"), WINDOW, "window"),
+    # Any other refusal while the window is unknown names the 24 hours as a possible cause only.
+    (False, BadRequest("Bad Request: can't parse entities"),
+     f"Telegram did not accept the summary (BadRequest). {MAYBE_WINDOW}", "send_refused"),
+    (False, Forbidden("Forbidden: bot can't send messages to the user"),
+     f"Telegram did not accept the summary (Forbidden). {MAYBE_WINDOW}", "send_refused"),
+    (False, TimedOut("Timed out"), "Telegram did not accept the summary (TimedOut).", "send_failed"),  # no refusal
+    (True, BadRequest("Bad Request: can't parse entities"), "Telegram did not accept the summary (BadRequest).",
+     "send_failed"),
 ])
-async def test_a_fresh_gateway_tries_the_post_and_tells_telegram_refusal_as_the_window(plug, ds, panel, caplog,
-                                                                                       noted, error, expected):
+async def test_a_fresh_gateway_tries_the_post_and_tells_only_telegram_window_error_as_the_window(
+        plug, ds, panel, caplog, noted, error, expected, reason):
     await old_chat(plug)  # the gateway started less than 24 hours ago: a voice note before it may count
     if noted:  # e.g. a sticker this process saw: the window is known open, so a refusal is something else
         panel._post.note_inbound(BUSINESS_ID, CHAT, NOW - timedelta(minutes=30))
@@ -1270,9 +1308,9 @@ async def test_a_fresh_gateway_tries_the_post_and_tells_telegram_refusal_as_the_
 
     assert len(posts(bot)) == 1 and len(llm.calls) == 1  # it tried
     (sent,) = bot.sent
-    assert sent["chat_id"] == OWNER_ID and sent["text"].startswith(f"{HEAD}\n{expected}")
-    reason = "window" if expected == WINDOW else "send_failed"
+    assert sent["chat_id"] == OWNER_ID and sent["text"] == f"{HEAD}\n{expected}"
     assert f"reason={reason} error={type(error).__name__}" in caplog.text
+    assert str(error) not in caplog.text  # compared in memory only
 
 
 @pytest.mark.asyncio
@@ -1439,6 +1477,23 @@ async def test_a_contact_who_lately_sent_only_media_still_gets_the_summary(plug,
 
     assert len(posts(bot)) == 1 and len(bot.sent) == 1
     assert not any(r.get("message_id") == 30 for r in load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["voice", "video_note"])
+async def test_a_contact_voice_or_video_note_is_noted_before_transcription_claims_it(plug, ds, panel, kind):
+    """Transcription claims the update and history keeps no voice message, yet it opens the 24-hour window."""
+    await _refusal_case(plug, ds, "window")  # the contact's last text is 30 hours old, the gateway is up 2 days
+    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    bot = PanelBot()
+    at = NOW - timedelta(minutes=30)
+
+    with pytest.raises(ApplicationHandlerStop):  # claimed for transcription, so it never reaches core
+        await _business_handler(plug).callback(chat_update(kind, message_id=30, at=at), SimpleNamespace(bot=bot))
+
+    assert panel._post._LAST_INBOUND == {(BUSINESS_ID, str(CHAT)): at}
+    assert await run_command(panel, command_update(message_id=501), bot)
+    assert len(posts(bot)) == 1 and bot.sent == []
 
 
 def test_without_a_cached_owner_the_chat_tells_the_contact_and_telegram_is_not_asked(dossier_history, panel):

@@ -67,7 +67,6 @@ LEAVE_OUT_MAX = 20  # newest owner removals carried into the note
 KEEP_LABEL = {"en": "Keep:", "ru": "Сохранить:"}
 LEAVE_OUT_LABEL = {"en": "Leave out:", "ru": "Не включать:"}
 
-_BACKUP_RE = re.compile(r"v1-dossier(?:\.([0-9]+))?\.json")
 _CYRILLIC_RE = re.compile(r"[\u0400-\u04ff]")
 _INT_RE = re.compile(r"-?[1-9][0-9]*|0")
 _OLDEST = datetime.min.replace(tzinfo=UTC)
@@ -197,7 +196,7 @@ def _retire_v1(target: Path) -> str:
     the newest file, also once a lower one is deleted. The caller holds the data lock.
     """
     (target / _doc.V1_CHANGES).unlink(missing_ok=True)
-    numbers = [int(m[1] or 0) for path in _doc.backups(target) if (m := _BACKUP_RE.fullmatch(path.name))]
+    numbers = [int(m[1] or 0) for path in _doc.backups(target) if (m := _doc.V1_BACKUP_RE.fullmatch(path.name))]
     n = max(numbers, default=-1) + 1
     name = _doc.V1_BACKUP if n == 0 else f"v1-dossier.{n}.json"
     os.replace(target / _doc.V1_FILE, target / name)

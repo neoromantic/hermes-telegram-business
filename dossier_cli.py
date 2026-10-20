@@ -382,9 +382,14 @@ def _switch_line(settings: dict[str, Any]) -> str:
 
 def _model_line(cfg: _ds.DossierConfig) -> str:
     route = f"Model: {cfg.provider} / {cfg.model}"
-    cap = f"max_tokens {cfg.max_tokens}" if cfg.max_tokens else "max_tokens not capped"
-    # An explicit route asks for its own output cap (Hermes drops it for ai-gateway) and cannot ask for zero
-    # data retention.
+    if cfg.max_tokens:
+        cap = f"max_tokens {cfg.max_tokens}"
+    elif cfg.max_tokens_asked:  # Hermes may drop it on this route: never shown as a cap
+        cap = f"max_tokens {cfg.max_tokens_asked} asked for, may not apply"
+    else:
+        cap = "max_tokens not capped"
+    # An explicit route asks for its own output cap, which Hermes passes on only to some providers, and cannot
+    # ask for zero data retention.
     explicit = f"{cap}; zero data retention not requested; needs plugins.entries.{_history.PLUGIN_NAME}.llm trust config"
     if cfg.legacy_env:
         return f"{route} (from {_ds.PROVIDER_ENV}/{_ds.MODEL_ENV}; {explicit})"

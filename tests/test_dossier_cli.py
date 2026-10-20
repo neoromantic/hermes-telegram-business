@@ -318,6 +318,24 @@ def test_status_uses_the_legacy_env_route_with_its_warning(plug: ModuleType, ds:
     assert "Dossiers: enabled (" in out and "paused" not in out and "blocked" not in out.lower()
 
 
+@pytest.mark.parametrize(("provider", "cap"), [
+    ("openai", "max_tokens 16384 asked for, may not apply"),  # Hermes does not pass it on to openai
+    ("custom", "max_tokens 16384 asked for, may not apply"),  # it depends on the endpoint
+    ("auto", "max_tokens 16384 asked for, may not apply"),  # it depends on the main model
+    ("gemini", "max_tokens 16384 asked for, may not apply"),  # it may be raised to the model's limit
+    ("nvidia", "max_tokens 16384"),
+    ("vercel", "max_tokens not capped"),  # never passed on to ai-gateway
+])
+def test_status_shows_a_legacy_route_cap_only_where_hermes_applies_it(
+    plug: ModuleType, ds: ModuleType, monkeypatch: pytest.MonkeyPatch, provider: str, cap: str
+) -> None:
+    monkeypatch.setenv("TELESEC_DOSSIER_PROVIDER", provider)
+    monkeypatch.setenv("TELESEC_DOSSIER_MODEL", "example/model")
+    out = cli(plug, "dossier", "status")[1]
+    assert (f"Model: {provider} / example/model (from TELESEC_DOSSIER_PROVIDER/TELESEC_DOSSIER_MODEL; {cap}; zero data "
+            "retention not requested; needs plugins.entries.telesec.llm trust config)") in lines_of(out)
+
+
 @pytest.mark.parametrize(("task", "registered", "warning", "model_line"), [
     ({"provider": "auto"}, True, "warning: the Telesec dossiers task follows the main model (auto)",
      "Model: auto (main model)"),
@@ -335,7 +353,12 @@ def test_status_uses_the_legacy_env_route_with_its_warning(plug: ModuleType, ds:
       "max_tokens not capped; zero data retention not requested; needs plugins.entries.telesec.llm trust config)")),
     ({"provider": "anthropic", "model": "claude-example"}, True,
      "warning: auxiliary.telesec_dossier.extra_body has providerOptions, which only ai-gateway accepts, so anthropic",
-     "Model: anthropic / claude-example (Telesec dossiers task; reasoning low; max_tokens 8192)"),
+     ("Model: anthropic / claude-example (Telesec dossiers task; reasoning low; max_tokens 8192 asked for, "
+      "may not apply)")),
+    # Hermes's native gemini client ignores the body's max_tokens: never shown as a cap.
+    ({"provider": "gemini", "model": "gemini-3.8-flash", "extra_body": {"max_tokens": 8192}}, True,
+     "warning: the native gemini provider ignores max_tokens in auxiliary.telesec_dossier.extra_body",
+     "Model: gemini / gemini-3.8-flash (Telesec dossiers task; reasoning low; max_tokens not capped)"),
 ])
 def test_status_model_line_and_warnings_follow_the_task(plug: ModuleType, ds: ModuleType,
                                                         monkeypatch: pytest.MonkeyPatch, task: dict[str, Any] | None,

@@ -161,7 +161,8 @@ def load_contact_snapshot(business_connection_id: Any, chat_id: Any, *, now: dat
             and not chat_off:
         unqualified = _unqualified(entry, now)
     return _view.DossierSnapshot(
-        target="contact", name=_display_name(entry, private), chat_id=chat_id, doc=doc, corrupt=corrupt,
+        target="contact", name=_display_name(entry, private), chat_id=chat_id, connection=business_connection_id,
+        doc=doc, corrupt=corrupt,
         enabled=cfg.enabled, history_enabled=history_enabled, chat_off=chat_off, llm_ready=llm_ready(),
         refreshing=refreshing(business_connection_id, chat_id),
         failure=_failure(_ds.load_state(), _ds.chat_key(business_connection_id, chat_id)), unqualified=unqualified,
@@ -469,12 +470,21 @@ def _recheck(entry: dict[str, Any], inputs: dict[str, str], gen0: int) -> tuple[
 
 # Telegram's refusals of the post itself; a timeout or a network error says nothing about the 24-hour window.
 _REJECTIONS = frozenset({"BadRequest", "Forbidden"})
+# Telegram's error for a Business chat whose contact has not written in the last 24 hours (MTProto
+# BUSINESS_PEER_USAGE_MISSING), with "_" or " " between the words.
+_WINDOW_ERROR = "PEER_USAGE_MISSING"
 
 
-def _send_failure(entry: dict[str, Any], error: str) -> str:
-    """The reason for a failed send: "window" when Telegram refused a post whose window was not known open."""
-    if error in _REJECTIONS and not _post.post_window_open(entry, now=_history._utcnow()):
+def _send_failure(entry: dict[str, Any], exc: Exception) -> str:
+    """The reason for a failed send: "window" only when Telegram's error says so.
+
+    Any other refusal of a post whose window is not known open is "send_refused", which names the 24-hour
+    rule as a possible cause. The error text is compared here only, never logged or shown.
+    """
+    if _WINDOW_ERROR in str(exc).upper().replace(" ", "_"):
         return "window"
+    if type(exc).__name__ in _REJECTIONS and not _post.post_window_open(entry, now=_history._utcnow()):
+        return "send_refused"
     return "send_failed"
 
 
@@ -502,7 +512,7 @@ async def _build_and_send(bot: Any, entry: dict[str, Any], conn: str, chat_id: A
             "business_connection_id": conn, "chat_id": chat_id,
             "rich_message": {"html": _view.post_html(result.text, local), "skip_entity_detection": True}})
     except Exception as exc:  # noqa: BLE001 - told to the owner privately
-        return await asyncio.to_thread(_send_failure, entry, type(exc).__name__), type(exc).__name__
+        return await asyncio.to_thread(_send_failure, entry, exc), type(exc).__name__
     _history.remember_control_message(conn, chat_id, _history._get(sent, "message_id"))
     logger.info("%s: dossier posted chat_ref=%s chars=%d ms=%d model=%s/%s", _history.PLUGIN_NAME,
                 _ds._log_ref(entry), len(result.text), int((time.monotonic() - started) * 1000),

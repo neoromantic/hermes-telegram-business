@@ -76,7 +76,8 @@ def persona_doc(dv: ModuleType, **changes: Any) -> dict[str, Any]:
 
 def snap(dv: ModuleType, target: str = "contact", **changes: Any) -> Any:
     base: dict[str, Any] = {"target": target, "name": NAME if target == "contact" else ""}
-    base.update(chat_id=CHAT, doc=contact_doc(dv) if target == "contact" else persona_doc(dv))
+    base.update(chat_id=CHAT, connection=CONN if target == "contact" else None,
+                doc=contact_doc(dv) if target == "contact" else persona_doc(dv))
     base.update(changes)
     return dv.DossierSnapshot(**base)
 
@@ -548,18 +549,21 @@ def test_the_screen_never_names_a_hidden_refresh_button(dv: ModuleType, lang: st
                 assert not label.search(view.text), (values, failure, view.text)
 
 
+TARGET_HTML = "--connection 'biz &lt;demo&gt;' --chat '7 00;rm'"
+
+
 @pytest.mark.parametrize("lang", ["en", "ru"])
 def test_a_corrupt_file_shows_the_reset_command(dv: ModuleType, lang: str) -> None:
-    contact = dv.render_overview(snap(dv, doc=None, corrupt=True, chat_id="7 00;rm"), lang)
+    contact = dv.render_overview(snap(dv, doc=None, corrupt=True, chat_id="7 00;rm", connection="biz <demo>"), lang)
     persona = dv.render_overview(snap(dv, "persona", doc=None, corrupt=True, manage_global=True), lang)
 
     check_view(dv, contact)
     check_view(dv, persona)
     assert (
         contact.html
-        == f"<h3>{NAME}</h3><p>{s(dv, lang, 'st_corrupt').format(chat_id=chr(39) + '7 00;rm' + chr(39))}</p>"
+        == f"<h3>{NAME}</h3><p>{s(dv, lang, 'st_corrupt').format(target=TARGET_HTML)}</p>"
     )
-    assert "hermes telesec dossier forget --chat '7 00;rm'" in contact.text
+    assert "hermes telesec dossier forget --connection 'biz <demo>' --chat '7 00;rm'" in contact.text
     assert "hermes telesec dossier forget --persona" in persona.text
     assert "rf.c" not in args_of(contact)
 
@@ -1098,7 +1102,9 @@ REFUSALS = {
         "busy": "A summary for this chat is already being prepared.",
         "changed": "Messages changed while the summary was being written. Send /dossier again.",
         "failed": "The summary could not be written (TimeoutError).",
-        # Not the 24 hours: a refusal while that window was not known open is told as "window".
+        # A refusal while the window was not known open: the 24 hours are only a possible cause.
+        "send_refused": "Telegram did not accept the summary (TimeoutError). One possible cause: a bot can post in a "
+        "Business chat only if the contact wrote there in the last 24 hours.",
         "send_failed": "Telegram did not accept the summary (TimeoutError).",
     },
     "ru": {
@@ -1113,6 +1119,8 @@ REFUSALS = {
         "busy": "Итоги для этого чата уже готовятся.",
         "changed": "Пока составлялись итоги, сообщения изменились. Отправьте /dossier ещё раз.",
         "failed": "Не удалось составить итоги (TimeoutError).",
+        "send_refused": "Telegram не принял итоги (TimeoutError). Возможная причина: бот может писать в бизнес-чат, "
+        "только если собеседник писал туда за последние 24 часа.",
         "send_failed": "Telegram не принял итоги (TimeoutError).",
     },
 }
@@ -1130,6 +1138,7 @@ def test_post_reasons_are_exactly_the_v2_set(dv: ModuleType) -> None:
         "busy",
         "changed",
         "failed",
+        "send_refused",
         "send_failed",
     )
     assert set(REFUSALS["en"]) == set(REFUSALS["ru"]) == set(dv.POST_REASONS)
@@ -1223,6 +1232,7 @@ def test_snapshot_has_no_blocked_state(dv: ModuleType) -> None:
         "target",
         "name",
         "chat_id",
+        "connection",
         "doc",
         "corrupt",
         "enabled",
@@ -1286,12 +1296,16 @@ def test_a_converted_document_over_the_limit_shows_its_start_and_names_show(
     doc = converted_doc(dv, document=document, note=note)
     name = "Ж" * dv.NAME_CHARS
 
-    view = dv.render_overview(snap(dv, doc=doc, name=name, failure="E" * 64, manage_global=True), lang)
+    connection = "bc-" + "c" * 61  # the longest id the screen shows whole
+    view = dv.render_overview(snap(dv, doc=doc, name=name, failure="E" * 64, manage_global=True,
+                                   connection=connection), lang)
 
     check_view(dv, view)
     unclipped = dv.html_to_text(view.html, limit=10**6)
     assert dv._units(unclipped) <= dv.TEXT_MAX_CHARS and view.text == unclipped
-    assert s(dv, lang, "st_clipped").format(chat_id=CHAT) in view.html
+    # The connection picks this owner's chat: the contact's chat id is the same under every owner.
+    target = f"--connection {connection} --chat {CHAT}"
+    assert s(dv, lang, "st_clipped").format(target=target) in view.html
     assert doc["document"] == document  # the stored text stays whole; 'show' prints all of it
 
 

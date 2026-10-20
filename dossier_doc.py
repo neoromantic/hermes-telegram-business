@@ -21,7 +21,9 @@ from . import history_support as _history
 DOC_FILE = "document.json"
 V1_FILE = "dossier.json"  # read only by the v1 migration
 V1_BACKUP = "v1-dossier.json"  # the migrated v1 file, kept until the first v2 pass
-V1_BACKUPS = "v1-dossier*.json"  # every backup: a later v1 file is kept as v1-dossier.<n>.json, never over one
+# Every backup: a later v1 file is kept as v1-dossier.<n>.json, never over one. Any other name, such as an
+# owner's own "v1-dossier copy.json", is not a backup: it is never listed, counted or deleted.
+V1_BACKUP_RE = re.compile(r"v1-dossier(?:\.([0-9]+))?\.json")
 V1_CHANGES = "changes.jsonl"  # the v1 revision log, deleted by the migration
 DOC_FORMAT = 2
 DOC_MAX_UNITS = 3200  # UTF-16 units, every kind: the Telegram screen needs room around it
@@ -220,8 +222,9 @@ def converted(doc: dict[str, Any]) -> bool:
 
 
 def backups(target_dir: Path) -> list[Path]:
-    """The v1 backups in ``target_dir``: ``v1-dossier.json``, then any ``v1-dossier.<n>.json``."""
-    return sorted(target_dir.glob(V1_BACKUPS), key=lambda path: (len(path.name), path.name))
+    """The v1 backups in ``target_dir``: ``v1-dossier.json``, then any ``v1-dossier.<n>.json``, by number."""
+    found = [path for path in target_dir.glob("v1-dossier*.json") if V1_BACKUP_RE.fullmatch(path.name)]
+    return sorted(found, key=lambda path: (len(path.name), path.name))
 
 
 def write_doc(target_dir: Path, doc: dict[str, Any]) -> None:

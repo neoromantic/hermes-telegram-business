@@ -37,7 +37,7 @@ POST_RU_SHARE = 0.3  # the post is in Russian when at least this share of its le
 CLI = "hermes telesec dossier"
 TARGETS = {"contact": "c", "persona": "p"}
 POST_REASONS = ("disabled", "no_model", "history_off", "chat_off", "window", "empty", "busy", "changed",
-                "failed", "send_failed")
+                "failed", "send_refused", "send_failed")
 NOTICE_KEYS = ("busy", "refresh_started", "unavailable", "up_to_date", "failed", "operator_only", "no_connection")
 
 Rows = tuple[tuple[tuple[str, str], ...], ...]
@@ -67,7 +67,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "st_converted": "Converted from the old dossier. The first refresh rewrites it.",
         "st_converted_waiting": "Converted from the old dossier. It is rewritten once the chat has saved messages "
                                 "from both you and the contact.",
-        "st_clipped": f"Only the start fits here. The full text: {CLI} show --chat {{chat_id}}",
+        "st_clipped": f"Only the start fits here. The full text: {CLI} show {{target}}",
         "st_persona_missing": "No persona yet. It is written once you have sent at least 10 messages in chats "
                               "with dossiers.",
         "st_refreshing": "Refreshing now…",
@@ -75,7 +75,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "st_history_off": "History is off, so dossiers are paused. Turn it on in Settings.",
         "note_chat_off": "Off for this chat.",
         "st_no_model": "The model is not connected in this process.",
-        "st_corrupt": f"This dossier file can't be read. Reset it with: {CLI} forget --chat {{chat_id}}",
+        "st_corrupt": f"This dossier file can't be read. Reset it with: {CLI} forget {{target}}",
         "st_corrupt_persona": f"The persona file can't be read. Reset it with: {CLI} forget --persona",
         "off_cli": f"From the terminal: {CLI} enable",
         "b_refresh": "Refresh", "b_persona": "My persona", "b_back_dossier": "‹ Dossier", "b_dossier": "Open dossier",
@@ -114,6 +114,8 @@ STRINGS: dict[str, dict[str, Any]] = {
                  "busy": "A summary for this chat is already being prepared.",
                  "changed": "Messages changed while the summary was being written. Send /dossier again.",
                  "failed": "The summary could not be written ({error}).",
+                 "send_refused": "Telegram did not accept the summary ({error}). One possible cause: a bot can post "
+                                 "in a Business chat only if the contact wrote there in the last 24 hours.",
                  "send_failed": "Telegram did not accept the summary ({error})."},
     },
     "ru": {
@@ -137,7 +139,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "st_converted": "Перенесено из старого досье. Первое обновление перепишет его.",
         "st_converted_waiting": "Перенесено из старого досье. Оно будет переписано, когда в чате сохранятся "
                                 "сообщения и от вас, и от собеседника.",
-        "st_clipped": f"Здесь помещается только начало. Полный текст: {CLI} show --chat {{chat_id}}",
+        "st_clipped": f"Здесь помещается только начало. Полный текст: {CLI} show {{target}}",
         "st_persona_missing": "Персоны пока нет. Она появится, когда вы отправите хотя бы 10 сообщений в чатах "
                               "с досье.",
         "st_refreshing": "Обновляю…",
@@ -145,7 +147,7 @@ STRINGS: dict[str, dict[str, Any]] = {
         "st_history_off": "История выключена, поэтому досье на паузе. Включите её в настройках.",
         "note_chat_off": "Для этого чата выключено.",
         "st_no_model": "Модель не подключена в этом процессе.",
-        "st_corrupt": f"Файл досье не читается. Сбросьте его командой: {CLI} forget --chat {{chat_id}}",
+        "st_corrupt": f"Файл досье не читается. Сбросьте его командой: {CLI} forget {{target}}",
         "st_corrupt_persona": f"Файл персоны не читается. Сбросьте его командой: {CLI} forget --persona",
         "off_cli": f"Из терминала: {CLI} enable",
         "b_refresh": "Обновить", "b_persona": "Моя персона", "b_back_dossier": "‹ Досье",
@@ -184,6 +186,8 @@ STRINGS: dict[str, dict[str, Any]] = {
                  "busy": "Итоги для этого чата уже готовятся.",
                  "changed": "Пока составлялись итоги, сообщения изменились. Отправьте /dossier ещё раз.",
                  "failed": "Не удалось составить итоги ({error}).",
+                 "send_refused": "Telegram не принял итоги ({error}). Возможная причина: бот может писать в "
+                                 "бизнес-чат, только если собеседник писал туда за последние 24 часа.",
                  "send_failed": "Telegram не принял итоги ({error})."},
     },
 }
@@ -217,7 +221,8 @@ class DossierSnapshot:
 
     target: str  # contact | persona
     name: str = ""  # catalog display name; "" for the persona
-    chat_id: Any = None  # for the reset command of an unreadable file
+    chat_id: Any = None  # for the CLI lines on the screen ("forget", "show")
+    connection: Any = None  # the chat's Business connection: a contact can have chats with two owners
     doc: dict[str, Any] | None = None  # None when there is no document
     corrupt: bool = False  # document.json exists but can't be read
     enabled: bool = True
@@ -683,9 +688,15 @@ def _status(snap: DossierSnapshot, lang: str, *, empty: bool, converted: bool = 
     return s["st_empty"] if empty else ""
 
 
-def _chat_arg(snap: DossierSnapshot) -> str:
-    """The chat id as a shell argument for a CLI line on the screen, HTML-escaped."""
-    return _html.escape(shlex.quote(_clip(snap.chat_id, 64)), quote=False)
+def _target_arg(snap: DossierSnapshot) -> str:
+    """``--connection … --chat …`` for a CLI line on the screen: shell-quoted, clipped and HTML-escaped.
+
+    A contact's chat id is the same under every owner, so the connection picks the chat this screen shows.
+    """
+    chat = f"--chat {shlex.quote(_clip(snap.chat_id, 64))}"
+    if snap.connection:
+        chat = f"--connection {shlex.quote(_clip(snap.connection, 64))} {chat}"
+    return _html.escape(chat, quote=False)
 
 
 def _body(snap: DossierSnapshot, lang: str) -> str:
@@ -694,7 +705,7 @@ def _body(snap: DossierSnapshot, lang: str) -> str:
     if snap.corrupt:
         if persona:
             return s["st_corrupt_persona"]
-        return s["st_corrupt"].format(chat_id=_chat_arg(snap))
+        return s["st_corrupt"].format(target=_target_arg(snap))
     if not snap.enabled:
         return _off(snap, s)
     if not snap.history_enabled:
@@ -756,7 +767,7 @@ def render_overview(snap: DossierSnapshot, lang: str) -> View:
         if at is not None:
             head += f"<p><i>{_header(snap, doc, at, lang)}</i></p>"
         status = _status(snap, lang, empty=not document, converted=converted)
-        after = f"<p><i>{s['st_clipped'].format(chat_id=_chat_arg(snap))}</i></p>" if clipped else ""
+        after = f"<p><i>{s['st_clipped'].format(target=_target_arg(snap))}</i></p>" if clipped else ""
         html = _framed(head, document, after + note + (f"<p><i>{status}</i></p>" if status else ""))
     else:
         html = f"{head}<p>{_body(snap, lang)}</p>{note}"

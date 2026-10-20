@@ -765,6 +765,25 @@ def test_the_highest_backup_number_is_always_the_newest_file(dm: ModuleType, roo
     assert read_doc(target)["note"] == "Never call on Sundays.\n\nPays on the 5th."
 
 
+def test_an_owner_copy_of_a_backup_is_not_a_backup(dm: ModuleType, root: Path) -> None:
+    """Only v1-dossier.json and v1-dossier.<n>.json are backups: the first v2 pass never deletes a copy."""
+    target = contact_dir(dm, root)
+    original = put(target, v1_contact(fact("f1", "Never call on Sundays.", kind="owner")))
+    dm.migrate_root(root, NOW)
+    copies = ["v1-dossier copy.json", "v1-dossier-keep.json", "v1-dossier.1.json.json", "v1-dossier.x.json"]
+    for name in copies:
+        (target / name).write_bytes(original)
+
+    assert [path.name for path in dm._doc.backups(target)] == ["v1-dossier.json"]
+    assert dm.migrate_root(root, NOW)["backups"] == 1
+    assert dm.unreadable_backups(root) == []
+
+    dm.drop_migrated_backups("contact", target)  # what the first v2 pass does
+
+    assert sorted(path.name for path in target.iterdir()) == sorted(["document.json", *copies])
+    assert all((target / name).read_bytes() == original for name in copies)
+
+
 def test_a_corrupt_document_leaves_the_directory_untouched(
     dm: ModuleType, root: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
