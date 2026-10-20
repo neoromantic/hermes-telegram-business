@@ -242,6 +242,10 @@ The bundled `dossiers` skill gives Hermes these read, note, refresh, and forget 
 
 Tap "Manage Bot" in a Business chat. The bot opens your private chat with it and shows that chat's [owner panel](../README.md#per-chat-transcription-modes). **Dossier** opens the contact's dossier there as a rich message, in your Telegram app's language (Russian, otherwise English). The contact sees nothing.
 
+<img src="images/dossier-panel-en@2x.png" width="430" alt="Screenshot of the Dossier screen in the owner panel for a fictional contact, Mira Tanaka: the update line, a one-line summary, the Project, Agreements, How to work with her, and Contact details sections, the owner note marked as not posted, and Refresh, My persona, and Back buttons.">
+
+This is a real Telegram for macOS screenshot of the screen over a fictional contact. It is also in [Russian](images/dossier-panel-ru@2x.png). [`scripts/render-dossier-screenshots.py`](../scripts/render-dossier-screenshots.py) writes the exact rich message HTML of the screen and of the `/dossier` summary to `images/src/`, ready to send for a screenshot.
+
 - The screen shows the contact's name, one line with when the dossier was last checked and how many messages it read, the document, your note under **Your note (not posted)**, and at most one status line: history off, the chat off, refreshing now, the last refresh failed (with the earlier version shown), converted from the old dossier ([Upgrade and rollback](#upgrade-and-rollback)), or nothing worth keeping yet.
 - **Refresh** refreshes this chat now in the background; open the dossier again a minute later. With nothing new, edited, or deleted and the note unchanged, it answers "Already up to date" and makes no model call. It is offered while dossiers and history are on, the gateway has the model facade, the chat is in history, and the chat is not set to [No dossier or Don't save](#one-chat). A chat with no saved messages yet says `No dossier yet: this chat has no saved messages.` instead. If another cycle is running, the panel says so.
 - **My persona** shows the owner persona the same way, with your persona note, and **‹ Dossier** goes back. The on/off switch is in [Settings](../README.md#settings).
@@ -253,6 +257,10 @@ Tap "Manage Bot" in a Business chat. The bot opens your private chat with it and
 ### `/dossier` in a chat
 
 As the connected Business account owner, send exactly `/dossier` in a private Business chat. The bot deletes your command at once and then writes a short summary of the chat and posts it there as a rich message, titled "Summary of our chat" («Краткое содержание переписки»), with the footer "Prepared automatically from this chat on <date>; it may contain mistakes." It usually takes a few seconds; when the summary is not written after 5 minutes, it gives up. The title and footer follow the language of the summary (Russian when at least 30% of its letters are Cyrillic), because the contact reads it.
+
+<img src="images/dossier-post-en@2x.png" width="430" alt="Screenshot of a /dossier summary for a fictional contact: &quot;Summary of our chat&quot; with Project, Agreements, and Open questions, and the footer that says it was prepared automatically and may contain mistakes.">
+
+The screenshot is real Telegram for macOS. The bot sent the summary's exact HTML to the owner's private chat with it, so it shows as the bot's message and not in a Business chat. It uses the same fictional contact as the [panel screenshot](#owner-panel); it is also in [Russian](images/dossier-post-ru@2x.png).
 
 The summary is a clean-room build: it is written at that moment from the chat's live messages only, by a separate model call that sees nothing else. It covers agreements and promises with deadlines, meetings and dates, decisions, open questions, and practical details either side shared, without opinions or sensitive traits.
 
