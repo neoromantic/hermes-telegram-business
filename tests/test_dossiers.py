@@ -159,10 +159,8 @@ def host_config(monkeypatch: pytest.MonkeyPatch, task: dict[str, Any] | None) ->
 
 
 def local_zone(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
-    """Make ``name`` Hermes's time zone (a fake ``hermes_time``)."""
-    module = ModuleType("hermes_time")
-    module.get_timezone_name = lambda: name
-    monkeypatch.setitem(sys.modules, "hermes_time", module)
+    """Make ``name`` Hermes's time zone (``HERMES_TIMEZONE``)."""
+    monkeypatch.setenv("HERMES_TIMEZONE", name)
 
 
 # ---------------------------------------------------------------------------

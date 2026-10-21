@@ -187,7 +187,8 @@ ALICE_MONTH = """
 
 @pytest.fixture(autouse=True)
 def _fixed_clock(plugin, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setitem(sys.modules, "hermes_time", None)  # no Hermes time zone
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)  # no Hermes time zone
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", None)
     monkeypatch.setattr(plugin._history_support, "_utcnow", lambda: NOW)
 
 

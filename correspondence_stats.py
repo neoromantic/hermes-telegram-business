@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import shlex
 import statistics
@@ -406,12 +407,14 @@ def _message_id_sort_key(message_id: Any) -> tuple[int, Any]:
 def _hermes_timezone_name() -> str:
     # Hermes resolves HERMES_TIMEZONE, then config.yaml ``timezone``. Outside Hermes
     # (or on any failure there) there is simply no Hermes time zone.
-    try:
-        import hermes_time  # type: ignore[import-not-found]
+    name: Any = os.environ.get("HERMES_TIMEZONE", "")
+    if not name.strip():
+        try:
+            from hermes_cli.config import load_config_readonly  # type: ignore[import-not-found]
 
-        name = hermes_time.get_timezone_name()
-    except Exception:  # noqa: BLE001 - an optional host default must never break stats
-        return ""
+            name = load_config_readonly().get("timezone")
+        except Exception:  # noqa: BLE001 - an optional host default must never break stats
+            return ""
     return name.strip() if isinstance(name, str) else ""
 
 

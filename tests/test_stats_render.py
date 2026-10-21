@@ -30,7 +30,8 @@ TZ = "Europe/Berlin"
 
 @pytest.fixture(autouse=True)
 def _no_hermes_timezone(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setitem(sys.modules, "hermes_time", None)
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", None)
 
 
 @pytest.fixture
