@@ -50,7 +50,7 @@ DEFAULT_MODEL = ("Model: ai-gateway / google/gemini-3.8-flash (Telesec dossiers 
 MIRA = 5601
 OLGA = 5602
 RULE = ("Never quote the private dossier, the owner note or the persona into a Business chat. To share, the owner "
-        "sends /dossier, which posts a clean-room summary. This is a rule, not a hard guarantee: with "
+        "sends /dossier, which posts the dossier without the note. This is a rule, not a hard guarantee: with "
         "TELESEC_AGENT_ENABLE the agent can write in Business chats.")
 REPO = Path(__file__).resolve().parent.parent
 SENT_TO = ("The text of ALL private chats will be sent to ai-gateway / google/gemini-3.8-flash to build a dossier for "
@@ -819,29 +819,43 @@ async def test_preview_refusals_and_notes(plug: ModuleType, ds: ModuleType) -> N
 
 
 @pytest.mark.asyncio
-async def test_preview_post_prints_the_clean_room_input_of_dossier(plug: ModuleType, ds: ModuleType) -> None:
-    from importlib import import_module
-
-    post = import_module(f"{plug.__name__}.dossier_post")
-    entry = await built_mira(plug, ds)
+async def test_preview_post_prints_the_dossier_dossier_would_post(plug: ModuleType, ds: ModuleType) -> None:
+    entry = await built_mira(plug, ds)  # the note is newer than the document
     write_persona(ds, chats=[{"business_connection_id": BUSINESS_ID, "chat_id": MIRA}], note="PERSONA-NOTE")
-    code, out, err = cli(plug, "dossier", "preview", "--contact", "Mira Tanaka", "--post")
-    assert (code, err) == (0, "# /dossier would send 3 messages; refusal: none\n")
-    system, user = split_preview(out)
+    before = snapshot_tree(ds.dossier_root())
+    assert cli(plug, "dossier", "preview", "--contact", "Mira Tanaka", "--post") == (
+        0, "", ("# /dossier would refresh the dossier first (update, 0 new, 0 edited, 0 deleted, note changed) and "
+                "post the result; preview without --post prints that refresh's input\n"))
+    assert snapshot_tree(ds.dossier_root()) == before  # no model call and no writes
 
-    fake = FakeLlm(doc("## Plans\n- Review on **Friday**."))
-    result = post.build_post(entry, llm=fake, now=NOW)
-    assert result.status == "ok"
-    sent = fake.by_purpose("telesec_post")
-    assert len(sent) == 1 and (sent[0]["system"], sent[0]["raw"]) == (system, user)
-    for private in ("We stopped working on Orbit", "Mira is your design lead", "PERSONA-NOTE", "Short, polite"):
-        assert private not in out  # never the document, the note or the persona
+    assert cycle(ds, FakeLlm(doc(SECOND)), target=("contact", entry)).checked == 1  # it has seen the note now
+    code, out, err = cli(plug, "dossier", "preview", "--contact", "Mira Tanaka", "--post")
+    assert (code, err) == (0, "# /dossier would post this rich message now (HTML); refusal: none\n")
+    (html,) = lines_of(out)
+    assert html.startswith("<h3>Dossier</h3><p><b>Mira is your design lead.</b></p>")
+    assert "<li>Bring the slides and the brief</li>" in html and "Prepared automatically from this chat on" in html
+    for private in ("We stopped working on Orbit", "PERSONA-NOTE", "Short, polite", "[m", "m2", "Revision", "gemini"):
+        assert private not in html  # never the note, the persona, a ref or the owner's metadata
 
     ds.set_enabled(False, via="cli")
     assert cli(plug, "dossier", "preview", "--contact", "Mira Tanaka", "--post") == (
         0, "", ("note: dossiers are disabled; nothing is sent until they are turned on with "
                 "'hermes telesec dossier enable' or Settings (/telesec) in Telegram\n"
-                "# /dossier would send nothing; refusal: disabled\n"))
+                "# /dossier would post nothing; refusal: disabled\n"))
+
+
+@pytest.mark.asyncio
+async def test_preview_post_says_why_nothing_would_be_posted(plug: ModuleType, ds: ModuleType) -> None:
+    await seed(plug, 5606, None, [(1, "in", "UNQ only the contact wrote", 60)], first_name="Uma", last_name="Oneway")
+    assert cli(plug, "dossier", "preview", *chat_args(5606), "--post") == (
+        0, "", "# /dossier would post nothing; refusal: unqualified\n")
+    await mira(plug)
+    assert cli(plug, "dossier", "preview", "--contact", "Mira Tanaka", "--post")[2] == (
+        "# /dossier would refresh the dossier first (first, 2 new, 0 edited, 0 deleted, note unchanged) and post the "
+        "result; preview without --post prints that refresh's input\n")
+    assert cycle(ds, FakeLlm(doc("EMPTY"))).checked == 1
+    assert cli(plug, "dossier", "preview", "--contact", "Mira Tanaka", "--post") == (
+        0, "", "# /dossier would post nothing; refusal: empty\n")
 
 
 @pytest.mark.asyncio
@@ -849,9 +863,10 @@ async def test_preview_post_never_names_the_window_refusal(plug: ModuleType, ds:
     # The CLI never sees the contact's voice or media messages, so it can't know the 24-hour window is closed.
     await seed(plug, MIRA, None, [(1, "in", "MIRA old question", 60 * 30), (2, "out", "MIRA old answer", 60 * 29)],
                first_name="Mira", last_name="Tanaka")
+    assert cycle(ds, FakeLlm(doc(FIRST))).refreshed == 1
     code, out, err = cli(plug, "dossier", "preview", "--contact", "Mira Tanaka", "--post")
-    assert (code, err) == (0, "# /dossier would send 2 messages; refusal: none\n")
-    assert "MIRA old question" in split_preview(out)[1]
+    assert (code, err) == (0, "# /dossier would post this rich message now (HTML); refusal: none\n")
+    assert out.startswith("<h3>Dossier</h3>")
 
 
 # ---------------------------------------------------------------------------

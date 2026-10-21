@@ -7,7 +7,8 @@ in a temporary HERMES_HOME, with the owner note set. The documents are written b
 hand in the shape the writer model returns, so they show the layout, not the quality
 of a model. Then it reads them back with the real loaders and runs the real views:
 the owner panel's Dossier screen (``dossier_view.render_overview``) and the
-``/dossier`` post in the chat (``dossier_view.post_html``), in English and Russian.
+``/dossier`` post in the chat (``dossier_view.post_html`` over the stored document,
+as ``/dossier`` posts it), in English and Russian.
 Each view's exact Bot API rich message HTML goes to
 ``docs/images/src/dossier-{panel,post}-{en,ru}.html``. Send one with
 sendRichMessage to take a real Telegram screenshot. This script does not make them.
@@ -85,19 +86,6 @@ LANGUAGES = {
 - Confirms with «Sounds good» or «Done»; declines politely and offers a new time.
 - Rarely uses emoji, never with new clients.
 """,
-        "summary": """## Project
-- Orbit: new onboarding and settings screens.
-- Design review on **Wednesday, 28 October**, 10:00.
-- Final files are due on **6 November**.
-
-## Agreements
-- The owner sends the screen texts by **Friday, 23 October**.
-- Mira shares the Figma link with the team after the review.
-- Extra illustrations: **€1,200**, approved.
-
-## Open questions
-- Who presents the review to the developers.
-""",
     },
     "ru": {
         "tz": "Europe/Moscow",
@@ -135,18 +123,6 @@ LANGUAGES = {
 ## Привычки
 - Соглашается словами «Отлично» и «Договорились»; отказывает мягко и предлагает другое время.
 - Эмодзи почти не ставит.
-""",
-        "summary": """## Заказ
-- Кухня 12 м², фасады из дуба.
-- Монтаж **14 ноября**, с 9:00.
-
-## Договорённости
-- Предоплата **60 000 ₽** до **25 октября**, остаток после монтажа.
-- Фото стены с розетками — до пятницы.
-- Ручки меняются на чёрные без доплаты.
-
-## Открытые вопросы
-- Нужен ли второй замер перед монтажом.
 """,
     },
 }
@@ -195,17 +171,18 @@ def render_views(language: str) -> dict[str, object]:
         write_documents(ds, doc_module, spec)
 
         # The panel state of a working setup: dossiers and history on, the model connected, the owner verified.
+        contact = ds.load_contact(CONNECTION, CHAT_ID)
         snapshot = view_module.DossierSnapshot(
-            target="contact", name=spec["name"], chat_id=CHAT_ID, doc=ds.load_contact(CONNECTION, CHAT_ID),
-            manage_global=True,
+            target="contact", name=spec["name"], chat_id=CHAT_ID, doc=contact, manage_global=True,
         )
         panel = view_module.render_overview(snapshot, language)
         persona = view_module.render_overview(
             view_module.DossierSnapshot(target="persona", doc=ds.load_persona(), manage_global=True),
             language,
         )
-        post = view_module.post_html(spec["summary"], NOW.astimezone(ZoneInfo(spec["tz"])))  # the owner's date
+        post = view_module.post_html(contact["document"], NOW.astimezone(ZoneInfo(spec["tz"])))  # the owner's date
         assert view_module.fits(panel.html) and view_module.fits(post), language
+        assert spec["note"] not in post and "[m" not in post, language
     return {
         "panel": panel.html, "panel_text": panel.text, "post": post, "post_text": view_module.html_to_text(post),
         "persona": persona.html,
@@ -238,7 +215,7 @@ def main() -> int:
                       f"{views[name + '_text']}")
             print(f"--- {language} persona\n{views['persona']}")
             print(f"--- {language} buttons\n{views['buttons']}")
-        for name, what in (("panel", "owner panel, Dossier screen"), ("post", "/dossier summary in the chat")):
+        for name, what in (("panel", "owner panel, Dossier screen"), ("post", "/dossier post in the chat")):
             page = SRC_DIR / f"dossier-{name}-{language}.html"
             page.write_text(HEADER.format(what=what) + views[name] + "\n", encoding="utf-8")
             print(page.relative_to(ROOT))

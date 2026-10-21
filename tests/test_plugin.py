@@ -465,7 +465,7 @@ def test_register_registers_the_dossier_model_task(plugin, no_dossier_route_env)
     assert tasks == [{
         "key": "telesec_dossier",
         "display_name": "Telesec dossiers",
-        "description": "Writes private Telesec contact dossiers, the owner writing persona and /dossier chat summaries.",
+        "description": "Writes private Telesec contact dossiers and the owner writing persona.",
         "defaults": ds.TASK_DEFAULTS,
         "inherit_from": None,
     }]

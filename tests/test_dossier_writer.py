@@ -219,31 +219,6 @@ def test_persona_input_aliases(dw: ModuleType) -> None:
     assert "owner_note" not in json.loads(dw.persona_input(today=TODAY, note="", messages=[]))
 
 
-def test_post_input_has_only_today_and_live_messages(dw: ModuleType) -> None:
-    raw = dw.post_input(
-        today=TODAY,
-        messages=[
-            msg(dw, "m90", "Let's do the review on Wednesday.", edited=True),
-            msg(dw, "m91", "Agreed.", sender="owner"),
-            msg(dw, "m77", "Deleted canary text.", deleted=True),
-            dw.WMsg(ref="m61", at=None, sender=None, text=None, deleted=True),
-            msg(dw, "m120", "Voice about the budget.", sender="unknown", voice=True),
-        ],
-    )
-    payload = json.loads(raw)
-
-    assert set(payload) == {"today", "messages"}
-    assert [m["text"] for m in payload["messages"]] == [
-        "Let's do the review on Wednesday.",
-        "Agreed.",
-        "Voice about the budget.",
-    ]
-    for item in payload["messages"]:
-        assert set(item) <= {"at", "from", "text", "voice"}
-    assert payload["messages"][2]["voice"] is True
-    assert "m90" not in raw and "canary" not in raw
-
-
 def test_shorten_input(dw: ModuleType) -> None:
     assert json.loads(dw.shorten_input("## A\n- b")) == {"document": "## A\n- b", "max_chars": 2600}
     assert json.loads(dw.shorten_input("## A", max_chars=1000))["max_chars"] == 1000
@@ -255,7 +230,7 @@ def test_shorten_input(dw: ModuleType) -> None:
 
 
 def test_prompts_have_no_leave_out_list_and_mention_hints(dw: ModuleType) -> None:
-    for prompt in (dw.WRITER_SYSTEM, dw.PERSONA_SYSTEM, dw.POST_SYSTEM, dw.SHORTEN_SYSTEM):
+    for prompt in (dw.WRITER_SYSTEM, dw.PERSONA_SYSTEM, dw.SHORTEN_SYSTEM):
         assert "leave_out" not in prompt
         assert prompt.rstrip().endswith("<<END>> line.") or prompt.rstrip().endswith("exactly <<END>>.")
     lines = dw.WRITER_SYSTEM.split("\n")
@@ -263,7 +238,6 @@ def test_prompts_have_no_leave_out_list_and_mention_hints(dw: ModuleType) -> Non
     assert lines[messages_line + 1].startswith('- "hints", when present,')
     assert "If it asks to leave something out, never write it" in dw.WRITER_SYSTEM
     assert "follow it, but do not copy it" in dw.PERSONA_SYSTEM
-    assert "hints" not in dw.POST_SYSTEM and "owner_note" not in dw.POST_SYSTEM
 
 
 def test_the_writer_asks_for_whole_refs_never_ranges(dw: ModuleType) -> None:
@@ -281,24 +255,28 @@ def test_the_writer_asks_for_whole_refs_never_ranges(dw: ModuleType) -> None:
     ("- Agreed [m40 — m47; m52]", "- Agreed"),
     ("- Agreed [m40..47]", "- Agreed"),
     ("- Agreed [m40–47, m52, m60-m61].", "- Agreed."),
+    ("- Agreed [m40…m47] and [m50...52]", "- Agreed and"),
+    ("- Agreed [M40] [м41] [М42, m43]", "- Agreed"),  # a capital or a Cyrillic m
+    ("- Agreed [ m40 ] [m 41] [m40 , m 41]", "- Agreed"),
+    ("- Agreed (m40) (m41, m42–m45)", "- Agreed"),
+    ("- Paid **[m40]** and _[m41]_ `[m42]`, **900** [m43]", "- Paid and, **900**"),  # no empty emphasis left
     ("- Notes [m] [x12] [m12a] [Section m1] stay", "- Notes [m] [x12] [m12a] [Section m1] stay"),
+    ("- Notes (m) (m12a) (see m12) (M) stay", "- Notes (m) (m12a) (see m12) (M) stay"),
     ("line one\n[m7] line two", "line one\n line two"),  # a ref never joins two lines
 ])
 def test_strip_refs_removes_single_list_and_range_refs(dw: ModuleType, text: str, expected: str) -> None:
     assert dw.strip_refs(text) == expected
 
 
-@pytest.mark.parametrize("kind", ["persona", "post"])
-def test_a_ranged_ref_never_reaches_a_post_or_the_persona(dw: ModuleType, kind: str) -> None:
+def test_a_ranged_ref_never_reaches_the_persona(dw: ModuleType) -> None:
     text = doc("## Plans\n- Review on **28 October** [m90–m94]\n- Bring the slides [m95, m96-m98]")
 
-    assert dw.parse_output(text, kind=kind).text == "## Plans\n- Review on **28 October**\n- Bring the slides"
+    assert dw.parse_output(text, kind="persona").text == "## Plans\n- Review on **28 October**\n- Bring the slides"
 
 
 def test_prompt_limits_match_the_constants(dw: ModuleType) -> None:
     assert f"At most {dw.DOC_TARGET_CHARS} characters" in dw.WRITER_SYSTEM
     assert f"At most {dw.PERSONA_TARGET_CHARS} characters" in dw.PERSONA_SYSTEM
-    assert f"At most {dw.POST_TARGET_CHARS} characters" in dw.POST_SYSTEM
     assert max(dw.DOC_TARGET_CHARS, dw.SHORTEN_TO) < dw._doc.DOC_MAX_UNITS
 
 
@@ -358,11 +336,11 @@ def test_no_change_keeps_what_the_contact_writer_was_sent(dw: ModuleType) -> Non
     for mode in ("first", "update"):
         for current in ("", None):  # nothing was sent, so nothing is kept
             assert dw.parse_output(reply, kind="contact", mode=mode, current=current) == dw.Output("empty", "")
-    for kind in ("persona", "post", "shorten"):
+    for kind in ("persona", "shorten"):
         assert parse_error(dw, reply, kind=kind, mode="update", current=CURRENT) == "bad_no_change"
 
 
-@pytest.mark.parametrize("kind", ["contact", "persona", "post"])
+@pytest.mark.parametrize("kind", ["contact", "persona"])
 @pytest.mark.parametrize("tag", ["think", "thinking", "reasoning", "THINK"])
 def test_closed_reasoning_blocks_are_dropped(dw: ModuleType, kind: str, tag: str) -> None:
     reply = f"<{tag}>The note says [m90] Mira moved the review.</{tag}>\n## Work\n- Review on **28 October**\n<<END>>"
@@ -382,19 +360,19 @@ def test_closed_reasoning_blocks_are_dropped(dw: ModuleType, kind: str, tag: str
     ],
     ids=["unclosed", "unclosed-at-end", "two-ends", "with-attributes"],
 )
-@pytest.mark.parametrize("kind", ["contact", "persona", "post"])
+@pytest.mark.parametrize("kind", ["contact", "persona"])
 def test_unclosed_reasoning_is_refused(dw: ModuleType, text: str, kind: str) -> None:
     assert parse_error(dw, doc(text), kind=kind) == "unclosed_reasoning"
 
 
-@pytest.mark.parametrize("kind", ["contact", "persona", "post"])
+@pytest.mark.parametrize("kind", ["contact", "persona"])
 def test_reasoning_that_lost_its_opening_tag_is_dropped(dw: ModuleType, kind: str) -> None:
     reply = "The note says Mira moved the review.</think>\n## Work\n- Review on **28 October**\n<<END>>"
 
     assert dw.parse_output(reply, kind=kind) == dw.Output("document", "## Work\n- Review on **28 October**")
 
 
-@pytest.mark.parametrize("kind", ["contact", "persona", "post"])
+@pytest.mark.parametrize("kind", ["contact", "persona"])
 def test_empty_reply_per_kind(dw: ModuleType, kind: str) -> None:
     assert dw.parse_output(doc("EMPTY"), kind=kind) == dw.Output("empty", "")
 
@@ -425,14 +403,13 @@ def test_nested_bullets_count_as_structure(dw: ModuleType) -> None:
     assert dw.parse_output(doc("**Mira.**\n  - nested bullet"), kind="contact").kind == "document"
 
 
-def test_refs_are_stripped_for_persona_and_post_only(dw: ModuleType) -> None:
+def test_refs_are_stripped_for_the_persona_only(dw: ModuleType) -> None:
     text = "## Work\n- Review on **28 October** [m90]\n- Budget **900** [m91, m92].\n- New phone[m101]"
     stripped = "## Work\n- Review on **28 October**\n- Budget **900**.\n- New phone"
 
     assert dw.parse_output(doc(text), kind="contact").text == text
     assert dw.parse_output(doc(text), kind="shorten").text == text
     assert dw.parse_output(doc(text), kind="persona").text == stripped
-    assert dw.parse_output(doc(text), kind="post").text == stripped
 
 
 def test_control_and_bidi_characters_are_removed(dw: ModuleType) -> None:
@@ -485,7 +462,7 @@ def test_write_with_an_explicit_route(dw: ModuleType) -> None:
     assert "task" not in call
 
 
-@pytest.mark.parametrize("kind", ["contact", "persona", "post"])
+@pytest.mark.parametrize("kind", ["contact", "persona"])
 def test_an_explicit_route_caps_every_call_including_the_shorten_call(dw: ModuleType, kind: str) -> None:
     llm = FakeLlm(doc(long_document()), doc(SHORT))
 
@@ -502,7 +479,6 @@ def test_an_explicit_route_caps_every_call_including_the_shorten_call(dw: Module
     [
         ("contact", "WRITER_SYSTEM", "telesec_dossier"),
         ("persona", "PERSONA_SYSTEM", "telesec_persona"),
-        ("post", "POST_SYSTEM", "telesec_post"),
     ],
 )
 def test_write_purposes(dw: ModuleType, kind: str, system: str, purpose: str) -> None:
@@ -571,10 +547,10 @@ def test_shorten_reply_without_a_document_is_an_error(dw: ModuleType, reply: str
         write(dw, llm)
 
 
-def test_shortened_post_has_no_refs(dw: ModuleType) -> None:
+def test_a_shortened_persona_has_no_refs(dw: ModuleType) -> None:
     llm = FakeLlm(doc(long_document()), doc("## Plans\n- Review on **28 October** [m90]"))
 
-    result = write(dw, llm, kind="post", payload=json.dumps({"today": TODAY, "messages": []}), mode="first")
+    result = write(dw, llm, kind="persona", payload=json.dumps({"today": TODAY, "messages": []}), mode="first")
 
     assert result.output.text == "## Plans\n- Review on **28 October**"
 

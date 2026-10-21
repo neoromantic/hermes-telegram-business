@@ -3,8 +3,8 @@
 A dossier is one Markdown document per contact that the model rewrites; the owner corrects it with
 a note. Every text line goes through ``history_support._escape_terminal_text``: dossier text is
 derived from chat messages and must never drive the terminal. ``preview`` prints the system prompt
-and the user JSON exactly as ``run`` (or ``/dossier`` with ``--post``) would send them, except the fact
-extraction hints, which exist only after the call to Cloudflare.
+and the user JSON exactly as ``run`` would send them, except the fact extraction hints, which exist only
+after the call to Cloudflare; with ``--post`` it prints the rich message ``/dossier`` would post now.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import shlex
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -109,7 +109,7 @@ def add_parser(subs: Any) -> None:
     export.add_argument("--format", choices=["markdown", "json"], default="markdown")
     preview = leaf("preview", "Print the exact input of the next model call (no call, no writes; fact extraction "
                               "hints are not shown)")
-    preview.add_argument("--post", action="store_true", help="Print what /dossier would send instead")
+    preview.add_argument("--post", action="store_true", help="Print what /dossier would post now instead")
     note = leaf("note", "Show, write, add to or clear the owner note the model follows")
     text = note.add_mutually_exclusive_group()
     text.add_argument("--text", help="Replace the whole note")
@@ -760,6 +760,30 @@ def _print_input(system: str, user: str) -> None:
     sys.stdout.write(f"--- system ---\n{system}\n--- user ---\n{_c1_escaped(user)}\n")
 
 
+def _pending_text(info: _ds.Pending) -> str:
+    return (f"{'first' if info.first else 'update'}, {info.new} new, {info.edited} edited, {info.deleted} deleted, "
+            f"note {'changed' if info.note_changed else 'unchanged'}")
+
+
+def _preview_post(entry: dict[str, Any], now: datetime) -> str:
+    """Print the rich message HTML ``/dossier`` would post now; returns the stderr line that says why or why not.
+
+    Like the gateway, it posts the stored document only when that has seen every change, so a dossier that is
+    behind the chat prints nothing: ``/dossier`` would refresh it first and post the result.
+    """
+    from . import dossier_post
+
+    state = dossier_post.post_state(entry, now=now)
+    if state.reason is None:
+        _emit([_view.post_html(state.text, now.astimezone(_ds.today_text(now)[1]))])
+        return "# /dossier would post this rich message now (HTML); refusal: none"
+    if state.reason == "due" and state.pending is not None:
+        return (f"# /dossier would refresh the dossier first ({_pending_text(state.pending)}) and post the result; "
+                "preview without --post prints that refresh's input")
+    error = f" ({state.error})" if state.error else ""
+    return f"# /dossier would post nothing; refusal: {state.reason}{error}"
+
+
 def _cmd_preview(args: argparse.Namespace) -> int:
     target = _resolve_target(args)
     if target[0] == "persona" and args.post:
@@ -787,16 +811,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         return 0
     entry = target[1]
     if args.post:
-        from . import dossier_post
-
-        result = dossier_post.post_payload(entry, now=now)
-        if isinstance(result, str):
-            notes.append(f"# /dossier would send nothing; refusal: {result}")
-        else:
-            system, user = result
-            _print_input(system, user)
-            sent = json.loads(user).get("messages") or []
-            notes.append(f"# /dossier would send {_plural(len(sent), 'message')}; refusal: none")
+        notes.append(_preview_post(entry, now))
         _emit(notes, sys.stderr)
         return 0
     system, user, info, gate, hints = _ds.preview_contact(entry, now=now)
@@ -808,9 +823,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         notes.append("# nothing due")
     else:
         _print_input(system, user)
-        notes.append(f"# would run: {'first' if info.first else 'update'}, {info.new} new, {info.edited} edited, "
-                     f"{info.deleted} deleted, note {'changed' if info.note_changed else 'unchanged'}"
-                     f"{'; message check would apply' if gate else ''}")
+        notes.append(f"# would run: {_pending_text(info)}{'; message check would apply' if gate else ''}")
         if hints:
             notes.append(f"# fact extraction would also send {_plural(hints, 'new message')} to Cloudflare and may "
                          "add hints to this input (not shown)")
