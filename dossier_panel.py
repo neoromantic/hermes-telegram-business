@@ -1,8 +1,8 @@
 """Telegram glue for dossiers: the owner panel section and the owner's ``/dossier`` in a Business chat.
 
-Rendering lives in ``dossier_view`` (pure) and the ``/dossier`` summary in ``dossier_post``; this module
+Rendering lives in ``dossier_view`` (pure) and what ``/dossier`` may post in ``dossier_post``; this module
 loads snapshots, starts refreshes and posts, and talks to the Bot API. Blocking work (files, history
-folds, cycles, model calls) runs in threads. Nothing but the summary the owner's exact ``/dossier`` asks
+folds, cycles, model calls) runs in threads. Nothing but the dossier the owner's exact ``/dossier`` asks
 for ever goes into a Business chat; refusals go to the owner's private chat with the bot. Logs carry
 action names, counts, hashed chat refs and error type names only, never message or document text, notes
 or names.
@@ -39,8 +39,8 @@ _REFRESH_LOCK = threading.Lock()
 _seen_connections: Callable[[], Iterable[Any]] = tuple
 # (dossier root, chat key) -> (refresh thread, its stop event)
 _REFRESHES: dict[tuple[str, str], tuple[threading.Thread, threading.Event]] = {}
-# (dossier root, chat key) -> the running /dossier post and its stop event (once set, its build thread
-# makes no further model call); a second command meanwhile is "busy". The loop thread adds and removes
+# (dossier root, chat key) -> the running /dossier post and its stop event (once set, its refresh makes no
+# further model call or write); a second command meanwhile is "busy". The loop thread adds and removes
 # posts; stop_refresh may read them from a worker thread.
 _POST_LOCK = threading.Lock()
 _POST_TASKS: dict[tuple[str, str], tuple[asyncio.Task[None], threading.Event]] = {}
@@ -468,15 +468,18 @@ async def _target_or_stub(business_connection_id: str, chat_id: Any) -> tuple[di
     return entry, name, None
 
 
-def _precheck(entry: dict[str, Any]) -> tuple[str | None, int, datetime]:
-    gen0, now = _ds.generation(), _history._utcnow()
-    return _post.post_precheck(entry, now=now), gen0, now
+def _precheck(entry: dict[str, Any]) -> tuple[str | None, int]:
+    gen0 = _ds.generation()
+    return _post.post_precheck(entry, now=_history._utcnow()), gen0
 
 
-def _recheck(entry: dict[str, Any], inputs: dict[str, str], gen0: int) -> tuple[str | None, datetime]:
+def _state(entry: dict[str, Any], gen0: int, refreshed: bool) -> tuple[_post.PostState, datetime]:
+    """What may be posted now, and the owner's local time for the footer date. "changed" after any forget."""
     now = _history._utcnow()
-    reason = _post.post_recheck(entry, inputs, gen0=gen0, now=now)
-    return reason, now.astimezone(_ds.today_text(now)[1])  # the footer date is the owner's local date
+    state = _post.post_state(entry, now=now, refreshed=refreshed)
+    if state.reason is None and _ds.generation() != gen0:
+        state = _post.PostState("changed")
+    return state, now.astimezone(_ds.today_text(now)[1])
 
 
 # Telegram's refusals of the post itself; a timeout or a network error says nothing about the 24-hour window.
@@ -507,39 +510,44 @@ def _send_failure(entry: dict[str, Any], exc: Exception) -> str:
 
 async def _build_and_send(bot: Any, entry: dict[str, Any], conn: str, chat_id: Any, started: float,
                           stop: threading.Event) -> tuple[str | None, str | None]:
-    """Precheck, clean-room build, final recheck, send: (refusal reason, error), or (None, None) once posted.
+    """Precheck, one refresh when the dossier is behind the chat, final check, send: (refusal reason, error),
+    or (None, None) once posted.
 
     The wall cap (TimeoutError) covers the steps before the send only: a send that has started may already
     be delivered, so it is never cut and never told as "nothing was posted".
     """
+    refreshed = False
     async with asyncio.timeout(_post.POST_WALL_SECONDS):
-        reason, gen0, now = await asyncio.to_thread(_precheck, entry)
+        reason, gen0 = await asyncio.to_thread(_precheck, entry)
         if reason is not None:
             return reason, None
-        result = await asyncio.to_thread(_post.build_post, entry, llm=_ds._LLM, now=now,
-                                         allowed=lambda: not stop.is_set())
-        if result.status != "ok":
-            return ("empty", None) if result.status == "empty" else ("failed", result.error)
-        reason, local = await asyncio.to_thread(_recheck, entry, result.inputs, gen0)
-        if reason is not None:
-            return reason, None
+        state, local = await asyncio.to_thread(_state, entry, gen0, False)
+        if state.reason == "due":
+            if not llm_ready():
+                return "no_model", None
+            reason, error = await asyncio.to_thread(_post.refresh, entry, llm=_ds._LLM, stop=stop)
+            if reason is not None:
+                return reason, error
+            refreshed = True
+            state, local = await asyncio.to_thread(_state, entry, gen0, True)
+        if state.reason is not None:
+            return state.reason, state.error
     # Rich only: the echo of a plain post would not be recognised as the bot's own and would reach history.
     try:
         sent = await bot.do_api_request("sendRichMessage", api_kwargs={
             "business_connection_id": conn, "chat_id": chat_id,
-            "rich_message": {"html": _view.post_html(result.text, local), "skip_entity_detection": True}})
+            "rich_message": {"html": _view.post_html(state.text, local), "skip_entity_detection": True}})
     except Exception as exc:  # noqa: BLE001 - told to the owner privately
         return await asyncio.to_thread(_send_failure, entry, exc), type(exc).__name__
     _history.remember_control_message(conn, chat_id, _history._get(sent, "message_id"))
-    logger.info("%s: dossier posted chat_ref=%s chars=%d ms=%d model=%s/%s", _history.PLUGIN_NAME,
-                _ds._log_ref(entry), len(result.text), int((time.monotonic() - started) * 1000),
-                _ds.without_credentials(result.provider or "-"), _ds.without_credentials(result.model or "-"))
+    logger.info("%s: dossier posted chat_ref=%s chars=%d refreshed=%s ms=%d", _history.PLUGIN_NAME,
+                _ds._log_ref(entry), len(state.text), refreshed, int((time.monotonic() - started) * 1000))
     return None, None
 
 
 async def _post_task(bot: Any, business_connection_id: str, chat_id: Any, owner_user_id: Any, lang: str,
                      stop: threading.Event) -> None:
-    """One ``/dossier``: the summary goes into the chat, or the reason to the owner. Cancelled by stop_refresh."""
+    """One ``/dossier``: the dossier goes into the chat, or the reason to the owner. Cancelled by stop_refresh."""
     started = time.monotonic()
     entry, name, error = await _target_or_stub(business_connection_id, chat_id)
     if error is not None:
@@ -553,7 +561,7 @@ async def _post_task(bot: Any, business_connection_id: str, chat_id: Any, owner_
         reason, error = "failed", type(exc).__name__
     finally:
         stopped = stop.is_set()  # stop_refresh or stop_background: the owner turned something off
-        stop.set()  # a build thread that outlives the cap or a cancel makes no further model call
+        stop.set()  # a refresh that outlives the cap or a cancel starts no further model call
     if reason is not None and not stopped:
         await _refuse(bot, owner_user_id, lang, entry, name, reason, error)
 
@@ -625,8 +633,8 @@ async def handle_dossier_command_update(update: Any, *, bot: Any, adapter: Any,
                                         mark_seen: Any) -> bool:
     """Start an owner ``/dossier``; True means the update is claimed (never history, never core).
 
-    The summary is written and posted in the background, so this returns before the model answers.
-    The bot's own posted summary (its echo) is claimed too. A contact's ``/dossier``, a forwarded
+    The dossier is brought up to date and posted in the background, so this returns before any model call.
+    The bot's own posted dossier (its echo) is claimed too. A contact's ``/dossier``, a forwarded
     one, or one whose owner cannot be verified is ordinary text. ``mark_seen(identity)`` returns
     False for a repeated delivery.
     """

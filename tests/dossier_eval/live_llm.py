@@ -50,7 +50,6 @@ STRUCTURED_SUFFIX = ("Respond with a single JSON object that matches the request
 PURPOSE_KINDS = {
     "telesec_dossier": "contact",
     "telesec_persona": "persona",
-    "telesec_post": "post",
     "telesec_shorten": "shorten",
     "telegram_business_dossier": "contact",
     "telegram_business_persona": "persona",
@@ -136,7 +135,7 @@ class Budget:
 class CallRecord:
     step: str
     purpose: str
-    kind: str  # contact | persona | post | shorten | gate | clairic | judge
+    kind: str  # contact | persona | shorten | gate | clairic | judge
     of: str  # the kind a shorten call shortened; otherwise the same as kind
     model: str
     ok: bool
@@ -444,7 +443,6 @@ class CannedResponse:
 
 DRY_DOCUMENT = "**A contact of yours.**\n\n## Notes\n- Dry run, no model was called.\n<<END>>"
 DRY_PERSONA = "## Style\n- Dry run, no model was called.\n<<END>>"
-DRY_POST = "## Summary\n- Dry run, no model was called.\n<<END>>"
 
 
 def _dry_judge(user_text: str) -> str:
@@ -467,8 +465,6 @@ def _dry_chat(body: dict) -> str:
         return _dry_judge(user if isinstance(user, str) else "")
     if system.startswith("You describe how the account owner writes"):
         return DRY_PERSONA
-    if system.startswith("You write a short summary"):
-        return DRY_POST
     return DRY_DOCUMENT
 
 

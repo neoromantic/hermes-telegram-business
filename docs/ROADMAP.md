@@ -51,7 +51,11 @@ The product connects readable Telegram voice messages with useful personal corre
 
 ## Implemented in 0.15.0
 
-- Dossiers as documents ([#17](https://github.com/neoromantic/telesec/issues/17)): each contact dossier is one short Markdown document that a model rewrites as the chat goes on, and the owner corrects it with a note. The persona is rebuilt from scratch from the owner's own messages and resets when a chat it read is erased. `/dossier` posts a fresh summary written from the chat's live messages only. Dossiers use their own Hermes model task (Vercel AI Gateway → Google, zero data retention by default), with an optional message check (TypeSafe Jev) and optional fact extraction (Cloudflare), both off by default. [Dossier guide](DOSSIERS.md).
+- Dossiers as documents ([#17](https://github.com/neoromantic/telesec/issues/17)): each contact dossier is one short Markdown document that a model rewrites as the chat goes on, and the owner corrects it with a note. The persona is rebuilt from scratch from the owner's own messages and resets when a chat it read is erased. `/dossier` posted a fresh summary written from the chat's live messages only; it now posts the dossier itself (below). Dossiers use their own Hermes model task (Vercel AI Gateway → Google, zero data retention by default), with an optional message check (TypeSafe Jev) and optional fact extraction (Cloudflare), both off by default. [Dossier guide](DOSSIERS.md).
+
+## Implemented, not released yet
+
+- `/dossier` posts the contact's dossier again ([#17](https://github.com/neoromantic/telesec/issues/17)): the stored document without the owner note, refreshed once first when it is behind the chat or the note changed. The separate summary is gone. [`/dossier` in a chat](DOSSIERS.md#dossier-in-a-chat).
 
 ## Next
 
@@ -67,7 +71,7 @@ The product connects readable Telegram voice messages with useful personal corre
 | Order | Work | Result |
 |---|---|---|
 | 1 | [History #2](https://github.com/neoromantic/telesec/issues/2) | Finish integration review and prove new capture, restart, search, and deletion behavior. |
-| 2 | [Owner/contact dossiers #17](https://github.com/neoromantic/telesec/issues/17) | Implemented: opt-in [dossiers](DOSSIERS.md) for all private chats and an owner persona, as short documents that a model keeps current, with owner notes, forgetting, and a shareable `/dossier` summary. |
+| 2 | [Owner/contact dossiers #17](https://github.com/neoromantic/telesec/issues/17) | Implemented: opt-in [dossiers](DOSSIERS.md) for all private chats and an owner persona, as short documents that a model keeps current, with owner notes, forgetting, and `/dossier`, which shares the dossier with the contact. |
 | 3 | [Contextual drafts #18](https://github.com/neoromantic/telesec/issues/18) | Private suggestions using conversation context and approved dossiers; owner Send / Edit / Discard. |
 | 4 | [Automatic replies #19](https://github.com/neoromantic/telesec/issues/19) | Explicit per-chat activation, reply limits, pause, and owner handover. |
 

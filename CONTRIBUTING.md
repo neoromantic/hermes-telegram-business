@@ -26,10 +26,10 @@ To try a change in a real gateway, install your checkout into a test Hermes prof
 - `dossier_doc.py`: the dossier file, `document.json`: reading, checking, and atomic writes.
 - `dossier_writer.py`: the dossier prompts, the model inputs, the answer checks, and the writer call; also the optional message check and fact extraction requests.
 - `model_client.py`: the only direct model calls, for the optional message check (Vercel AI Gateway) and fact extraction (Cloudflare Workers AI). Standard library only.
-- `dossier_post.py`: the `/dossier` summary, built only from the chat's live messages.
+- `dossier_post.py`: what `/dossier` may post: the stored dossier once it has seen the chat, after one refresh when it has not.
 - `dossier_migrate.py`: the one-time move of fact-based dossiers to documents. It goes away in a later release.
 - `dossier_cli.py`: the `dossier` CLI.
-- `dossier_view.py`: pure Telegram views of dossiers and the `/dossier` summary (rich HTML, plain fallback, buttons, Russian and English).
+- `dossier_view.py`: pure Telegram views of dossiers and the `/dossier` post (rich HTML, plain fallback, buttons, Russian and English).
 - `dossier_panel.py`: the owner panel's Dossier section, the switch and persona gating, and the owner's in-chat `/dossier` command.
 - `tests/dossier_eval/`: the opt-in live dossier eval ([below](#dossier-eval)).
 - `scripts/render-dossier-screenshots.py`: writes the rich message HTML of the dossier views over a fictional contact to `docs/images/src/`, for real Telegram screenshots.

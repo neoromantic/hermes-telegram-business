@@ -1,8 +1,8 @@
 """Dossiers in Telegram: snapshot loading, the owner panel section and the owner's ``/dossier``.
 
 Documents are built on disk by the real capture path and cycle with a scripted model; the Bot API is a
-recording fake, plus one run through real PTB 22.8 dispatch and request serialization. What a
-``/dossier`` summary may read is tested in ``test_dossier_post.py``.
+recording fake, plus one run through real PTB 22.8 dispatch and request serialization. What
+``/dossier`` may post is tested in ``test_dossier_post.py``.
 """
 
 from __future__ import annotations
@@ -63,11 +63,9 @@ DOCUMENT = f"**Anna, a client.**\n\n## Commitments\n- {COMMITMENT} [m11]\n\n## P
 PERSONA_TEXT = "The owner writes short friendly replies."
 PERSONA = f"## Style\n- {PERSONA_TEXT}"
 NOTE = "Owner-only note: never mention the discount."
-SUMMARY = "## Agreements\n- The owner sends the contract by **Friday**.\n- Calls work best after 6pm."
-SUMMARY_LINE = "The owner sends the contract by <b>Friday</b>."
-LONG_SUMMARY = doc("## Notes\n" + "- a long point\n" * 400)  # too long: the writer would ask to shorten it
-SECRETS = (COMMITMENT, PREFERENCE, PERSONA_TEXT, NOTE, "I prefer calls", "send the contract", "Anna", "anna_k",
-           "Calls work best")
+POSTED_LINE = f"<li>{COMMITMENT}</li>"  # how the document's first point reads in the /dossier post
+LONG_DOCUMENT = doc(f"{DOCUMENT}\n\n## Notes\n" + "- a long point\n" * 400)  # the writer would ask to shorten it
+SECRETS = (COMMITMENT, PREFERENCE, PERSONA_TEXT, NOTE, "I prefer calls", "send the contract", "Anna", "anna_k")
 UNAVAILABLE = "Refresh is unavailable: dossiers or history are off, or the model is not connected."
 STARTED = "Refresh started. Open the dossier again in a minute."
 OPERATOR_ONLY = ("Only the owner of every Business connection the bot knows about can open the persona or turn "
@@ -173,7 +171,7 @@ def command_update(text: str = "/dossier", *, sender: int | None = OWNER_ID, edi
 
 
 def echo_update(message_id: int = 900) -> Any:
-    """The bot-posted summary as Telegram echoes it: no text, ``rich_message`` in PTB's read-only api_kwargs."""
+    """The bot-posted dossier as Telegram echoes it: no text, ``rich_message`` in PTB's read-only api_kwargs."""
     update = command_update(None, message_id=message_id, bot_sender=BOT_ID)  # type: ignore[arg-type]
     update.business_message.api_kwargs = MappingProxyType({"rich_message": {"blocks": [{"type": "paragraph"}]}})
     return update
@@ -210,17 +208,17 @@ def holding_llm(*responses: Any) -> tuple[FakeLlm, threading.Event, threading.Ev
     return llm, release, entered
 
 
-def watch_build(panel: Any, monkeypatch: pytest.MonkeyPatch) -> threading.Event:
-    """Set once the ``/dossier`` build thread ends: it runs on after its post is cancelled."""
-    done, real = threading.Event(), panel._post.build_post
+def watch_refresh(panel: Any, monkeypatch: pytest.MonkeyPatch) -> threading.Event:
+    """Set once the ``/dossier`` refresh thread ends: it runs on after its post is cancelled."""
+    done, real = threading.Event(), panel._post.refresh
 
-    def build_post(*args: Any, **kwargs: Any) -> Any:
+    def refresh(*args: Any, **kwargs: Any) -> Any:
         try:
             return real(*args, **kwargs)
         finally:
             done.set()
 
-    monkeypatch.setattr(panel._post, "build_post", build_post)
+    monkeypatch.setattr(panel._post, "refresh", refresh)
     return done
 
 
@@ -961,9 +959,9 @@ def test_dossier_control_message_predicate(dossier_plugin):
 
 
 @pytest.mark.asyncio
-async def test_owner_command_deletes_itself_and_posts_one_rich_summary(plug, ds, panel):
-    await build(plug, ds)
-    llm = FakeLlm(doc(SUMMARY))
+async def test_owner_command_deletes_itself_and_posts_the_stored_dossier(plug, ds, panel):
+    await ready(plug, ds)
+    llm = FakeLlm()
     ds.bind_llm(llm)
     bot = PanelBot()
 
@@ -978,18 +976,12 @@ async def test_owner_command_deletes_itself_and_posts_one_rich_summary(plug, ds,
     assert set(post["rich_message"]) == {"html", "skip_entity_detection"}
     assert post["rich_message"]["skip_entity_detection"] is True
     html = post["rich_message"]["html"]
-    assert html.startswith("<h3>Summary of our chat</h3>") and SUMMARY_LINE in html
+    assert html.startswith("<h3>Dossier</h3><p><b>Anna, a client.</b></p><h4>Commitments</h4>")
+    assert POSTED_LINE in html and f"<li>{PREFERENCE}</li>" in html
     assert "Prepared automatically from this chat on" in html
-    for owner_only in (NOTE, COMMITMENT, PREFERENCE, PERSONA_TEXT, "Dossier", "dossier", "Refresh", "hermes"):
+    for owner_only in (NOTE, PERSONA_TEXT, "[m", "m10", "Refresh", "hermes", "gemini", BUSINESS_ID):
         assert owner_only not in html
-    (call,) = llm.calls
-    assert (call["purpose"], call["timeout"], call["system"]) == ("telesec_post", None,
-                                                                  panel._post._writer.POST_SYSTEM)
-    assert [(m["from"], m["text"]) for m in call["user"]["messages"]] == [("contact", ROWS[0][2]),
-                                                                         ("owner", ROWS[1][2])]
-    assert all(set(m) <= {"at", "from", "text", "voice"} for m in call["user"]["messages"])
-    for private in (NOTE, COMMITMENT, PERSONA_TEXT, "m10", "m11", BUSINESS_ID):
-        assert private not in call["raw"]
+    assert llm.calls == []  # the document had seen the chat and the note
     history = plug._history_support
     assert history._is_control_message(BUSINESS_ID, CHAT, 500) and history._is_control_message(BUSINESS_ID, CHAT, 900)
     assert panel._POST_TASKS == {}
@@ -997,8 +989,8 @@ async def test_owner_command_deletes_itself_and_posts_one_rich_summary(plug, ds,
 
 @pytest.mark.asyncio
 async def test_duplicate_delivery_posts_once(plug, ds, panel):
-    await build(plug, ds)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    await ready(plug, ds)
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
     bot, seen = PanelBot(), set()
 
     assert await run_command(panel, command_update(), bot, seen)
@@ -1059,6 +1051,13 @@ async def test_edited_command_and_echo_are_claimed_without_executing(plug, ds, p
     assert plug._history_support._is_control_message(BUSINESS_ID, CHAT, 900) is (kind == "echo")
 
 
+async def ready(plugin: ModuleType, ds: ModuleType) -> dict[str, Any]:
+    """``build`` plus one more refresh that sees the note, so ``/dossier`` posts the stored document as it is."""
+    await build(plugin, ds)
+    assert cycle(ds, FakeLlm(doc(DOCUMENT)), target=("contact", catalog_entry(plugin, CHAT))).contact == "checked"
+    return read_dossier(ds, CHAT)
+
+
 def up_two_days(plug: ModuleType) -> None:
     """This gateway process has run longer than the window, so it would have noted any newer contact message."""
     plug._dossier_panel._post._STARTED_AT = time.monotonic() - 2 * 86400  # a fresh plugin copy per test
@@ -1074,10 +1073,12 @@ async def _refusal_case(plug: ModuleType, ds: ModuleType, reason: str) -> None:
     if reason == "window":  # the contact wrote 30 hours ago, and the gateway has run since then
         await old_chat(plug)
         up_two_days(plug)
-    elif reason == "empty":  # only the contact wrote
+    elif reason == "unqualified":  # only the contact wrote
         await seed(plug, CHAT, "anna_k", [(10, "in", ROWS[0][2], 30)], first_name="Anna")
-    else:
+    elif reason == "no_model":  # the note is new, so a refresh is due
         await build(plug, ds)
+    else:
+        await ready(plug, ds)
     if reason == "disabled":
         ds.set_enabled(False, via="cli")
     elif reason == "history_off":
@@ -1089,16 +1090,16 @@ async def _refusal_case(plug: ModuleType, ds: ModuleType, reason: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("reason", "expected"), [
     ("disabled", "Dossiers are off. Turn them on in Settings (/telesec)."),
-    ("no_model", "The model is not connected."),
+    ("no_model", "The dossier needs a refresh first, and the model is not connected."),
     ("history_off", "History is off, so deleted messages can't be tracked. Turn history on in Settings (/telesec)."),
     ("chat_off", "Dossier is off for this chat."),
     ("window", ("The contact hasn't written in the last 24 hours, and Telegram lets a bot post only within 24 hours "
                 "of their last message.")),
-    ("empty", "This chat has nothing to summarise yet."),
+    ("unqualified", "No dossier yet: it needs messages from both you and the contact."),
 ])
 async def test_refusals_tell_only_the_owner_and_call_no_model(plug, ds, panel, reason, expected):
     await _refusal_case(plug, ds, reason)
-    llm = FakeLlm(doc(SUMMARY))
+    llm = FakeLlm(doc(DOCUMENT))
     if reason != "no_model":
         ds.bind_llm(llm)
     bot = PanelBot()
@@ -1114,11 +1115,11 @@ async def test_refusals_tell_only_the_owner_and_call_no_model(plug, ds, panel, r
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("response", "expected"), [
-    (doc("EMPTY"), "This chat has nothing to summarise yet."),
-    ("A summary without the end line", "The summary could not be written (no_end_marker)."),
-    (RuntimeError(f"provider said {COMMITMENT}"), "The summary could not be written (RuntimeError)."),
+    (doc("EMPTY"), "The dossier has nothing worth keeping yet."),
+    ("A document without the end line", "The dossier could not be prepared (no_end_marker)."),
+    (RuntimeError(f"provider said {COMMITMENT}"), "The dossier could not be prepared (RuntimeError)."),
 ])
-async def test_an_empty_or_failed_summary_is_told_to_the_owner(plug, ds, panel, caplog, response, expected):
+async def test_an_empty_dossier_or_a_failed_refresh_is_told_to_the_owner(plug, ds, panel, caplog, response, expected):
     await build(plug, ds)
     llm = FakeLlm(response)
     ds.bind_llm(llm)
@@ -1144,9 +1145,9 @@ async def test_refusal_is_localized(dossier_history, panel):
 
 
 @pytest.mark.asyncio
-async def test_handler_returns_before_the_summary_is_written_and_a_second_command_is_busy(plug, ds, panel):
+async def test_handler_returns_before_the_refresh_ends_and_a_second_command_is_busy(plug, ds, panel):
     await build(plug, ds)
-    llm, release, entered = holding_llm(doc(SUMMARY))
+    llm, release, entered = holding_llm(doc(DOCUMENT))
     ds.bind_llm(llm)
     bot = PanelBot()
     try:
@@ -1156,7 +1157,7 @@ async def test_handler_returns_before_the_summary_is_written_and_a_second_comman
         assert posts(bot) == [] and bot.sent == []
         assert await panel.handle_dossier_command_update(command_update(message_id=501), bot=bot, adapter=None,
                                                          mark_seen=lambda _key: True)
-        assert [sent["text"] for sent in bot.sent] == [f"{HEAD}\nA summary for this chat is already being prepared."]
+        assert [sent["text"] for sent in bot.sent] == [f"{HEAD}\nThe dossier for this chat is already being posted."]
     finally:
         release.set()
         await panel.join_posts()
@@ -1169,9 +1170,9 @@ async def test_handler_returns_before_the_summary_is_written_and_a_second_comman
 @pytest.mark.asyncio
 async def test_wall_cap_tells_the_owner_and_stops_the_build(plug, ds, panel, monkeypatch):
     await build(plug, ds)
-    llm, release, entered = holding_llm(LONG_SUMMARY)
+    llm, release, entered = holding_llm(LONG_DOCUMENT)
     ds.bind_llm(llm)
-    built = watch_build(panel, monkeypatch)
+    refreshed = watch_refresh(panel, monkeypatch)
     monkeypatch.setattr(panel._post, "POST_WALL_SECONDS", 0.2)
     bot = PanelBot()
     try:
@@ -1180,15 +1181,15 @@ async def test_wall_cap_tells_the_owner_and_stops_the_build(plug, ds, panel, mon
         release.set()
 
     assert entered.is_set() and posts(bot) == []
-    assert [sent["text"] for sent in bot.sent] == [f"{HEAD}\nThe summary could not be written (timeout)."]
-    assert await asyncio.to_thread(built.wait, 5)
-    assert [call["purpose"] for call in llm.calls] == ["telesec_post"]  # no shorten call after the cap
+    assert [sent["text"] for sent in bot.sent] == [f"{HEAD}\nThe dossier could not be prepared (timeout)."]
+    assert await asyncio.to_thread(refreshed.wait, 5)
+    assert [call["purpose"] for call in llm.calls] == ["telesec_dossier"]  # no shorten call after the cap
 
 
 @pytest.mark.asyncio
 async def test_wall_cap_never_cuts_a_send_that_has_started(plug, ds, panel, monkeypatch):
     await build(plug, ds)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
     monkeypatch.setattr(panel._post, "POST_WALL_SECONDS", 0.5)
 
     class SlowBot(PanelBot):
@@ -1207,7 +1208,7 @@ async def test_wall_cap_never_cuts_a_send_that_has_started(plug, ds, panel, monk
 @pytest.mark.asyncio
 async def test_an_unreadable_catalog_tells_the_owner_with_a_code_only(plug, ds, panel, monkeypatch):
     await build(plug, ds)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
 
     def broken(*_args: Any, **_kwargs: Any) -> Any:
         raise PermissionError("SECRET-PATH")
@@ -1220,7 +1221,7 @@ async def test_an_unreadable_catalog_tells_the_owner_with_a_code_only(plug, ds, 
 
     assert posts(bot) == []
     assert [sent["text"] for sent in bot.sent] == [
-        f"Nothing was posted to the chat with chat:{CHAT}.\nThe summary could not be written (PermissionError)."]
+        f"Nothing was posted to the chat with chat:{CHAT}.\nThe dossier could not be prepared (PermissionError)."]
     assert "SECRET" not in bot.sent[0]["text"]
     assert panel._POST_TASKS == {}
 
@@ -1229,9 +1230,9 @@ async def test_an_unreadable_catalog_tells_the_owner_with_a_code_only(plug, ds, 
 @pytest.mark.parametrize("stop", ["stop_refresh", "stop_background"])
 async def test_stopping_cancels_a_post_in_flight(plug, ds, panel, monkeypatch, stop):
     await build(plug, ds)
-    llm, release, entered = holding_llm(LONG_SUMMARY)
+    llm, release, entered = holding_llm(LONG_DOCUMENT)
     ds.bind_llm(llm)
-    built = watch_build(panel, monkeypatch)
+    refreshed = watch_refresh(panel, monkeypatch)
     bot = PanelBot()
     try:
         assert await panel.handle_dossier_command_update(command_update(), bot=bot, adapter=None,
@@ -1250,20 +1251,20 @@ async def test_stopping_cancels_a_post_in_flight(plug, ds, panel, monkeypatch, s
 
     assert posts(bot) == [] and bot.sent == []  # no post and no message to the owner
     assert panel._POST_TASKS == {}
-    assert await asyncio.to_thread(built.wait, 5)
-    assert [call["purpose"] for call in llm.calls] == ["telesec_post"]  # the build made no shorten call
+    assert await asyncio.to_thread(refreshed.wait, 5)
+    assert [call["purpose"] for call in llm.calls] == ["telesec_dossier"]  # the refresh made no shorten call
 
 
 @pytest.mark.asyncio
-async def test_a_build_the_owner_stopped_tells_the_owner_nothing(plug, ds, panel, monkeypatch):
-    await build(plug, ds)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+async def test_a_post_the_owner_stopped_tells_the_owner_nothing(plug, ds, panel, monkeypatch):
+    await ready(plug, ds)
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
 
-    async def stopped_build(bot, entry, business_connection_id, chat_id, started, stop):
-        stop.set()  # stop_refresh set the event, and the build saw it before the cancel landed
-        return "failed", "Stopped"
+    async def stopped_post(bot, entry, business_connection_id, chat_id, started, stop):
+        stop.set()  # stop_refresh set the event, and the refresh saw it before the cancel landed
+        return "failed", "stopped"
 
-    monkeypatch.setattr(panel, "_build_and_send", stopped_build)
+    monkeypatch.setattr(panel, "_build_and_send", stopped_post)
     bot = PanelBot()
 
     assert await run_command(panel, command_update(), bot) is True
@@ -1274,7 +1275,7 @@ async def test_a_build_the_owner_stopped_tells_the_owner_nothing(plug, ds, panel
 @pytest.mark.asyncio
 async def test_rejected_post_and_failed_delete_are_told_and_logged_by_type(plug, ds, panel, caplog):
     await build(plug, ds)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
     bot = PanelBot()
     bot.api_error = BadRequest(f"Bad Request: can't parse {COMMITMENT}")
     bot.delete_error = RuntimeError(f"no rights for {NOTE}")
@@ -1285,7 +1286,7 @@ async def test_rejected_post_and_failed_delete_are_told_and_logged_by_type(plug,
     assert len(posts(bot)) == 1 and [endpoint for endpoint, _ in bot.api] == ["sendRichMessage"]  # no plain retry
     (sent,) = bot.sent
     assert sent["chat_id"] == OWNER_ID
-    assert "Telegram did not accept the summary (BadRequest)." in sent["text"]
+    assert "Telegram did not accept the dossier (BadRequest)." in sent["text"]
     assert "BadRequest" in caplog.text and "RuntimeError" in caplog.text
     for secret in SECRETS:
         assert secret not in caplog.text
@@ -1323,13 +1324,13 @@ MAYBE_WINDOW = "One possible cause: a bot can post in a Business chat only if th
     (True, BadRequest("Bad Request: BUSINESS_PEER_USAGE_MISSING"), WINDOW, "window"),
     # Any other refusal while the window is unknown names the 24 hours as a possible cause only.
     (False, BadRequest("Bad Request: can't parse entities"),
-     f"Telegram did not accept the summary (BadRequest). {MAYBE_WINDOW}", "send_refused"),
+     f"Telegram did not accept the dossier (BadRequest). {MAYBE_WINDOW}", "send_refused"),
     (False, Forbidden("Forbidden: bot can't send messages to the user"),
-     f"Telegram did not accept the summary (Forbidden). {MAYBE_WINDOW}", "send_refused"),
+     f"Telegram did not accept the dossier (Forbidden). {MAYBE_WINDOW}", "send_refused"),
     (False, PtbBadRequest("Bad Request: can't parse entities"),
-     f"Telegram did not accept the summary (BadRequest). {MAYBE_WINDOW}", "send_refused"),  # not a lost connection
-    (False, RuntimeError("Unexpected"), "Telegram did not accept the summary (RuntimeError).", "send_failed"),
-    (True, BadRequest("Bad Request: can't parse entities"), "Telegram did not accept the summary (BadRequest).",
+     f"Telegram did not accept the dossier (BadRequest). {MAYBE_WINDOW}", "send_refused"),  # not a lost connection
+    (False, RuntimeError("Unexpected"), "Telegram did not accept the dossier (RuntimeError).", "send_failed"),
+    (True, BadRequest("Bad Request: can't parse entities"), "Telegram did not accept the dossier (BadRequest).",
      "send_failed"),
 ])
 async def test_a_fresh_gateway_tries_the_post_and_tells_only_telegram_window_error_as_the_window(
@@ -1337,7 +1338,7 @@ async def test_a_fresh_gateway_tries_the_post_and_tells_only_telegram_window_err
     await old_chat(plug)  # the gateway started less than 24 hours ago: a voice note before it may count
     if noted:  # e.g. a sticker this process saw: the window is known open, so a refusal is something else
         panel._post.note_inbound(BUSINESS_ID, CHAT, NOW - timedelta(minutes=30))
-    llm = FakeLlm(doc(SUMMARY))
+    llm = FakeLlm(doc(DOCUMENT))
     ds.bind_llm(llm)
     bot = PanelBot()
     bot.api_error = error
@@ -1357,7 +1358,7 @@ async def test_a_fresh_gateway_tries_the_post_and_tells_only_telegram_window_err
                                    TimeoutError("Anna"), ConnectionResetError("Anna")])
 async def test_a_send_that_timed_out_may_have_posted(plug, ds, panel, caplog, error):
     await old_chat(plug)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
     bot = PanelBot()
     bot.api_error = error
 
@@ -1368,7 +1369,7 @@ async def test_a_send_that_timed_out_may_have_posted(plug, ds, panel, caplog, er
     (sent,) = bot.sent
     name = type(error).__name__
     assert sent["chat_id"] == OWNER_ID and sent["text"] == (
-        "The summary may have been posted to the chat with @anna_k.\n"
+        "The dossier may have been posted to the chat with @anna_k.\n"
         f"Telegram did not confirm it ({name}). Check the chat before you send /dossier again.")
     assert "Nothing was posted" not in sent["text"]
     assert "dossier post unconfirmed chat_ref=" in caplog.text and f"reason=send_unsure error={name}" in caplog.text
@@ -1390,14 +1391,14 @@ async def test_failed_private_reason_is_logged_by_type(dossier_history, panel, c
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("where", "logged"), [
     ("post_precheck", "dossier not posted chat_ref="),
-    ("post_recheck", "dossier not posted chat_ref="),
+    ("post_state", "dossier not posted chat_ref="),
     ("_start_post", "/dossier command failed error=PermissionError"),
     ("_post_task", "dossier post failed error=PermissionError"),
 ])
 async def test_a_failure_inside_the_post_is_told_and_logged_by_type_only(plug, ds, panel, monkeypatch, caplog,
                                                                         where, logged):
     await build(plug, ds)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
 
     def broken(*_args: Any, **_kwargs: Any) -> Any:
         raise PermissionError("SECRET-PATH/chats/7654321")  # e.g. a history path with its ids
@@ -1416,7 +1417,7 @@ async def test_a_failure_inside_the_post_is_told_and_logged_by_type_only(plug, d
     assert posts(bot) == [] and logged in caplog.text
     told = [sent["text"] for sent in bot.sent]
     if where.startswith("post_"):
-        assert told == [f"{HEAD}\nThe summary could not be written (PermissionError)."]
+        assert told == [f"{HEAD}\nThe dossier could not be prepared (PermissionError)."]
         assert "reason=failed error=PermissionError" in caplog.text
     else:
         assert told == []
@@ -1437,7 +1438,7 @@ def _business_handler(plug: ModuleType) -> Any:
 async def test_business_handler_keeps_command_and_echo_out_of_history_and_core(plug, ds, panel, monkeypatch):
     monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")  # even when other Business updates reach the agent
     await build(plug, ds)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
     history_before = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
     bot = PanelBot()
     handler = _business_handler(plug)
@@ -1464,7 +1465,7 @@ async def test_business_handler_keeps_command_and_echo_out_of_history_and_core(p
 @pytest.mark.asyncio
 async def test_deleting_the_command_or_the_post_stays_out_of_history(plug, ds, panel):
     await build(plug, ds)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
     history = plug._history_support
     before = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
     bot = PanelBot()  # sendRichMessage answers message_id 900
@@ -1518,10 +1519,10 @@ def chat_update(kind: str, *, message_id: int, at: Any, sender: int = CONTACT_ID
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["photo", "sticker", "document"])
-async def test_a_contact_who_lately_sent_only_media_still_gets_the_summary(plug, ds, panel, monkeypatch, kind):
+async def test_a_contact_who_lately_sent_only_media_still_gets_the_dossier(plug, ds, panel, monkeypatch, kind):
     monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")  # media reaches the agent; the handler notes it first
     await _refusal_case(plug, ds, "window")  # the contact's last text is 30 hours old, the gateway is up 2 days
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
     bot = PanelBot()
     handler = _business_handler(plug)
     context = SimpleNamespace(bot=bot)
@@ -1546,7 +1547,7 @@ async def test_a_contact_who_lately_sent_only_media_still_gets_the_summary(plug,
 async def test_a_contact_voice_or_video_note_is_noted_before_transcription_claims_it(plug, ds, panel, kind):
     """Transcription claims the update and history keeps no voice message, yet it opens the 24-hour window."""
     await _refusal_case(plug, ds, "window")  # the contact's last text is 30 hours old, the gateway is up 2 days
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
     bot = PanelBot()
     at = NOW - timedelta(minutes=30)
 
@@ -1663,14 +1664,15 @@ async def test_edited_dossier_post_over_a_stored_id_is_not_recorded(plug, ds):
 async def test_logs_never_carry_dossier_text(plug, ds, panel, caplog):
     with caplog.at_level(logging.DEBUG):
         await build(plug, ds)
-        ds.bind_llm(FakeLlm(doc(SUMMARY), doc(DOCUMENT)))
+        ds.bind_llm(FakeLlm(doc(DOCUMENT), doc(DOCUMENT)))
         for args in (None, "o.c", "o.p", "zz", "m.c.0"):
             await act(panel, args)
-        await run_command(panel, command_update(), PanelBot())
+        await run_command(panel, command_update(), PanelBot())  # refreshes first: the note is new
+        await seed(plug, CHAT, "anna_k", [(12, "in", "Is Friday still fine?", 5)], first_name="Anna")
         await act(panel, "rf.c")
         panel.join_refreshes(timeout=5)
 
-    assert "dossier posted chat_ref=" in caplog.text and "dossier call purpose=telesec_post" in caplog.text
+    assert "dossier posted chat_ref=" in caplog.text and "dossier post refresh chat_ref=" in caplog.text
     assert "dossier refresh started chat_ref=" in caplog.text
     assert not [r for r in caplog.records if r.exc_info]
     for secret in SECRETS:
@@ -1703,7 +1705,7 @@ async def test_real_ptb_dossier_command_serializes_the_rich_message_and_skips_co
     monkeypatch.setenv("TELESEC_AGENT_ENABLE", "1")  # ordinary Business messages reach the agent
     app, request = telegram_app
     await build(plug, ds)
-    ds.bind_llm(FakeLlm(doc(SUMMARY)))
+    ds.bind_llm(FakeLlm(doc(DOCUMENT)))
     history_before = load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)
     plug._register_telegram_handlers(app, SimpleNamespace(platform="telegram", _bot=app.bot))
     core: list[Any] = []
@@ -1737,7 +1739,7 @@ async def test_real_ptb_dossier_command_serializes_the_rich_message_and_skips_co
     assert set(params) == {"business_connection_id", "chat_id", "rich_message"}
     assert (params["business_connection_id"], params["chat_id"]) == (BUSINESS_ID, str(CHAT))
     rich = json.loads(params["rich_message"])
-    assert rich["skip_entity_detection"] is True and SUMMARY_LINE in rich["html"] and NOTE not in rich["html"]
+    assert rich["skip_entity_detection"] is True and POSTED_LINE in rich["html"] and NOTE not in rich["html"]
     assert json.loads(dict(request.calls)["deleteBusinessMessages"]["message_ids"]) == [500]
     texts = [r["text"] for r in load_records(plug, business_id=BUSINESS_ID, chat_id=CHAT)[len(history_before):]]
     assert texts == ["See you Friday"]

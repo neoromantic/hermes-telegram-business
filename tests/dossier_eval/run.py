@@ -9,7 +9,8 @@ process environment and stops before any call that could take the spend over ``-
 
 Each arm, scenario and run gets a fresh temp HERMES_HOME. History is written step by step as canonical
 records (the test helper ``raw``); each checkpoint runs ``run_cycle(llm=LiveLlm, trigger="cli", ...)``
-and post steps call ``dossier_post.build_post``. Results go only to ``--out/<UTC timestamp>/``: one
+and post steps take what ``/dossier`` would post: the stored document, after one forced refresh when it is
+behind the chat (``dossier_post.post_state``). Results go only to ``--out/<UTC timestamp>/``: one
 JSON per arm with every document per step, and ``summary.md`` with numbers and pass/fail only.
 """
 
@@ -281,16 +282,26 @@ class Harness:
             if reason is not None:
                 return {"status": "refused", "error": reason, "text": ""}
             return {"status": "ok", "error": None, "text": view.render_overview(snap, lang, audience="contact").text}
-        post = _submodule(self.plugin, "dossier_post")
-        if post is None or not hasattr(post, "build_post"):
+        post, view = _submodule(self.plugin, "dossier_post"), _submodule(self.plugin, "dossier_view")
+        if post is None or view is None or not hasattr(post, "post_state"):
             return {"status": "skipped", "error": "dossier_post not available", "text": ""}
         try:
-            result = post.build_post(entry, llm=llm, now=now)
+            state = post.post_state(entry, now=now)
+            if state.reason == "due":  # /dossier's one refresh, at the checkpoint's time
+                rep = self.ds.run_cycle(llm=llm, trigger="post", target=("contact", entry), now=now)
+                reason, error = post._refresh_reason(entry, rep)
+                if reason is not None:
+                    return {"status": "failed" if reason == "failed" else "refused", "error": error or reason,
+                            "text": ""}
+                state = post.post_state(entry, now=now, refreshed=True)
         except ll.BudgetExceeded:
             raise
         except Exception as exc:  # noqa: BLE001 - the report keeps the type name only
             return {"status": "error", "error": type(exc).__name__, "text": ""}
-        return {"status": result.status, "error": result.error, "text": result.text or ""}
+        if state.reason is not None:
+            status = "empty" if state.reason in ("empty", "unqualified") else "refused"
+            return {"status": status, "error": state.error or state.reason, "text": ""}
+        return {"status": "ok", "error": None, "text": view.html_to_text(view.post_html(state.text, now))}
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +607,7 @@ def presence_scores(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 def call_scores(records: list[ll.CallRecord], results: list[dict[str, Any]]) -> dict[str, Any]:
     by_kind: dict[str, dict[str, Any]] = {}
-    for kind in ("contact", "persona", "post", "shorten", "gate", "clairic", "judge"):
+    for kind in ("contact", "persona", "shorten", "gate", "clairic", "judge"):
         rows = [r for r in records if r.kind == kind]
         if not rows:
             continue
@@ -617,7 +628,7 @@ def call_scores(records: list[ll.CallRecord], results: list[dict[str, Any]]) -> 
                       if r.of in ("contact", "gate", "clairic") and _scenario_of(r.step) in contact_scenarios)
     contact_days = sum(sc.BY_ID[r["scenario"]].contact_days() for r in results
                        if r["scenario"] not in PERSONA_ONLY and r["status"] == "ok")
-    writer_calls = sum(by_kind.get(kind, {}).get("calls", 0) for kind in ("contact", "persona", "post"))
+    writer_calls = sum(by_kind.get(kind, {}).get("calls", 0) for kind in ("contact", "persona"))
     return {
         "by_kind": by_kind,
         "contact_usd": contact_usd,

@@ -1029,39 +1029,40 @@ def test_enable_lines_name_the_model_safely(dv: ModuleType) -> None:
 
 
 def test_post_in_english(dv: ModuleType) -> None:
-    html = dv.post_html("We agreed on the **Orbit** review on Friday [m12].\n\n- Mira sends the mockups", NOW)
+    html = dv.post_html("**Mira, your design lead.**\n\n## Agreements\n- The **Orbit** review is on Friday [m12, m14].\n"
+                        "- Mira sends the mockups [m15–m17]", NOW)
 
     assert html == (
-        "<h3>Summary of our chat</h3><p>We agreed on the <b>Orbit</b> review on Friday.</p>"
-        "<ul><li>Mira sends the mockups</li></ul>"
+        "<h3>Dossier</h3><p><b>Mira, your design lead.</b></p><h4>Agreements</h4>"
+        "<ul><li>The <b>Orbit</b> review is on Friday.</li><li>Mira sends the mockups</li></ul>"
         "<p><i>Prepared automatically from this chat on 20 October 2026; it may contain mistakes.</i></p>"
     )
     check_html(dv, html)
 
 
 def test_post_in_russian(dv: ModuleType) -> None:
-    html = dv.post_html("Договорились о встрече в пятницу.", NOW)
+    html = dv.post_html("**Мира, ваш дизайнер.**\n\n## Планы\n- Встреча в пятницу [m12].", NOW)
 
     assert html == (
-        "<h3>Краткое содержание переписки</h3><p>Договорились о встрече в пятницу.</p>"
+        "<h3>Досье</h3><p><b>Мира, ваш дизайнер.</b></p><h4>Планы</h4><ul><li>Встреча в пятницу.</li></ul>"
         "<p><i>Составлено автоматически по этой переписке 20 октября 2026; возможны неточности.</i></p>"
     )
 
 
 @pytest.mark.parametrize(
-    ("summary", "lang"),
+    ("document", "lang"),
     [
         ("абв defghij", "ru"),  # 3 of 10 letters are Cyrillic: exactly 30 %
         ("аб cdefghij", "en"),  # 20 %
-        ("абв defghij [m1] [m22, m333]", "ru"),  # refs are not letters of the summary
+        ("абв defghij [m1] [m22, m333]", "ru"),  # refs are not letters of the document
         ("Orbit: встреча в пятницу, 18:00", "ru"),
         ("Orbit review on Friday, встреча", "en"),
         ("12:00 / 5 000 ₽", "en"),  # no letters at all
         ("", "en"),
     ],
 )
-def test_post_language_follows_the_cyrillic_share(dv: ModuleType, summary: str, lang: str) -> None:
-    title = re.match(r"<h3>([^<]*)</h3>", dv.post_html(summary, NOW))[1]
+def test_post_language_follows_the_cyrillic_share(dv: ModuleType, document: str, lang: str) -> None:
+    title = re.match(r"<h3>([^<]*)</h3>", dv.post_html(document, NOW))[1]
 
     assert title == s(dv, lang, "post_title")
 
@@ -1076,7 +1077,7 @@ def test_post_language_follows_the_cyrillic_share(dv: ModuleType, summary: str, 
     ],
 )
 def test_post_date_is_the_local_date_with_month_names(dv: ModuleType, at: datetime, en: str, ru: str) -> None:
-    assert f"from this chat on {en};" in dv.post_html("Plain English summary.", at)
+    assert f"from this chat on {en};" in dv.post_html("Plain English document.", at)
     assert f"по этой переписке {ru};" in dv.post_html("Краткое русское резюме.", at)
 
 
@@ -1085,23 +1086,23 @@ def test_month_tables(dv: ModuleType) -> None:
     assert s(dv, "ru", "months")[2] == "марта" and s(dv, "ru", "months")[7] == "августа"  # genitive
 
 
-def test_the_post_never_says_dossier(dv: ModuleType) -> None:
-    for summary in ("Plain English summary.", "Краткое русское резюме."):
-        html = dv.post_html(summary, NOW)
-        fixed = html.replace(dv.markdown_html(summary), "")
-        assert "dossier" not in fixed.lower() and "досье" not in fixed.lower()
-    for lang in ("en", "ru"):
-        assert not re.search("dossier|досье", s(dv, lang, "post_title") + s(dv, lang, "post_footer"), re.IGNORECASE)
+def test_the_post_adds_only_its_title_and_a_dated_footer(dv: ModuleType) -> None:
+    # Fixed text plus a date: no owner-only metadata (model, cost, update time, counts or the note label).
+    for document, lang in (("- Plain English point.", "en"), ("- Пункт по-русски.", "ru")):
+        fixed = dv.post_html(document, NOW).replace(dv.markdown_html(document), "")
+        footer = s(dv, lang, "post_footer").format(date=dv._date(NOW, lang))
+        assert fixed == f"<h3>{s(dv, lang, 'post_title')}</h3><p><i>{footer}</i></p>"
+    assert (s(dv, "en", "post_title"), s(dv, "ru", "post_title")) == ("Dossier", "Досье")
 
 
 def test_a_full_size_post_fits(dv: ModuleType) -> None:
     line = "- **Встреча по Orbit** перенесена на пятницу, 18:00 [m123]\n"
-    summary = (line * 80)[: dv._doc.DOC_MAX_UNITS]
+    document = (line * 80)[: dv._doc.DOC_MAX_UNITS]
 
-    html = dv.post_html(summary, NOW)
+    html = dv.post_html(document, NOW)
 
     check_html(dv, html)
-    assert html.startswith("<h3>Краткое содержание переписки</h3><ul><li><b>Встреча по Orbit</b>")
+    assert html.startswith("<h3>Досье</h3><ul><li><b>Встреча по Orbit</b>")
 
 
 # ---------------------------------------------------------------------------
@@ -1111,44 +1112,46 @@ def test_a_full_size_post_fits(dv: ModuleType) -> None:
 REFUSALS = {
     "en": {
         "disabled": "Dossiers are off. Turn them on in Settings (/telesec).",
-        "no_model": "The model is not connected.",
+        "no_model": "The dossier needs a refresh first, and the model is not connected.",
         "history_off": "History is off, so deleted messages can't be tracked. Turn history on in Settings (/telesec).",
         "chat_off": "Dossier is off for this chat.",
         "window": "The contact hasn't written in the last 24 hours, and Telegram lets a bot post only within 24 "
         "hours of their last message.",
-        "empty": "This chat has nothing to summarise yet.",
-        "busy": "A summary for this chat is already being prepared.",
-        "changed": "Messages changed while the summary was being written. Send /dossier again.",
-        "failed": "The summary could not be written (TimeoutError).",
+        "unqualified": "No dossier yet: it needs messages from both you and the contact.",
+        "empty": "The dossier has nothing worth keeping yet.",
+        "busy": "The dossier for this chat is already being posted.",
+        "changed": "Messages changed while the dossier was being refreshed. Send /dossier again.",
+        "failed": "The dossier could not be prepared (TimeoutError).",
         # A refusal while the window was not known open: the 24 hours are only a possible cause.
-        "send_refused": "Telegram did not accept the summary (TimeoutError). One possible cause: a bot can post in a "
+        "send_refused": "Telegram did not accept the dossier (TimeoutError). One possible cause: a bot can post in a "
         "Business chat only if the contact wrote there in the last 24 hours.",
-        "send_failed": "Telegram did not accept the summary (TimeoutError).",
+        "send_failed": "Telegram did not accept the dossier (TimeoutError).",
         "send_unsure": "Telegram did not confirm it (TimeoutError). Check the chat before you send /dossier again.",
     },
     "ru": {
         "disabled": "Досье выключены. Включите их в Настройках (/telesec).",
-        "no_model": "Модель не подключена.",
+        "no_model": "Досье нужно сначала обновить, а модель не подключена.",
         "history_off": "История выключена, поэтому удалённые сообщения не отслеживаются. Включите историю в "
         "Настройках (/telesec).",
         "chat_off": "Досье для этого чата выключено.",
         "window": "Собеседник не писал последние 24 часа, а Telegram разрешает боту писать только в течение 24 "
         "часов после его последнего сообщения.",
-        "empty": "В этом чате пока нечего подытожить.",
-        "busy": "Итоги для этого чата уже готовятся.",
-        "changed": "Пока составлялись итоги, сообщения изменились. Отправьте /dossier ещё раз.",
-        "failed": "Не удалось составить итоги (TimeoutError).",
-        "send_refused": "Telegram не принял итоги (TimeoutError). Возможная причина: бот может писать в бизнес-чат, "
+        "unqualified": "Досье пока нет: нужны сообщения и от вас, и от собеседника.",
+        "empty": "В досье пока нечего сохранить.",
+        "busy": "Досье для этого чата уже отправляется.",
+        "changed": "Пока обновлялось досье, сообщения изменились. Отправьте /dossier ещё раз.",
+        "failed": "Не удалось подготовить досье (TimeoutError).",
+        "send_refused": "Telegram не принял досье (TimeoutError). Возможная причина: бот может писать в бизнес-чат, "
         "только если собеседник писал туда за последние 24 часа.",
-        "send_failed": "Telegram не принял итоги (TimeoutError).",
+        "send_failed": "Telegram не принял досье (TimeoutError).",
         "send_unsure": "Telegram не подтвердил отправку (TimeoutError). Проверьте чат, прежде чем отправлять "
         "/dossier ещё раз.",
     },
 }
 HEADS = {"en": "Nothing was posted to the chat with Mira Tanaka.", "ru": "В чат «Mira Tanaka» ничего не отправлено."}
 # A send that timed out may be in the chat, so its head never says that nothing was posted.
-UNSURE_HEADS = {"en": "The summary may have been posted to the chat with Mira Tanaka.",
-                "ru": "Итоги, возможно, отправлены в чат «Mira Tanaka»."}
+UNSURE_HEADS = {"en": "The dossier may have been posted to the chat with Mira Tanaka.",
+                "ru": "Досье, возможно, отправлено в чат «Mira Tanaka»."}
 
 
 def test_post_reasons_are_exactly_the_v2_set(dv: ModuleType) -> None:
@@ -1158,6 +1161,7 @@ def test_post_reasons_are_exactly_the_v2_set(dv: ModuleType) -> None:
         "history_off",
         "chat_off",
         "window",
+        "unqualified",
         "empty",
         "busy",
         "changed",
@@ -1188,9 +1192,9 @@ def test_post_refusal_cleans_the_name_and_the_error(dv: ModuleType) -> None:
 
     head, line = text.split("\n")
     assert head.startswith("Nothing was posted to the chat with Mira x") and head.endswith("….")
-    assert line.startswith("The summary could not be written (Bad Error") and line.endswith("…).")
+    assert line.startswith("The dossier could not be prepared (Bad Error") and line.endswith("…).")
     assert dv.post_refusal("failed", "en", name="", error=None) == (
-        "Nothing was posted to the chat with ?.\nThe summary could not be written (?)."
+        "Nothing was posted to the chat with ?.\nThe dossier could not be prepared (?)."
     )
 
 

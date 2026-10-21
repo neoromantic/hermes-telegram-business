@@ -3253,7 +3253,7 @@ or `--dossier on|off`.
 `--contact @username`; without either it lists contacts).
 - History and dossiers, when enabled: skills `{_PLUGIN_NAME}:history` and `{_PLUGIN_NAME}:dossiers` \
 (read and note). Never quote a private dossier, owner note or persona into a Business chat; to share, \
-the owner sends `/dossier`, which posts a fresh summary of the chat.
+the owner sends `/dossier`, which posts the dossier without the note.
 - Owner panel: a bot message that starts with "Owner panel:" or "Панель владельца:" controls one \
 Business chat and names it as `chat <id>`. When the user replies to a panel message, the question is \
 about that chat; use that id as <chat_id> above.
@@ -3285,8 +3285,7 @@ def _register_dossier_task(ctx: Any) -> None:
             register_task(
                 _dossier_support.TASK_KEY,
                 display_name="Telesec dossiers",
-                description="Writes private Telesec contact dossiers, the owner writing persona and /dossier chat "
-                            "summaries.",
+                description="Writes private Telesec contact dossiers and the owner writing persona.",
                 defaults=copy.deepcopy(_dossier_support.TASK_DEFAULTS),  # the host keeps and merges it
             )
             registered = True

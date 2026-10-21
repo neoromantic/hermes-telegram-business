@@ -1182,6 +1182,7 @@ class CycleReport:
     unqualified: int = 0
     orphans: int = 0  # always 0: a dossier whose chat left the catalog stays as it is until forgotten
     persona: str = "skipped"  # not_due | refreshed | empty | failed | paused | skipped
+    contact: str | None = None  # the outcome of a contact target (refreshed, checked, unchanged, failed …)
     failures: list[tuple[str, str]] = field(default_factory=list)  # (target label, error kind)
     error: str | None = None  # host trust message for the CLI only; never logged
     duration_ms: int = 0
@@ -1992,6 +1993,8 @@ def _run_cycle_steps(cx: _Cycle, target: tuple[str, Any] | None) -> None:
             key = chat_key(entry["business_connection_id"], entry["chat_id"])
             out = _guarded(cx, key, entry, _entry_label(entry),
                            lambda e=entry: process_contact(cx, e, forced=target is not None))
+            if target is not None:
+                rep.contact = out
             if out == "stopped":
                 rep.outcome = "stopped"
                 break

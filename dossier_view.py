@@ -36,8 +36,8 @@ ERROR_CHARS = 64
 POST_RU_SHARE = 0.3  # the post is in Russian when at least this share of its letters is Cyrillic
 CLI = "hermes telesec dossier"
 TARGETS = {"contact": "c", "persona": "p"}
-POST_REASONS = ("disabled", "no_model", "history_off", "chat_off", "window", "empty", "busy", "changed",
-                "failed", "send_refused", "send_failed", "send_unsure")
+POST_REASONS = ("disabled", "no_model", "history_off", "chat_off", "window", "unqualified", "empty", "busy",
+                "changed", "failed", "send_refused", "send_failed", "send_unsure")
 NOTICE_KEYS = ("busy", "refresh_started", "unavailable", "up_to_date", "failed", "operator_only", "no_connection")
 
 Rows = tuple[tuple[tuple[str, str], ...], ...]
@@ -101,24 +101,25 @@ STRINGS: dict[str, dict[str, Any]] = {
                                     "the persona or turn dossiers on and off.",
                    "no_connection": "The Business connection of this chat is not known yet. Send any message "
                                     "in the chat, then open Manage Bot again."},
-        "post_title": "Summary of our chat",
+        "post_title": "Dossier",
         "post_footer": "Prepared automatically from this chat on {date}; it may contain mistakes.",
         "post_head": "Nothing was posted to the chat with {name}.",
-        "post_head_unsure": "The summary may have been posted to the chat with {name}.",
+        "post_head_unsure": "The dossier may have been posted to the chat with {name}.",
         "post": {"disabled": "Dossiers are off. Turn them on in Settings (/telesec).",
-                 "no_model": "The model is not connected.",
+                 "no_model": "The dossier needs a refresh first, and the model is not connected.",
                  "history_off": "History is off, so deleted messages can't be tracked. Turn history on in "
                                 "Settings (/telesec).",
                  "chat_off": "Dossier is off for this chat.",
                  "window": "The contact hasn't written in the last 24 hours, and Telegram lets a bot post only "
                            "within 24 hours of their last message.",
-                 "empty": "This chat has nothing to summarise yet.",
-                 "busy": "A summary for this chat is already being prepared.",
-                 "changed": "Messages changed while the summary was being written. Send /dossier again.",
-                 "failed": "The summary could not be written ({error}).",
-                 "send_refused": "Telegram did not accept the summary ({error}). One possible cause: a bot can post "
+                 "unqualified": "No dossier yet: it needs messages from both you and the contact.",
+                 "empty": "The dossier has nothing worth keeping yet.",
+                 "busy": "The dossier for this chat is already being posted.",
+                 "changed": "Messages changed while the dossier was being refreshed. Send /dossier again.",
+                 "failed": "The dossier could not be prepared ({error}).",
+                 "send_refused": "Telegram did not accept the dossier ({error}). One possible cause: a bot can post "
                                  "in a Business chat only if the contact wrote there in the last 24 hours.",
-                 "send_failed": "Telegram did not accept the summary ({error}).",
+                 "send_failed": "Telegram did not accept the dossier ({error}).",
                  "send_unsure": "Telegram did not confirm it ({error}). Check the chat before you send /dossier "
                                 "again."},
     },
@@ -177,24 +178,25 @@ STRINGS: dict[str, dict[str, Any]] = {
                                     "известных боту.",
                    "no_connection": "Business-подключение этого чата пока неизвестно. Отправьте любое "
                                     "сообщение в том чате и снова нажмите кнопку управления ботом."},
-        "post_title": "Краткое содержание переписки",
+        "post_title": "Досье",
         "post_footer": "Составлено автоматически по этой переписке {date}; возможны неточности.",
         "post_head": "В чат «{name}» ничего не отправлено.",
-        "post_head_unsure": "Итоги, возможно, отправлены в чат «{name}».",
+        "post_head_unsure": "Досье, возможно, отправлено в чат «{name}».",
         "post": {"disabled": "Досье выключены. Включите их в Настройках (/telesec).",
-                 "no_model": "Модель не подключена.",
+                 "no_model": "Досье нужно сначала обновить, а модель не подключена.",
                  "history_off": "История выключена, поэтому удалённые сообщения не отслеживаются. Включите "
                                 "историю в Настройках (/telesec).",
                  "chat_off": "Досье для этого чата выключено.",
                  "window": "Собеседник не писал последние 24 часа, а Telegram разрешает боту писать только "
                            "в течение 24 часов после его последнего сообщения.",
-                 "empty": "В этом чате пока нечего подытожить.",
-                 "busy": "Итоги для этого чата уже готовятся.",
-                 "changed": "Пока составлялись итоги, сообщения изменились. Отправьте /dossier ещё раз.",
-                 "failed": "Не удалось составить итоги ({error}).",
-                 "send_refused": "Telegram не принял итоги ({error}). Возможная причина: бот может писать в "
+                 "unqualified": "Досье пока нет: нужны сообщения и от вас, и от собеседника.",
+                 "empty": "В досье пока нечего сохранить.",
+                 "busy": "Досье для этого чата уже отправляется.",
+                 "changed": "Пока обновлялось досье, сообщения изменились. Отправьте /dossier ещё раз.",
+                 "failed": "Не удалось подготовить досье ({error}).",
+                 "send_refused": "Telegram не принял досье ({error}). Возможная причина: бот может писать в "
                                  "бизнес-чат, только если собеседник писал туда за последние 24 часа.",
-                 "send_failed": "Telegram не принял итоги ({error}).",
+                 "send_failed": "Telegram не принял досье ({error}).",
                  "send_unsure": "Telegram не подтвердил отправку ({error}). Проверьте чат, прежде чем отправлять "
                                 "/dossier ещё раз."},
     },
@@ -612,7 +614,7 @@ def _plain_html(lines: list[str]) -> str:
 
 
 def markdown_html(md: str) -> str:
-    """Rich HTML for a Markdown dossier or summary, in the subset ``h4 p b i br ul li blockquote``.
+    """Rich HTML for a Markdown dossier, in the subset ``h4 p b i br ul li blockquote``.
 
     Refs like ``[m123]`` and the ``<<END>>`` marker are removed. Headings become ``h4`` (``h3`` is the
     screen title), nested bullets are flattened, numbered lines and table rows become paragraph lines,
@@ -830,21 +832,23 @@ def enable_confirm(cfg: Any, lang: str) -> tuple[str, str, str]:
 
 
 def _post_lang(text: str) -> str:
-    """The contact reads the post, so it follows the summary: 'ru' when enough of its letters are Cyrillic."""
+    """The contact reads the post, so it follows the dossier: 'ru' when enough of its letters are Cyrillic."""
     letters = [char for char in _writer.REF_RE.sub("", text) if char.isalpha()]  # "[m12]" is not a word
     cyrillic = sum(1 for char in letters if "\u0400" <= char <= "\u04ff")
     return "ru" if letters and cyrillic >= POST_RU_SHARE * len(letters) else "en"
 
 
-def post_html(summary_md: str, now: datetime) -> str:
-    """The ``/dossier`` post: a fixed title, the summary and a dated footer, in the summary's language.
+def post_html(document_md: str, now: datetime) -> str:
+    """The ``/dossier`` post: a fixed title, the document without its refs, and a dated footer, in the
+    document's language.
 
-    ``now`` is the owner's local time; its date is printed as it is. The post never says "dossier".
+    Only the document text goes in: never the note, the previous version, the persona or any other field.
+    ``now`` is the owner's local time; its date is printed as it is.
     """
-    lang = _post_lang(summary_md)
+    lang = _post_lang(document_md)
     s = _s(lang)
     footer = s["post_footer"].format(date=_date(now, lang))
-    return _framed(f"<h3>{s['post_title']}</h3>", summary_md, f"<p><i>{footer}</i></p>")
+    return _framed(f"<h3>{s['post_title']}</h3>", document_md, f"<p><i>{footer}</i></p>")
 
 
 def post_refusal(reason: str, lang: str, *, name: str, error: str | None = None) -> str:
