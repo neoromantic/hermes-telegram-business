@@ -61,7 +61,7 @@ Telesec — Telegram Business secretary for Hermes: voice transcription, corresp
 
 ### Release and deploy
 
-- `main` is protected; merge with `gh pr merge --squash --admin --delete-branch`.
+- `main` is protected; use `gh pr merge --squash --auto --delete-branch` to merge after required checks pass.
 - Releases are cut by hand until a release workflow exists; this overrides the shared release rule above. Release: bump `plugin.yaml`, `pyproject.toml`, `uv.lock`, and the version asserts in `tests/test_plugin.py`; date the CHANGELOG section, tag `vX.Y.Z`, publish a GitHub release.
 - Before tagging, run `hermes plugins validate --install-deps` on the newest Hermes release in an isolated venv, not only on a long-running gateway. A long-running gateway can have packages a clean Hermes lacks: 0.10.0 failed to import on Hermes 0.22, which no longer installs PyYAML. Plugin code may import only the standard library, PTB, and Hermes core dependencies. `validate` can print `ok` while the dependency environment fails to resolve: check its stderr for "unsatisfiable". Hermes resolves the plugin's `[dependency-groups]` together with its own pins and disables the plugin on the next dependency refresh (0.12.0 hit this), so dependency groups name packages only and `uv.lock` pins versions.
 - After a deploy, run the [controlled live smoke](docs/VERIFY.md#controlled-live-smoke) and record the result in `docs/VERIFY.md`. Keep that record content-free and host-neutral: no contact names, message text, raw IDs, host names, service unit names, or local paths.
