@@ -300,7 +300,8 @@ async def test_real_ptb_transcribe_text_is_ordinary_business_text(plugin, telegr
 async def test_real_ptb_owner_stats_edits_the_command_into_a_rich_card(plugin, telegram_app, monkeypatch):
     app, request = telegram_app
     test_history.set_switch(plugin, "history", True)
-    monkeypatch.setitem(sys.modules, "hermes_time", None)
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", None)
     request.responses["editmessagetext"] = (200, {"ok": True, "result": {
         "message_id": 78, "date": 1, "chat": {"id": 991, "type": "private"}, "text": "card",
     }})
@@ -334,7 +335,8 @@ async def test_real_ptb_stats_fallbacks_send_and_delete(plugin, telegram_app, mo
     app, request = telegram_app
     if history:
         test_history.set_switch(plugin, "history", True)
-    monkeypatch.setitem(sys.modules, "hermes_time", None)
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", None)
     monkeypatch.setattr(plugin, "_STATS_NOTICE_TTL_SECONDS", 0)
     request.responses["editMessageText"] = (400, {
         "ok": False, "error_code": 400, "description": "Bad Request: message can't be edited",

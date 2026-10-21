@@ -11,7 +11,7 @@ import shlex
 import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -117,19 +117,25 @@ shown 1 of 4 contacts; not shown: 2 over --limit 1, 1 with no activity in range
 @pytest.fixture(autouse=True)
 def _fixed_clock(plugin, monkeypatch: pytest.MonkeyPatch):
     # No Hermes time zone, even when the tests run inside a Hermes install.
-    monkeypatch.setitem(sys.modules, "hermes_time", None)
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", None)
     monkeypatch.setattr(plugin._history_support, "_utcnow", lambda: NOW)
 
 
 def _hermes_tz(monkeypatch: pytest.MonkeyPatch, name: Any) -> None:
-    """Stub Hermes's ``hermes_time.get_timezone_name()``; an exception value is raised."""
+    """Stub ``timezone`` in Hermes's config (``hermes_cli.config``); an exception value is raised."""
 
-    def get_timezone_name():
+    def load_config_readonly():
         if isinstance(name, Exception):
             raise name
-        return name
+        return {"timezone": name}
 
-    monkeypatch.setitem(sys.modules, "hermes_time", SimpleNamespace(get_timezone_name=get_timezone_name))
+    package = ModuleType("hermes_cli")
+    package.__path__ = []
+    package.config = SimpleNamespace(load_config_readonly=load_config_readonly)
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli", package)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", package.config)
 
 
 @pytest.fixture
@@ -2400,8 +2406,17 @@ def test_tz_falls_back_to_hermes(plugin, cs, monkeypatch: pytest.MonkeyPatch):
     _hermes_tz(monkeypatch, "Asia/Tokyo")
     with pytest.raises(ValueError, match="in --tz"):
         cs.resolve_timezone("Mars/Base")
+    # HERMES_TIMEZONE wins over config.yaml, as in Hermes; a blank one is skipped.
+    monkeypatch.setenv("HERMES_TIMEZONE", " Europe/Moscow ")
+    assert cs.resolve_timezone()[1] == "Europe/Moscow"
+    monkeypatch.setenv("HERMES_TIMEZONE", "  ")
+    assert cs.resolve_timezone()[1] == "Asia/Tokyo"
+    monkeypatch.delenv("HERMES_TIMEZONE")
+    # Only the public config read: hermes_time is an undocumented core module.
+    assert not re.search(r"\bhermes_time\b", (ROOT / "correspondence_stats.py").read_text(encoding="utf-8"))
     # Not running inside Hermes at all.
-    monkeypatch.setitem(sys.modules, "hermes_time", None)
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", None)
     assert cs.resolve_timezone() == (UTC, "UTC")
 
 

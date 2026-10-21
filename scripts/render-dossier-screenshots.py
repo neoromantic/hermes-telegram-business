@@ -29,7 +29,6 @@ import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -159,7 +158,7 @@ def render_views(language: str) -> dict[str, object]:
     spec = LANGUAGES[language]
     with tempfile.TemporaryDirectory() as home, pytest.MonkeyPatch.context() as mp:
         plugin = th._load_plugin_module(mp, Path(home))
-        mp.setitem(sys.modules, "hermes_time", SimpleNamespace(get_timezone_name=lambda: spec["tz"]))
+        mp.setenv("HERMES_TIMEZONE", spec["tz"])
         for name in list(os.environ):
             # The shell's own Telesec settings must not change the pictures.
             if name.startswith(("TELESEC_", "HERMES_TELEGRAM_BUSINESS_")):
