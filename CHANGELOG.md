@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.16.1 - 2026-10-21
+
 - Stats read the Hermes time zone through the public config (`HERMES_TIMEZONE`, then `timezone` in `config.yaml`) instead of the undocumented `hermes_time` module. The result is the same.
 
 ## 0.16.0 - 2026-10-21
