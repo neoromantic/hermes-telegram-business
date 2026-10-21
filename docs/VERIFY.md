@@ -14,6 +14,16 @@ History checks must cover one-time opt-in, private-chat defaults, the stored old
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## 0.16.1 release and live smoke: 2026-10-21
+
+Before tagging, `hermes plugins validate --install-deps --json` ran on the same isolated Hermes v0.22.2 with a fresh plugin copy and `HERMES_HOME`. It passed with exit 0, `ok: true`, and all 14 checks, and the dependencies resolved. The first run hit a network timeout while it fetched a Hermes core dependency, so it was run again. The private-import warning now names only `transcribe_audio`. 2208 tests passed locally (1 skipped), and CI passed on Python 3.11–3.14.
+
+The production gateway got a plugin-only update to `v0.16.1` (`b23cd63358e1a66518106c485402a9033f6b31d9`) and restarted.
+
+- **Time zone.** `hermes telesec stats` reported the same Hermes time zone before and after the update.
+- **Panel.** A controlled chat's owner panel and its 📊 Stats view opened.
+- **Log.** The error log had no Telesec lines after the restart.
+
 ## 0.16.0 release and live smoke: 2026-10-21
 
 Before tagging, `hermes plugins validate --install-deps --json` ran on the same isolated Hermes v0.22.2 with a fresh plugin copy and `HERMES_HOME`. It passed with exit 0, `ok: true`, and all 14 checks. The security scan was `safe`, and stderr had no "unsatisfiable". 2208 tests passed locally (1 skipped), and CI passed on Python 3.11–3.14.
