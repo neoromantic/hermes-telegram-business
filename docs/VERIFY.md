@@ -14,6 +14,17 @@ History checks must cover one-time opt-in, private-chat defaults, the stored old
 
 Native-handler checks must demonstrate that every Business message/edit/deletion update is consumed after history capture, including owner/contact text, disabled history/transcription, failed history writes, and rejected media. Real PTB updates must also prove that `TELESEC_AGENT_ENABLE=1` permits unhandled updates through, ordinary bot messages continue normally, and text history observation does not spend an LLM call. The transcript surfaces must retain the intended `business_connection_id`, complete text, and UTF-16 entity positions.
 
+## 0.16.0 release and live smoke: 2026-10-21
+
+Before tagging, `hermes plugins validate --install-deps --json` ran on the same isolated Hermes v0.22.2 with a fresh plugin copy and `HERMES_HOME`. It passed with exit 0, `ok: true`, and all 14 checks. The security scan was `safe`, and stderr had no "unsatisfiable". 2208 tests passed locally (1 skipped), and CI passed on Python 3.11–3.14.
+
+The production gateway (Hermes 0.21.6) got a plugin-only update to `v0.16.0` (`c773c75e8f43a31437063ea8754742162a946555`) and restarted. The plugin's handlers were wired about 45 seconds later.
+
+- **Post preview.** `hermes telesec dossier preview --chat … --post` for a controlled chat reported no refusal and printed a rich message with the "Dossier" title, the document sections and the footer. It had no message refs, no owner note and no persona.
+- **Panel.** The chat's owner panel and its Dossier screen opened with **Refresh**, **My persona**, and **Back**.
+- **Log.** The error log had no Telesec lines after the restart.
+- **`/dossier`** was not posted in a live chat, because the contact sees the post.
+
 ## 0.15.1 release and live smoke: 2026-10-20
 
 Before tagging, `hermes plugins validate --install-deps --json` ran on the same isolated Hermes v0.22.2 with a fresh plugin copy. It passed with exit 0, `ok: true`, and all 14 checks. The security scan was `safe`, and stderr had no "unsatisfiable". 2204 tests passed locally (1 skipped), and CI passed on Python 3.11–3.14.
